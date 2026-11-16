@@ -2,6 +2,15 @@
 
 O tempo do agendamento vem só de ``relogio.agora()`` (monotônico). O relógio de parede
 (``agora_parede``) é usado apenas para gravar e publicar horários.
+
+Esticamento (R11/R12): se Σ(custo/intervalo) dos ativos passa da taxa do limitador, os
+intervalos não críticos são multiplicados pelo menor fator que resolve, até
+``ESTICAMENTO_MAX_NAO_CRITICOS`` (10×: 60 s viram 10 min). Se isso não basta, os não críticos
+ficam em 10× e os críticos esticam também; acima de 10× para os críticos, todos usam o mesmo
+fator.
+
+Transições são publicadas na hora e gravadas por um único escritor serial (ordem garantida
+por equipamento); o encerramento drena esse escritor antes de ``descarregar``.
 """
 
 import asyncio
@@ -10,6 +19,7 @@ import itertools
 import logging
 import math
 import random
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -33,6 +43,7 @@ MAX_EM_VOO = 50
 LOTE_LATENCIAS_S = 5.0
 FOLGA_DETECCAO = 1.2  # pior caso do jitter
 ESTICAMENTO_MAX_NAO_CRITICOS = 10.0  # 60 s -> 10 min antes de esticar também os críticos
+PRIMEIRA_RAPIDA_S = 5.0  # alvo novo com o laço rodando: primeira checagem em até 5 s
 
 
 @dataclass
@@ -94,7 +105,9 @@ class Agendador:
         self._fator_nao_critico = 1.0
         self._em_voo = asyncio.Semaphore(MAX_EM_VOO)
         self._tarefas: set[asyncio.Task[None]] = set()  # checagens em voo
-        self._gravacoes: set[asyncio.Task[None]] = set()  # transições de pausar/retomar
+        self._transicoes: deque[tuple[str, Transicao, datetime]] = deque()
+        self._escritor: asyncio.Task[None] | None = None  # único gravador de transições
+        self._rodando = False
         self._sinal: asyncio.Future[None] | None = None
         self._lote: dict[str, float | None] = {}
 
@@ -113,7 +126,7 @@ class Agendador:
         self._registros[alvo.id] = reg
         self.recalcular()
         if reg.ativo:
-            self._agendar_inicial(reg)
+            self._agendar_inicial(reg, rapido=self._rodando)
 
     def remover(self, id: str) -> None:
         if self._registros.pop(id, None) is not None:
@@ -134,7 +147,10 @@ class Agendador:
         reg.versao += 1  # resultado em voo é do destino antigo: descartado
         self.recalcular()
         if reg.ativo and not reg.em_voo:
-            self._agendar_inicial(reg)
+            if reg.maquina.precisa_confirmar:
+                self._agendar_proxima(reg)  # mantém a reconfirmação em 5 s com prioridade
+            else:
+                self._agendar_inicial(reg)
 
     def pausar(self, id: str) -> None:
         reg = self._registros.get(id)
@@ -218,10 +234,13 @@ class Agendador:
         if self._sinal is not None and not self._sinal.done():
             self._sinal.set_result(None)
 
-    def _agendar_inicial(self, reg: _Registro) -> None:
-        """Primeira checagem espalhada no intervalo, para não sondar todos de uma vez."""
+    def _agendar_inicial(self, reg: _Registro, rapido: bool = False) -> None:
+        """Primeira checagem espalhada no intervalo (ou em até 5 s se ``rapido``)."""
         reg.reconfirmar = False
-        self._agendar(reg, self._relogio.agora() + self._intervalo(reg) * self._rng.random())
+        janela = self._intervalo(reg)
+        if rapido:
+            janela = min(janela, PRIMEIRA_RAPIDA_S)
+        self._agendar(reg, self._relogio.agora() + janela * self._rng.random())
 
     def _agendar_proxima(self, reg: _Registro) -> None:
         reg.reconfirmar = reg.maquina.precisa_confirmar
@@ -243,6 +262,7 @@ class Agendador:
 
     async def executar(self) -> None:
         lote = asyncio.create_task(self._publicar_lotes())
+        self._rodando = True
         try:
             while True:
                 topo = self._topo()
@@ -263,15 +283,22 @@ class Agendador:
                 del self._vigente[id]
                 self._lancar(self._registros[id])
         finally:
-            canceladas = [lote, *self._tarefas]
-            for t in canceladas:
-                t.cancel()
-            await asyncio.gather(*canceladas, *self._gravacoes, return_exceptions=True)
-            self._preparar_reinicio()
-            try:
-                await self._gravador.descarregar()
-            except Exception:
-                log.exception("falha ao descarregar amostras no encerramento")
+            self._rodando = False
+            # blindado: um segundo cancelamento não pula a drenagem nem o descarregar
+            await asyncio.shield(self._encerrar(lote))
+
+    async def _encerrar(self, lote: asyncio.Task[None]) -> None:
+        canceladas = [lote, *self._tarefas]
+        for t in canceladas:
+            t.cancel()
+        await asyncio.gather(*canceladas, return_exceptions=True)
+        self._preparar_reinicio()
+        while self._escritor is not None and not self._escritor.done():
+            await asyncio.gather(self._escritor, return_exceptions=True)
+        try:
+            await self._gravador.descarregar()
+        except Exception:
+            log.exception("falha ao descarregar amostras no encerramento")
 
     def _preparar_reinicio(self) -> None:
         """Checagens canceladas antes de começar não devolvem a vaga nem se reagendam."""
@@ -309,7 +336,7 @@ class Agendador:
                 return
             r = await self._checar(reg)
             if reg.versao == versao and self._registros.get(reg.alvo.id) is reg:
-                await self._registrar(reg, r)
+                self._registrar(reg, r)
         except Exception:
             log.exception("falha inesperada na checagem (equipamento %s)", reg.alvo.id)
         finally:
@@ -325,7 +352,7 @@ class Agendador:
             log.exception("checagem falhou de forma inesperada (equipamento %s)", reg.alvo.id)
             return ResultadoChecagem(ok=False, latencia_ms=None, erro="erro interno")
 
-    async def _registrar(self, reg: _Registro, r: ResultadoChecagem) -> None:
+    def _registrar(self, reg: _Registro, r: ResultadoChecagem) -> None:
         id = reg.alvo.id
         em = self._agora_parede()
         self._lote[id] = r.latencia_ms
@@ -333,30 +360,28 @@ class Agendador:
             self._gravador.acumular_amostra(id, r, em)
         except Exception:
             log.exception("falha ao acumular amostra (equipamento %s)", id)
-        t = reg.maquina.aplicar(r)
-        if t is not None:
-            self._publicar_estado(id, t, em)
-            await self._gravar_transicao(id, t, em)
+        self._transicao(id, reg.maquina.aplicar(r), em)
 
-    def _transicao(self, id: str, t: Transicao | None) -> None:
-        """Transição fora do laço (pausar/retomar): publica já e grava em tarefa acompanhada."""
+    def _transicao(self, id: str, t: Transicao | None, em: datetime | None = None) -> None:
+        """Publica na hora e enfileira a gravação no escritor serial (sem ``await``: a vaga
+        de checagem é liberada antes da escrita no banco e não há gravação perdida)."""
         if t is None:
             return
-        em = self._agora_parede()
-        self._publicar_estado(id, t, em)
-        tarefa = asyncio.get_running_loop().create_task(self._gravar_transicao(id, t, em))
-        self._gravacoes.add(tarefa)
-        tarefa.add_done_callback(self._gravacoes.discard)
-
-    def _publicar_estado(self, id: str, t: Transicao, em: datetime) -> None:
+        if em is None:
+            em = self._agora_parede()
         dados = {"id": id, "estado": t.para.value, "desde": em.isoformat()}
         self._barramento.publicar(Mensagem("estado", dados))
+        self._transicoes.append((id, t, em))
+        if self._escritor is None or self._escritor.done():
+            self._escritor = asyncio.get_running_loop().create_task(self._escrever())
 
-    async def _gravar_transicao(self, id: str, t: Transicao, em: datetime) -> None:
-        try:
-            await self._gravador.registrar_transicao(id, t, em)
-        except Exception:
-            log.exception("falha ao gravar transição (equipamento %s)", id)
+    async def _escrever(self) -> None:
+        while self._transicoes:
+            id, t, em = self._transicoes.popleft()
+            try:
+                await self._gravador.registrar_transicao(id, t, em)
+            except Exception:
+                log.exception("falha ao gravar transição (equipamento %s)", id)
 
     async def _publicar_lotes(self) -> None:
         while True:

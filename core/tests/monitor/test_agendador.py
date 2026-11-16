@@ -1,7 +1,7 @@
 import asyncio
 import random
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Network
 
@@ -457,3 +457,196 @@ async def test_reinicia_depois_de_cancelado() -> None:
     tarefa.cancel()
     with pytest.raises(asyncio.CancelledError):
         await tarefa
+
+
+# ---- Fix round 1 ---------------------------------------------------------------------------
+
+
+@dataclass
+class GravadorLento(GravadorFalso):
+    """A primeira gravação de transição fica presa até ``liberar``; anota a ordem das chamadas."""
+
+    liberar: asyncio.Event = field(default_factory=asyncio.Event)
+    chamadas: list[str] = field(default_factory=list)
+
+    async def registrar_transicao(self, id: str, t: Transicao, em: datetime) -> None:
+        if not self.transicoes and not self.chamadas:
+            self.chamadas.append("primeira")
+            await self.liberar.wait()
+        self.transicoes.append((id, t, em))
+        self.chamadas.append(f"transicao:{t.para.value}")
+
+    async def descarregar(self) -> None:
+        self.chamadas.append("descarregar")
+        await super().descarregar()
+
+
+def _cena_lenta() -> tuple[Cena, GravadorLento]:
+    cena = _cena()
+    lento = GravadorLento()
+    cena.agendador._gravador = lento  # noqa: SLF001 - injeta o gravador lento
+    return cena, lento
+
+
+async def _ate_primeira_execucao(cena: Cena, ip: str) -> float:
+    await cena.relogio.avancar(0)  # assenta o laço (tarefas recém-criadas)
+    while not cena.checagem.vezes(ip):
+        prazo = cena.relogio.proximo_prazo()
+        assert prazo is not None
+        await cena.relogio.avancar_ate(prazo)
+    return cena.checagem.vezes(ip)[0]
+
+
+async def test_transicoes_gravadas_em_ordem_com_pausa_no_meio(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena, lento = _cena_lenta()
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [FALHA]
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    t0 = await _ate_primeira_execucao(cena, alvo.ip)
+    await cena.relogio.avancar_ate(t0 + 1)  # suspeito: gravação presa
+    cena.agendador.pausar(alvo.id)
+    cena.agendador.retomar(alvo.id)
+    cena.agendador.pausar(alvo.id)
+    await cena.relogio.avancar_ate(t0 + 2)
+    lento.liberar.set()
+    await cena.relogio.avancar_ate(t0 + 3)
+    assert [t.para for _, t, _ in lento.transicoes] == [
+        Estado.SUSPEITO,
+        Estado.PAUSADO,
+        Estado.DESCONHECIDO,
+        Estado.PAUSADO,
+    ]
+    publicadas = [m.dados["estado"] for _, m in cena.barramento.do_tipo("estado")]
+    assert publicadas == [t.para.value for _, t, _ in lento.transicoes]
+
+
+async def test_cancelar_durante_gravacao_de_transicao_persiste() -> None:
+    cena, lento = _cena_lenta()
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [FALHA]
+    cena.agendador.adicionar(alvo)
+    tarefa = asyncio.create_task(cena.agendador.executar())
+    t0 = await _ate_primeira_execucao(cena, alvo.ip)
+    await cena.relogio.avancar_ate(t0 + 1)
+    assert lento.chamadas == ["primeira"]
+    tarefa.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    tarefa.cancel()  # segundo cancelamento não pode pular a drenagem
+    lento.liberar.set()
+    with pytest.raises(asyncio.CancelledError):
+        await tarefa
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert lento.chamadas == ["primeira", "transicao:suspeito", "descarregar"]
+
+
+async def test_adicionado_com_laco_rodando_checa_em_ate_5s(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    rodando(cena)
+    await cena.relogio.avancar_ate(10)
+    novos = [_alvo(n, critico=False) for n in range(20)]
+    for a in novos:
+        cena.agendador.adicionar(a)
+    await cena.relogio.avancar_ate(15 + 1e-9)
+    assert {ip for _, ip in cena.checagem.execucoes} == {a.ip for a in novos}
+
+
+async def test_carregado_antes_de_iniciar_espalha_no_intervalo(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    for n in range(20):
+        cena.agendador.adicionar(_alvo(n, critico=False))
+    rodando(cena)
+    await cena.relogio.avancar_ate(60)
+    primeiras = {ip: t for t, ip in reversed(cena.checagem.execucoes)}
+    assert len(primeiras) == 20
+    assert max(primeiras.values()) > 5.0
+
+
+async def test_atualizar_suspeito_mantem_reconfirmacao(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    alvo = _alvo(1, critico=False)
+    cena.checagem.roteiros[alvo.ip] = [FALHA, OK]
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    t0 = await _ate_primeira_execucao(cena, alvo.ip)
+    await cena.relogio.avancar_ate(t0 + 1)
+    cena.agendador.atualizar(alvo)
+    await cena.relogio.avancar_ate(t0 + 7)
+    vezes = cena.checagem.vezes(alvo.ip)
+    assert vezes[1] == pytest.approx(t0 + 1 + 5)
+    assert cena.limitador.pedidos[1] == (1, True)
+
+
+async def _em_voo(cena: Cena, alvo: Alvo) -> float:
+    cena.checagem.trava = asyncio.Event()
+    cena.agendador.adicionar(alvo)
+    return await _ate_primeira_execucao(cena, alvo.ip)
+
+
+async def _soltar(cena: Cena, ate: float) -> None:
+    assert cena.checagem.trava is not None
+    cena.checagem.trava.set()
+    await cena.relogio.avancar_ate(ate)
+
+
+async def test_pausar_com_checagem_em_voo(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [FALHA]
+    rodando(cena)
+    t0 = await _em_voo(cena, alvo)
+    cena.agendador.pausar(alvo.id)
+    await _soltar(cena, t0 + 120)
+    assert cena.checagem.vezes(alvo.ip) == [t0]
+    assert cena.gravador.amostras == []
+    assert [t.para for _, t, _ in cena.gravador.transicoes] == [Estado.PAUSADO]
+
+
+async def test_remover_com_checagem_em_voo(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    rodando(cena)
+    t0 = await _em_voo(cena, alvo)
+    cena.agendador.remover(alvo.id)
+    await _soltar(cena, t0 + 120)
+    assert cena.checagem.vezes(alvo.ip) == [t0]
+    assert cena.gravador.amostras == []
+
+
+async def test_atualizar_com_checagem_em_voo(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    rodando(cena)
+    t0 = await _em_voo(cena, alvo)
+    novo = replace(alvo, ip="10.99.9.9")
+    cena.agendador.atualizar(novo)
+    await _soltar(cena, t0 + 60)
+    assert cena.checagem.vezes(alvo.ip) == [t0]  # resultado antigo descartado, sem reagendar
+    assert all(i == alvo.id for i, _, _ in cena.gravador.amostras)
+    assert len(cena.gravador.amostras) == len(cena.checagem.vezes(novo.ip)) > 0
+
+
+async def test_retomar_com_checagem_em_voo(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [FALHA]
+    rodando(cena)
+    t0 = await _em_voo(cena, alvo)
+    cena.agendador.pausar(alvo.id)
+    cena.agendador.retomar(alvo.id)
+    await _soltar(cena, t0 + 1)
+    # a falha antiga não conta: nada de suspeito vindo dela
+    assert [t.para for _, t, _ in cena.gravador.transicoes] == [
+        Estado.PAUSADO,
+        Estado.DESCONHECIDO,
+    ]
+    await cena.relogio.avancar_ate(t0 + 40)
+    assert len(cena.checagem.vezes(alvo.ip)) >= 2  # reagendado pelo fim da checagem
