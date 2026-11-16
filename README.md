@@ -33,6 +33,32 @@ chave TLS legível por todos.
 > o limite de tentativas e o bloqueio por IP do login valem para todos juntos. O bloqueio
 > por login continua individual. Em Linux o IP real do cliente é preservado.
 
+## Rodar a demonstração
+
+A demonstração sobe o Sentinela com 300 equipamentos simulados (10.99.0.0/16), com estados
+ao vivo na lista. Nenhum pacote sai para a sua rede.
+
+Pré-requisitos: os mesmos da [Instalação](#instalação) (Docker Engine 25+, Compose 2.24.4+,
+`openssl` e `bash`; no Windows, o Git Bash).
+
+```bash
+./install.sh --demo
+```
+
+1. Ao final, o instalador mostra a URL: **https://localhost** (ou a porta configurada em
+   `SENTINELA_PORTA_HTTPS` no `.env`; por exemplo, https://localhost:8443).
+2. A senha do administrador é **impressa uma única vez**, na primeira subida. Anote-a, pois ela não
+   será mostrada de novo.
+3. O navegador avisa que o certificado não é confiável até que a CA local seja instalada.
+   Importe `certs/ca/sentinela-ca.crt` nas autoridades raiz confiáveis do sistema ou do
+   navegador para remover o aviso.
+
+Para parar a demonstração **sem apagar os dados** (não use `-v`):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.demo.yml down
+```
+
 ## Documentação
 
 - [Projeto arquitetônico](docs/arquitetura/ARQUITETURA.md)

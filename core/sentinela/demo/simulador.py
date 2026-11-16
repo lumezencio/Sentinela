@@ -91,7 +91,7 @@ def gerar_rede(seed: int = 366, total: int = 300) -> list[EquipamentoDemo]:
     """Rede sintética determinística: mesma ``seed`` e ``total``, mesma saída."""
     if total < len(_ESPECS):
         raise ValueError("total pequeno demais para cobrir todas as classes")
-    rng = random.Random(seed)  # noqa: S311 - dados sintéticos
+    rng = random.Random(seed)  # noqa: S311 - dados sintéticos, sem uso criptográfico  # nosec B311
     sufixos = rng.sample(range(1, 2**24), total)
     proximo_host: dict[int, int] = defaultdict(lambda: 10)
     rede: list[EquipamentoDemo] = []
@@ -138,7 +138,7 @@ class ChecagemSimulada:
         relogio: Relogio | None = None,
         rede: list[EquipamentoDemo] | None = None,
     ) -> None:
-        self._rng = random.Random(seed)  # noqa: S311 - dados sintéticos
+        self._rng = random.Random(seed)  # noqa: S311 - dados sintéticos, sem uso criptográfico  # nosec B311
         self._relogio: Relogio = relogio or RelogioReal()
         por_subrede: dict[str, list[str]] = defaultdict(list)
         for e in rede if rede is not None else gerar_rede(seed):

@@ -95,7 +95,7 @@ class Agendador:
         self._barramento = barramento
         self._gravador = gravador
         self._checagens = checagens
-        self._rng = rng or random.Random()  # noqa: S311 - jitter, não criptografia
+        self._rng = rng or random.Random()  # noqa: S311 - jitter de agendamento, sem uso criptográfico  # nosec B311
         self._agora_parede = agora_parede
         self._registros: dict[str, _Registro] = {}
         self._heap: list[tuple[float, int, str]] = []
