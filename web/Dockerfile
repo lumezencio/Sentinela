@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Front estático do Sentinela atrás do nginx sem privilégios (uid 101), TLS e cabeçalhos do §13.
 
 FROM node:22.23.5-alpine3.24 AS minificar

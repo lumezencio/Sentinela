@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Núcleo do Sentinela: FastAPI + monitor. Imagem final sem uv, sem pip, sem testes, usuário 10001.
 
 FROM ghcr.io/astral-sh/uv:0.11.19 AS uv
@@ -42,4 +41,4 @@ USER 10001:10001
 EXPOSE 8000
 VOLUME ["/dados"]
 # --forwarded-allow-ips: só o IP fixo do container web (rede interna 172.31.250.0/29), nunca "*"
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn --factory sentinela.main:criar_app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=172.31.250.2 --no-server-header"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn --factory sentinela.main:criar_app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=172.31.250.2 --no-server-header --no-access-log"]

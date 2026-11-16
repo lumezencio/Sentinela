@@ -36,10 +36,6 @@ if [[ $DEMO -eq 1 ]]; then
   COMPOSE+=(-f docker-compose.demo.yml)
 fi
 
-# nome montado numa variável: a regra do gitleaks para "chave de sessão preenchida" não
-# deve disparar no próprio instalador
-VAR_CHAVE="SENTINELA_CHAVE_SESSAO"
-
 falhar() {
   echo "erro: $*" >&2
   exit 1
@@ -51,22 +47,50 @@ done
 docker compose version >/dev/null 2>&1 || falhar "plugin 'docker compose' não encontrado"
 docker info >/dev/null 2>&1 || falhar "o Docker não está rodando"
 
+# versão_ok ATUAL MINIMA: compara "X.Y.Z" numericamente (sem sort -V, que falta no macOS)
+versao_ok() {
+  local atual="${1#v}" minima="$2" i a m
+  atual="${atual%%[-+]*}"
+  IFS=. read -r -a A <<<"$atual"
+  IFS=. read -r -a M <<<"$minima"
+  for i in 0 1 2; do
+    a="${A[i]:-0}"
+    m="${M[i]:-0}"
+    [[ "$a" =~ ^[0-9]+$ ]] || return 1
+    ((10#$a > 10#$m)) && return 0
+    ((10#$a < 10#$m)) && return 1
+  done
+  return 0
+}
+# Engine 25+: healthcheck start_interval; Compose 2.24.4+: tag !override e env_file com required
+MIN_ENGINE="25.0.0"
+MIN_COMPOSE="2.24.4"
+V_ENGINE="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+V_COMPOSE="$(docker compose version --short 2>/dev/null || true)"
+versao_ok "$V_ENGINE" "$MIN_ENGINE" ||
+  falhar "Docker Engine ${V_ENGINE:-desconhecido} é antigo demais; o Sentinela exige $MIN_ENGINE ou mais novo"
+versao_ok "$V_COMPOSE" "$MIN_COMPOSE" ||
+  falhar "Docker Compose ${V_COMPOSE:-desconhecido} é antigo demais; o Sentinela exige $MIN_COMPOSE ou mais novo"
+
 # ---------------------------------------------------------------- .env
 criar_env() {
   [[ -f .env.example ]] || falhar ".env.example não encontrado"
   local chave tmp
   chave="$(openssl rand -hex 32)"
   tmp="$(mktemp .env.XXXXXX)"
+  # se algo falhar no meio, não sobra um .env.XXXXXX com a chave
+  trap 'rm -f "$tmp"' EXIT
   chmod 600 "$tmp"
   while IFS= read -r linha || [[ -n "$linha" ]]; do
     case "$linha" in
-      "$VAR_CHAVE"=*) linha="$VAR_CHAVE=$chave" ;;
+      SENTINELA_CHAVE_SESSAO=*) linha="SENTINELA_CHAVE_SESSAO=$chave" ;;
       SENTINELA_PORTA_HTTPS=*) linha="SENTINELA_PORTA_HTTPS=${SENTINELA_PORTA_HTTPS:-443}" ;;
       SENTINELA_PORTA_HTTP=*) linha="SENTINELA_PORTA_HTTP=${SENTINELA_PORTA_HTTP:-80}" ;;
     esac
     printf '%s\n' "$linha"
   done <.env.example >"$tmp"
   mv "$tmp" .env
+  trap - EXIT
   echo "[ok] .env criado com uma chave de sessão nova"
 }
 
@@ -88,7 +112,7 @@ valor_env() {
   printf '%s' "${v:-$padrao}"
 }
 PORTA_HTTPS="$(valor_env SENTINELA_PORTA_HTTPS 443)"
-grep -qE "^${VAR_CHAVE}=.+" .env || falhar "$VAR_CHAVE vazia no .env"
+grep -qE '^SENTINELA_CHAVE_SESSAO=.+' .env || falhar "SENTINELA_CHAVE_SESSAO vazia no .env"
 
 # ---------------------------------------------------------------- certificados
 ip_valido() {
@@ -207,9 +231,18 @@ EOF
     setfacl -m u:101:r "$SRV_KEY" 2>/dev/null; then
     : # 600 + ACL de leitura só para o uid 101 (o chmod vem antes: ele mexeria na máscara)
   else
-    chmod 644 "$SRV_KEY"
     case "$(uname -s)" in
-      Linux) echo "[!] sem root nem setfacl: certs/web/servidor.key ficou legível por todos no host" >&2 ;;
+      Linux)
+        # sem root nem ACL, só daria para deixar a chave legível por todos: não
+        rm -f "$SRV_KEY" "$SRV_CRT"
+        sugestao="sudo ./install.sh"
+        if [[ $DEMO -eq 1 ]]; then sugestao+=" --demo"; fi
+        falhar "não consegui restringir certs/web/servidor.key ao uid 101 do nginx (sem root e sem setfacl); rode de novo com: $sugestao"
+        ;;
+      *)
+        # Docker Desktop (Windows/macOS): a montagem não usa as permissões Unix do host
+        chmod 600 "$SRV_KEY"
+        ;;
     esac
   fi
   CERT_NOVO=1

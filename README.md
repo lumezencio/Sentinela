@@ -13,6 +13,26 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 - **Monitora com educação:** checagens unicast com teto global de pacotes por segundo; câmeras e controles de acesso checados com mais frequência.
 - **Mostra bonito e leve:** Teia 3D, Organograma por classe, lista, modo telão para TV, alertas por Telegram.
 
+## Instalação
+
+Requisitos: **Docker Engine 25 ou mais novo** e **Docker Compose 2.24.4 ou mais novo**
+(o instalador confere e recusa versões antigas), `openssl` e `bash`.
+
+```bash
+./install.sh          # instalação real
+./install.sh --demo   # demonstração com 300 equipamentos simulados (volume próprio)
+```
+
+O instalador gera o `.env` (só se não existir), uma CA local e o certificado do host em
+`certs/`, sobe os containers e mostra a URL e o caminho da CA para instalar nos dispositivos.
+Em Linux sem root e sem `setfacl`, ele para e pede `sudo ./install.sh`, para não deixar a
+chave TLS legível por todos.
+
+> **Docker Desktop (Windows/macOS):** o encaminhamento de portas do Docker Desktop faz
+> todos os clientes chegarem ao nginx com o mesmo IP (o gateway da rede interna). Com isso,
+> o limite de tentativas e o bloqueio por IP do login valem para todos juntos. O bloqueio
+> por login continua individual. Em Linux o IP real do cliente é preservado.
+
 ## Documentação
 
 - [Projeto arquitetônico](docs/arquitetura/ARQUITETURA.md)
