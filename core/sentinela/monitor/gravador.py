@@ -15,7 +15,9 @@ MAX_PENDENTES = 100_000  # teto de memória se o banco ficar fora do ar (descart
 
 
 class GravadorAmostras(Protocol):
-    async def registrar_transicao(self, id: str, t: Transicao, em: datetime) -> None: ...
+    async def registrar_transicao(
+        self, id: str, t: Transicao, em: datetime, causa: str | None = None
+    ) -> None: ...
 
     def acumular_amostra(self, id: str, r: ResultadoChecagem, em: datetime) -> None: ...
 
@@ -31,7 +33,9 @@ class GravadorSql:
             maxlen=MAX_PENDENTES
         )
 
-    async def registrar_transicao(self, id: str, t: Transicao, em: datetime) -> None:
+    async def registrar_transicao(
+        self, id: str, t: Transicao, em: datetime, causa: str | None = None
+    ) -> None:
         async with self._sessoes() as s, s.begin():
             eq = await s.get(Equipamento, id)
             if eq is None:  # removido enquanto a checagem estava em voo
@@ -43,6 +47,7 @@ class GravadorSql:
                     para=t.para.value,
                     em=em,
                     duracao_s=max(0.0, (em - eq.estado_desde).total_seconds()),
+                    causa=causa,
                 )
             )
             eq.estado = t.para.value

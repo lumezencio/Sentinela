@@ -53,6 +53,16 @@ async def test_transicao_grava_evento_na_hora(sessoes: async_sessionmaker[AsyncS
     assert eq is not None and eq.estado == "suspeito" and eq.estado_desde == em
 
 
+async def test_transicao_grava_causa(sessoes: async_sessionmaker[AsyncSession]) -> None:
+    g = GravadorSql(sessoes)
+    await g.registrar_transicao(
+        "eq1", Transicao(Estado.ONLINE, Estado.PAUSADO), T0, causa="fora_das_subredes"
+    )
+    async with sessoes() as s:
+        ev = (await s.execute(select(Evento))).scalar_one()
+    assert ev.causa == "fora_das_subredes"
+
+
 async def test_transicao_de_equipamento_removido_e_ignorada(
     sessoes: async_sessionmaker[AsyncSession],
 ) -> None:

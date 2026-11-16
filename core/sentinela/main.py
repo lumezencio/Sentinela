@@ -6,11 +6,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from sentinela.api import auth, saude
+from sentinela.api import auth, classes, equipamentos, importacao, saude, subredes
 from sentinela.api.deps import verificar_csrf
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
+from sentinela.monitor.montagem import montar_monitor
 from sentinela.relogio import Relogio, RelogioReal
 from sentinela.seguranca.bloqueio import BloqueioFantasma, LimitadorIP
 
@@ -29,9 +30,20 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     try:
         async with app.state.sessoes() as db:
             await semear_classes(db)
+        await _montar_monitor(app, settings)
         yield
     finally:
         await motor.dispose()
+
+
+async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
+    """Guarda, barramento, limitador e agendador com os alvos do banco (laços não iniciados)."""
+    monitor = await montar_monitor(app.state.sessoes, settings)
+    app.state.guarda = monitor.guarda
+    app.state.barramento = monitor.barramento
+    app.state.limitador = monitor.limitador
+    app.state.gravador = monitor.gravador
+    app.state.agendador = monitor.agendador
 
 
 async def _erro_de_validacao(_request: Request, exc: Exception) -> JSONResponse:
@@ -65,4 +77,8 @@ def criar_app(settings: Settings | None = None, *, relogio: Relogio | None = Non
     app.state.falhas_fantasma = BloqueioFantasma(relogio)
     app.include_router(saude.router)
     app.include_router(auth.router)
+    app.include_router(subredes.router)
+    app.include_router(classes.router)
+    app.include_router(importacao.router)  # antes de /equipamentos/{id}
+    app.include_router(equipamentos.router)
     return app

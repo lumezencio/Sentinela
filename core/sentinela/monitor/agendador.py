@@ -105,7 +105,7 @@ class Agendador:
         self._fator_nao_critico = 1.0
         self._em_voo = asyncio.Semaphore(MAX_EM_VOO)
         self._tarefas: set[asyncio.Task[None]] = set()  # checagens em voo
-        self._transicoes: deque[tuple[str, Transicao, datetime]] = deque()
+        self._transicoes: deque[tuple[str, Transicao, datetime, str | None]] = deque()
         self._escritor: asyncio.Task[None] | None = None  # único gravador de transições
         self._rodando = False
         self._sinal: asyncio.Future[None] | None = None
@@ -152,16 +152,16 @@ class Agendador:
             else:
                 self._agendar_inicial(reg)
 
-    def pausar(self, id: str) -> None:
+    def pausar(self, id: str, causa: str | None = None) -> None:
         reg = self._registros.get(id)
         if reg is None:
             return
         reg.versao += 1
         self._vigente.pop(id, None)
-        self._transicao(id, reg.maquina.pausar())
+        self._transicao(id, reg.maquina.pausar(), causa=causa)
         self.recalcular()
 
-    def retomar(self, id: str) -> None:
+    def retomar(self, id: str, causa: str | None = None) -> None:
         reg = self._registros.get(id)
         if reg is None:
             return
@@ -169,7 +169,7 @@ class Agendador:
         if t is None:
             return
         reg.versao += 1
-        self._transicao(id, t)
+        self._transicao(id, t, causa=causa)
         self.recalcular()
         if not reg.em_voo:
             self._agendar_inicial(reg)
@@ -362,7 +362,13 @@ class Agendador:
             log.exception("falha ao acumular amostra (equipamento %s)", id)
         self._transicao(id, reg.maquina.aplicar(r), em)
 
-    def _transicao(self, id: str, t: Transicao | None, em: datetime | None = None) -> None:
+    def _transicao(
+        self,
+        id: str,
+        t: Transicao | None,
+        em: datetime | None = None,
+        causa: str | None = None,
+    ) -> None:
         """Publica na hora e enfileira a gravação no escritor serial (sem ``await``: a vaga
         de checagem é liberada antes da escrita no banco e não há gravação perdida)."""
         if t is None:
@@ -371,17 +377,22 @@ class Agendador:
             em = self._agora_parede()
         dados = {"id": id, "estado": t.para.value, "desde": em.isoformat()}
         self._barramento.publicar(Mensagem("estado", dados))
-        self._transicoes.append((id, t, em))
+        self._transicoes.append((id, t, em, causa))
         if self._escritor is None or self._escritor.done():
             self._escritor = asyncio.get_running_loop().create_task(self._escrever())
 
     async def _escrever(self) -> None:
         while self._transicoes:
-            id, t, em = self._transicoes.popleft()
+            id, t, em, causa = self._transicoes.popleft()
             try:
-                await self._gravador.registrar_transicao(id, t, em)
+                await self._gravador.registrar_transicao(id, t, em, causa=causa)
             except Exception:
                 log.exception("falha ao gravar transição (equipamento %s)", id)
+
+    async def aguardar_gravacoes(self) -> None:
+        """Espera o escritor serial esvaziar a fila (sem cancelá-lo se quem espera cair)."""
+        while self._escritor is not None and not self._escritor.done():
+            await asyncio.wait({self._escritor})
 
     async def _publicar_lotes(self) -> None:
         while True:

@@ -58,14 +58,22 @@ class DestinoAutorizado:
 
 class Guarda:
     def __init__(self, sub_redes: Iterable[IPv4Network], permitir_loopback: bool = False) -> None:
+        self._sub_redes: tuple[IPv4Network, ...] = ()
+        self._reservados: frozenset[IPv4Address] = frozenset()
+        self.atualizar(sub_redes)
+        self._permitir_loopback = permitir_loopback
+
+    def atualizar(self, sub_redes: Iterable[IPv4Network]) -> None:
+        """Troca as sub-redes in-place (quem guarda a referência vê a mudança).
+
+        Tudo é validado e calculado antes da troca: se uma rede é inválida, nada muda.
+        Lista vazia é permitida e recusa todo destino.
+        """
         redes = tuple(sub_redes)
         for rede in redes:
             self._checar_sub_rede(rede)
-        self._sub_redes: tuple[IPv4Network, ...] = redes
-        self._reservados: frozenset[IPv4Address] = frozenset(
-            a for r in redes for a in (r.network_address, r.broadcast_address)
-        )
-        self._permitir_loopback = permitir_loopback
+        reservados = frozenset(a for r in redes for a in (r.network_address, r.broadcast_address))
+        self._sub_redes, self._reservados = redes, reservados
 
     @staticmethod
     def _checar_sub_rede(rede: IPv4Network) -> IPv4Network:

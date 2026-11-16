@@ -20,7 +20,7 @@ from sentinela.relogio import RelogioFalso
 from sentinela.seguranca import senhas
 from sentinela.seguranca.senhas import gerar_hash, verificar
 from sentinela.seguranca.sessoes import hash_token
-from tests.seguranca.conftest import CriarUsuario
+from tests.conftest import CriarUsuario
 
 SENHA = "senha-de-teste-longa-1"
 MSG_INVALIDO = "Login ou senha inválidos."

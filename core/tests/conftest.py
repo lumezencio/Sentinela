@@ -1,15 +1,21 @@
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Protocol
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.config import Settings
 from sentinela.db.base import Base
+from sentinela.db.modelos import Usuario
 from sentinela.db.sessao import criar_motor
 from sentinela.main import criar_app
 from sentinela.relogio import RelogioFalso
+from sentinela.seguranca.senhas import gerar_hash
+
+SENHA_TESTE = "senha-de-teste-longa-1"
 
 
 @pytest.fixture
@@ -48,3 +54,47 @@ async def cliente(app: FastAPI, settings: Settings) -> AsyncIterator[httpx.Async
         transporte = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transporte, base_url="https://teste") as c:
             yield c
+
+
+class CriarUsuario(Protocol):
+    async def __call__(self, login: str, senha: str, papel: str = ...) -> Usuario: ...
+
+
+@pytest.fixture
+def criar_usuario(app: FastAPI) -> CriarUsuario:
+    """Cria usuário direto no banco (exige o `cliente` ativo, que roda o lifespan)."""
+
+    async def _criar(login: str, senha: str, papel: str = "visualizador") -> Usuario:
+        sessoes: async_sessionmaker[AsyncSession] = app.state.sessoes
+        async with sessoes() as db:
+            usuario = Usuario(login=login, hash_senha=gerar_hash(senha), papel=papel)
+            db.add(usuario)
+            await db.commit()
+            return usuario
+
+    return _criar
+
+
+async def _entrar(
+    cliente: httpx.AsyncClient, criar_usuario: CriarUsuario, login: str, papel: str
+) -> httpx.AsyncClient:
+    """Loga e passa a enviar o ``X-CSRF`` em toda requisição do cliente."""
+    await criar_usuario(login, SENHA_TESTE, papel)
+    r = await cliente.post("/api/v1/auth/login", json={"login": login, "senha": SENHA_TESTE})
+    assert r.status_code == 204
+    cliente.headers["X-CSRF"] = cliente.cookies["sentinela_csrf"]
+    return cliente
+
+
+@pytest.fixture
+async def cliente_admin(
+    cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> httpx.AsyncClient:
+    return await _entrar(cliente, criar_usuario, "admin-teste", "admin")
+
+
+@pytest.fixture
+async def cliente_visualizador(
+    cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> httpx.AsyncClient:
+    return await _entrar(cliente, criar_usuario, "visual-teste", "visualizador")

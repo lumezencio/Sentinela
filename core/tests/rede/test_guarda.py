@@ -163,3 +163,32 @@ def test_nenhum_so_broadcast_no_codigo() -> None:
         texto = arq.read_text(encoding="utf-8").lower()
         for p in proibidos:
             assert p not in texto, f"{p} encontrado em {arq}"
+
+
+# ---- atualizar (R3) --------------------------------------------------------
+
+
+def test_atualizar_troca_sub_redes_in_place() -> None:
+    g = Guarda([IPv4Network("10.99.0.0/24")])
+    g.atualizar([IPv4Network("10.99.1.0/24")])
+    assert g.validar("10.99.1.7", None, "icmp").ip == IPv4Address("10.99.1.7")
+    with pytest.raises(DestinoProibido, match="fora das sub-redes"):
+        g.validar("10.99.0.7", None, "icmp")
+    with pytest.raises(DestinoProibido, match="rede ou broadcast"):
+        g.validar("10.99.1.255", None, "icmp")
+
+
+def test_atualizar_com_lista_vazia_recusa_tudo() -> None:
+    g = Guarda([IPv4Network("10.99.0.0/24")])
+    g.atualizar([])
+    with pytest.raises(DestinoProibido):
+        g.validar("10.99.0.7", None, "icmp")
+
+
+def test_atualizar_invalido_nao_altera_nada() -> None:
+    g = Guarda([IPv4Network("10.99.0.0/24")])
+    with pytest.raises(DestinoProibido):
+        g.atualizar([IPv4Network("10.99.1.0/24"), IPv4Network("8.8.8.0/24")])
+    assert g.validar("10.99.0.7", None, "icmp").ip == IPv4Address("10.99.0.7")
+    with pytest.raises(DestinoProibido):
+        g.validar("10.99.1.7", None, "icmp")

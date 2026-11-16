@@ -1,0 +1,9 @@
+ï»¿nome;ip;mac;classe;checagem;porta
+Câmera portaria;10.99.0.10;02-00-00-00-00-01;Câmeras;icmp;
+Gravador NVR;10.99.0.11;02:00:00:00:00:02;gravador;tcp;554
+Roteador principal;10.99.0.1;;ROTEADOR;;
+Impressora recepção;10.99.0.20;;impressora;http;80
+Câmera duplicada;10.99.0.10;;camera;;
+Endereço inválido;10.99.0.300;;camera;;
+Cafeteira;10.99.0.30;;cafeteira;;
+Switch do rack;10.99.0.2;02:00:00:00:00:03;switch;;

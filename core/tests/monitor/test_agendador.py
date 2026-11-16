@@ -74,10 +74,14 @@ class ChecagemFalsa:
 class GravadorFalso:
     transicoes: list[tuple[str, Transicao, datetime]] = field(default_factory=list)
     amostras: list[tuple[str, ResultadoChecagem, datetime]] = field(default_factory=list)
+    causas: list[str | None] = field(default_factory=list)
     descargas: int = 0
 
-    async def registrar_transicao(self, id: str, t: Transicao, em: datetime) -> None:
+    async def registrar_transicao(
+        self, id: str, t: Transicao, em: datetime, causa: str | None = None
+    ) -> None:
         self.transicoes.append((id, t, em))
+        self.causas.append(causa)
 
     def acumular_amostra(self, id: str, r: ResultadoChecagem, em: datetime) -> None:
         self.amostras.append((id, r, em))
@@ -426,7 +430,7 @@ async def test_cancelar_encerra_checagens_em_voo_e_descarrega() -> None:
 async def test_falha_do_gravador_nao_para_o_agendador(rodando: Callable[[Cena], None]) -> None:
     cena = _cena()
 
-    async def explode(id: str, t: Transicao, em: datetime) -> None:
+    async def explode(id: str, t: Transicao, em: datetime, causa: str | None = None) -> None:
         raise RuntimeError("banco fora")
 
     cena.gravador.registrar_transicao = explode  # type: ignore[method-assign]
@@ -469,7 +473,9 @@ class GravadorLento(GravadorFalso):
     liberar: asyncio.Event = field(default_factory=asyncio.Event)
     chamadas: list[str] = field(default_factory=list)
 
-    async def registrar_transicao(self, id: str, t: Transicao, em: datetime) -> None:
+    async def registrar_transicao(
+        self, id: str, t: Transicao, em: datetime, causa: str | None = None
+    ) -> None:
         if not self.transicoes and not self.chamadas:
             self.chamadas.append("primeira")
             await self.liberar.wait()
@@ -650,3 +656,24 @@ async def test_retomar_com_checagem_em_voo(rodando: Callable[[Cena], None]) -> N
     ]
     await cena.relogio.avancar_ate(t0 + 40)
     assert len(cena.checagem.vezes(alvo.ip)) >= 2  # reagendado pelo fim da checagem
+
+
+# ---- Task 9: causa da pausa e espera das gravações -----------------------------------------
+
+
+async def test_pausar_e_retomar_com_causa_e_aguardar_gravacoes() -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.agendador.adicionar(alvo)
+    cena.agendador.pausar(alvo.id, causa="fora_das_subredes")
+    await cena.agendador.aguardar_gravacoes()
+    assert [t.para for _, t, _ in cena.gravador.transicoes] == [Estado.PAUSADO]
+    assert cena.gravador.causas == ["fora_das_subredes"]
+    cena.agendador.retomar(alvo.id, causa="manual")
+    await cena.agendador.aguardar_gravacoes()
+    assert cena.gravador.causas == ["fora_das_subredes", "manual"]
+    assert cena.agendador.estado_de(alvo.id) is Estado.DESCONHECIDO
+
+
+async def test_aguardar_gravacoes_sem_nada_pendente_retorna() -> None:
+    await _cena().agendador.aguardar_gravacoes()
