@@ -6,7 +6,7 @@ sub-redes privadas declaradas pelo administrador. Só a Guarda consegue criar um
 """
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass
 from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from typing import Literal, get_args
 
@@ -21,6 +21,8 @@ _RFC1918 = (
 )
 _PREFIXO_MIN = 16
 _PREFIXO_MAX = 30
+_BROADCAST_GLOBAL = IPv4Address("255.255.255.255")
+_LOOPBACK_TESTE = IPv4Address("127.0.0.1")
 
 # Sentinela privada do módulo: só a Guarda a conhece.
 _TOKEN = object()
@@ -36,29 +38,39 @@ class DestinoProibido(ValueError):
 
 @dataclass(frozen=True)
 class DestinoAutorizado:
-    """Destino validado. Não pode ser construído fora da Guarda."""
+    """Destino validado. Não pode ser construído fora da Guarda.
+
+    O token é um InitVar sem valor padrão: não fica guardado na instância, então
+    ``dataclasses.replace`` falha em vez de reaproveitá-lo. Honestidade: em Python
+    ``object.__setattr__`` e ``__new__`` não podem ser totalmente impedidos; a
+    proteção barra uso acidental e caminhos comuns, não código deliberadamente hostil.
+    """
 
     ip: IPv4Address
     porta: int | None
     protocolo: Protocolo
-    _token: object = field(repr=False, compare=False)
+    _token: InitVar[object]
 
-    def __post_init__(self) -> None:
-        if self._token is not _TOKEN:
+    def __post_init__(self, _token: object) -> None:
+        if _token is not _TOKEN:
             raise TypeError("DestinoAutorizado só pode ser criado pela Guarda")
 
 
 class Guarda:
     def __init__(self, sub_redes: Iterable[IPv4Network], permitir_loopback: bool = False) -> None:
-        self._sub_redes: tuple[IPv4Network, ...] = tuple(sub_redes)
+        redes = tuple(sub_redes)
+        for rede in redes:
+            self._checar_sub_rede(rede)
+        self._sub_redes: tuple[IPv4Network, ...] = redes
+        self._reservados: frozenset[IPv4Address] = frozenset(
+            a for r in redes for a in (r.network_address, r.broadcast_address)
+        )
         self._permitir_loopback = permitir_loopback
 
     @staticmethod
-    def validar_sub_rede(cidr: str) -> IPv4Network:
-        try:
-            rede = IPv4Network(cidr, strict=True)
-        except ValueError as e:
-            raise DestinoProibido(f"Sub-rede inválida: {cidr!r}.") from e
+    def _checar_sub_rede(rede: IPv4Network) -> IPv4Network:
+        if not isinstance(rede, IPv4Network):
+            raise DestinoProibido("Sub-rede inválida: esperado IPv4Network.")
         if not any(rede.subnet_of(privada) for privada in _RFC1918):
             raise DestinoProibido("A sub-rede deve ser privada (RFC 1918).")
         if not _PREFIXO_MIN <= rede.prefixlen <= _PREFIXO_MAX:
@@ -66,6 +78,14 @@ class Guarda:
                 f"O prefixo da sub-rede deve ficar entre /{_PREFIXO_MIN} e /{_PREFIXO_MAX}."
             )
         return rede
+
+    @staticmethod
+    def validar_sub_rede(cidr: str) -> IPv4Network:
+        try:
+            rede = IPv4Network(cidr, strict=True)
+        except ValueError as e:
+            raise DestinoProibido(f"Sub-rede inválida: {cidr!r}.") from e
+        return Guarda._checar_sub_rede(rede)
 
     def validar(
         self, ip: str | IPv4Address, porta: int | None, protocolo: Protocolo
@@ -96,15 +116,17 @@ class Guarda:
             if protocolo in _PROTOCOLOS_COM_PORTA:
                 raise DestinoProibido("Este protocolo exige uma porta.")
             return
+        if protocolo == "icmp":
+            raise DestinoProibido("ICMP não usa porta.")
         if isinstance(porta, bool) or not isinstance(porta, int) or not 1 <= porta <= 65535:
             raise DestinoProibido("Porta fora do intervalo 1-65535.")
 
     def _checar_endereco(self, ip: IPv4Address) -> None:
         if ip.is_loopback:
-            if self._permitir_loopback:
+            if self._permitir_loopback and ip == _LOOPBACK_TESTE:
                 return
             raise DestinoProibido("Loopback não é permitido.")
-        if ip == IPv4Address("255.255.255.255"):
+        if ip == _BROADCAST_GLOBAL:
             raise DestinoProibido("Broadcast não é permitido.")
         if ip.is_unspecified:
             raise DestinoProibido("Endereço não especificado (0.0.0.0) não é permitido.")
@@ -112,10 +134,7 @@ class Guarda:
             raise DestinoProibido("Multicast não é permitido.")
         if ip.is_link_local:
             raise DestinoProibido("Endereço link-local não é permitido.")
-        rede = next((r for r in self._sub_redes if ip in r), None)
-        if rede is None:
+        if not any(ip in r for r in self._sub_redes):
             raise DestinoProibido("Destino fora das sub-redes declaradas.")
-        if ip == rede.network_address:
-            raise DestinoProibido("Endereço de rede da sub-rede não é permitido.")
-        if ip == rede.broadcast_address:
-            raise DestinoProibido("Broadcast da sub-rede não é permitido.")
+        if ip in self._reservados:
+            raise DestinoProibido("Endereço de rede ou broadcast de sub-rede não é permitido.")
