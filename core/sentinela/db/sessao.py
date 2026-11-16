@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from sqlalchemy import event
@@ -10,8 +11,15 @@ from sqlalchemy.ext.asyncio import (
 
 
 def criar_motor(url: str) -> AsyncEngine:
-    """Motor assíncrono com WAL, chaves estrangeiras e busy_timeout em cada conexão."""
-    motor = create_async_engine(url)
+    """Motor assíncrono com WAL, chaves estrangeiras e busy_timeout em cada conexão.
+
+    Parâmetros de SQL nunca vão para o log (hashes de senha e de sessão passam por aqui):
+    ``hide_parameters`` no SQLAlchemy e o log DEBUG do aiosqlite (que os imprime) desligado.
+    """
+    log_aiosqlite = logging.getLogger("aiosqlite")
+    if log_aiosqlite.level < logging.INFO:
+        log_aiosqlite.setLevel(logging.INFO)
+    motor = create_async_engine(url, hide_parameters=True)
 
     @event.listens_for(motor.sync_engine, "connect")
     def _pragmas(dbapi_conn: Any, _registro: Any) -> None:
