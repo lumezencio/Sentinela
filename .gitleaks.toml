@@ -1,0 +1,10 @@
+title = "Sentinela"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "sentinela-chave-sessao"
+description = "SENTINELA_CHAVE_SESSAO com valor preenchido"
+regex = '''SENTINELA_CHAVE_SESSAO\s*[=:]\s*['"]?[^\s'"#]+'''
+tags = ["segredo", "sentinela"]
