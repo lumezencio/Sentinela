@@ -6,6 +6,8 @@ import itertools
 import time
 from typing import Protocol
 
+_MAX_CESSOES = 1000
+
 
 class Relogio(Protocol):
     def agora(self) -> float: ...
@@ -48,11 +50,24 @@ class RelogioFalso:
 
     async def avancar(self, s: float) -> None:
         """Avança o tempo e acorda, em ordem de prazo, quem estava dormindo."""
-        alvo = self._agora + s
-        while (prazo := self.proximo_prazo()) is not None and prazo <= alvo:
+        await self.avancar_ate(self._agora + s)
+
+    async def avancar_ate(self, prazo: float) -> None:
+        """Avança passo a passo por todos os prazos vencidos até ``prazo`` (inclusive)."""
+        await self._assentar()
+        while (proximo := self.proximo_prazo()) is not None and proximo <= prazo:
             _, _, futuro = heapq.heappop(self._dorminhocos)
-            self._agora = max(self._agora, prazo)
+            self._agora = max(self._agora, proximo)
             futuro.set_result(None)
-            for _ in range(5):  # cede o laço para o acordado rodar (e talvez dormir de novo)
-                await asyncio.sleep(0)
-        self._agora = max(self._agora, alvo)
+            await self._assentar()
+        self._agora = max(self._agora, prazo)
+
+    @staticmethod
+    async def _assentar() -> None:
+        """Cede o laço até não restar nenhuma tarefa pronta (cadeias profundas de espera)."""
+        pronto = getattr(asyncio.get_running_loop(), "_ready", None)
+        for _ in range(_MAX_CESSOES):
+            await asyncio.sleep(0)
+            if pronto is None or not pronto:
+                return
+        raise RuntimeError("laço não assentou: tarefas em laço sem dormir no relógio falso")

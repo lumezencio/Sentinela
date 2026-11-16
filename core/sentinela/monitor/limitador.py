@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from sentinela.relogio import Relogio
 
 _EPS = 1e-9
+CUSTO_MAX = 3  # custo de uma checagem HTTP: a capacidade nunca fica abaixo disso
 
 
 @dataclass
@@ -17,6 +18,9 @@ class _Espera:
 
 
 class Limitador:
+    """Token bucket global. O balde começa cheio: em qualquer janela de 1 s o consumo fica em
+    no máximo ``capacidade + taxa`` (o teto vale "em regime", a rajada inicial é aceita)."""
+
     def __init__(self, taxa: float, relogio: Relogio, capacidade: int | None = None) -> None:
         self._validar_taxa(taxa)
         self._relogio = relogio
@@ -34,7 +38,9 @@ class Limitador:
 
     @property
     def capacidade(self) -> float:
-        return float(self._capacidade_fixa) if self._capacidade_fixa is not None else self._taxa
+        if self._capacidade_fixa is not None:
+            return float(max(self._capacidade_fixa, CUSTO_MAX))
+        return max(self._taxa, float(CUSTO_MAX))
 
     def definir_taxa(self, taxa: float) -> None:
         self._validar_taxa(taxa)
@@ -74,6 +80,10 @@ class Limitador:
             cabeca = self._fila[0]
             if cabeca.futuro.done():  # chamador cancelou
                 self._fila.popleft()
+                continue
+            if cabeca.custo > self.capacidade:  # defesa: nunca travar a fila
+                self._fila.popleft()
+                cabeca.futuro.set_exception(ValueError("custo maior que a capacidade"))
                 continue
             if self._tokens + _EPS >= cabeca.custo:
                 self._tokens = max(0.0, self._tokens - cabeca.custo)
