@@ -1,0 +1,45 @@
+# Segredos e configuração local
+.env
+.env.*
+!.env.example
+certs/
+*.pem
+*.key
+*.crt
+
+# Dados reais de rede — NUNCA no repositório público
+dados/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.csv
+!**/fixtures/**/*.csv
+*.pcap
+*.pcapng
+backups/
+capturas/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Front
+node_modules/
+web/dist/
+*.map
+
+# Editores e SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
