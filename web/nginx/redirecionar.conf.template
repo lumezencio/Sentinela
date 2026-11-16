@@ -1,0 +1,5 @@
+# Gerado pelo entrypoint (envsubst) com a porta HTTPS publicada no host.
+# A porta vai sempre explícita (":443" é URL válida e o navegador normaliza).
+location / {
+    return 301 https://$host:${SENTINELA_PORTA_HTTPS}$request_uri;
+}

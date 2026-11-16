@@ -1,0 +1,82 @@
+# Sentinela: instale com ./install.sh (gera .env, certificados e sobe tudo).
+# Portas 443/80 publicadas só na LAN, nunca no roteador de borda.
+name: sentinela
+
+x-endurecido: &endurecido
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  core:
+    <<: *endurecido
+    image: ghcr.io/lumezencio/sentinela-core:${VERSAO:-latest}
+    build: ./core
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # falha ao subir se a chave estiver vazia (rode ./install.sh)
+      SENTINELA_CHAVE_SESSAO: ${SENTINELA_CHAVE_SESSAO:?defina SENTINELA_CHAVE_SESSAO no .env (rode ./install.sh)} # gitleaks:allow (referência, não valor)
+    volumes: ["sentinela_dados:/dados"]
+    # ICMP sem privilégio (socket datagrama), sem precisar de NET_RAW
+    sysctls: { net.ipv4.ping_group_range: "0 2147483647" }
+    user: "10001:10001"
+    tmpfs: [/tmp]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    networks: [interna]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+  web:
+    <<: *endurecido
+    image: ghcr.io/lumezencio/sentinela-web:${VERSAO:-latest}
+    build: ./web
+    ports:
+      - "${SENTINELA_PORTA_HTTPS:-443}:8443"
+      - "${SENTINELA_PORTA_HTTP:-80}:8080"
+    environment:
+      SENTINELA_PORTA_HTTPS: ${SENTINELA_PORTA_HTTPS:-443}
+    depends_on:
+      core: { condition: service_healthy }
+    volumes: ["./certs/web:/certs:ro"]
+    tmpfs: [/tmp, /var/cache/nginx, /var/run]
+    mem_limit: 64m
+    cpus: 0.5
+    pids_limit: 64
+    networks:
+      interna:
+        # IP fixo: é o único em que o core confia para X-Forwarded-* (--forwarded-allow-ips)
+        ipv4_address: 172.31.250.2
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/saude-web"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
+
+networks:
+  interna:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/29
+          gateway: 172.31.250.1
+          # .1 gateway, .2 web (fixo); core e containers avulsos (compose run) recebem
+          # IP dinâmico só em .4-.6, para nunca ocuparem o IP do web
+          ip_range: 172.31.250.4/30
+
+volumes:
+  sentinela_dados:
+    name: sentinela_dados

@@ -1,0 +1,4 @@
+# Lista branca: só o front estático e a configuração do nginx (sem tests/).
+*
+!src/
+!nginx/

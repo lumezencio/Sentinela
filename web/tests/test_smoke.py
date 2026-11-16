@@ -6,7 +6,8 @@ Rodar (de ``core/``)::
     uv run --with pytest-playwright --with cryptography pytest ../web/tests -q
 
 Contra o compose (Task 13): defina ``SENTINELA_URL_SMOKE``, ``SENTINELA_SMOKE_LOGIN`` e
-``SENTINELA_SMOKE_SENHA``; a queda do core vira ``docker compose stop/start core``.
+``SENTINELA_SMOKE_SENHA``; a queda do core vira ``docker compose stop/start core`` só com
+URL local e ``SENTINELA_SMOKE_COMPOSE_LOCAL=1`` (senão o cenário é pulado).
 """
 
 import gzip
@@ -117,6 +118,8 @@ def test_primeira_tela_leve_e_sem_erros_no_console(page: Page, alvo: Alvo) -> No
     page.on("console", lambda m: _anotar_erro(erros, m))
     page.on("pageerror", lambda e: erros.append(str(e)))
     entrar(page, alvo)  # o login também precisa passar sem violação de CSP
+    # sem cache: o nginx manda "no-cache" e a revalidação viraria 304 sem corpo para medir
+    page.context.new_cdp_session(page).send("Network.setCacheDisabled", {"cacheDisabled": True})
     page.on("response", lambda r: respostas.append(r))
     page.reload()
     expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)

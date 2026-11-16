@@ -1,0 +1,9 @@
+# Lista branca: a imagem leva só o necessário para rodar (sem tests/, .git, .env, caches).
+*
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!alembic/
+!sentinela/
+**/__pycache__
+**/*.py[cod]

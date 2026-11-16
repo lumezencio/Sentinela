@@ -6,7 +6,9 @@ descartável) em 127.0.0.1 com banco SQLite temporário, modo demonstração e u
 
 Com ``SENTINELA_URL_SMOKE``: usa a URL dada (compose) e as credenciais de
 ``SENTINELA_SMOKE_LOGIN``/``SENTINELA_SMOKE_SENHA``; derrubar/levantar o core vira
-``docker compose stop/start core``.
+``docker compose stop/start core`` SÓ se a URL for local (localhost/127.0.0.1) e
+``SENTINELA_SMOKE_COMPOSE_LOCAL=1``; fora disso o cenário de queda é pulado (nunca mexe
+em containers de outra máquina ou de outro projeto).
 """
 
 import asyncio
@@ -22,6 +24,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -190,6 +193,28 @@ class ServidorLocal:
         self._servidor = None
 
 
+class CoreIntocavel:
+    """Alvo remoto ou sem autorização explícita: o cenário de queda do core é pulado."""
+
+    MOTIVO = (
+        "queda do core no compose exige URL local (localhost/127.0.0.1) e "
+        "SENTINELA_SMOKE_COMPOSE_LOCAL=1; cenário pulado"
+    )
+
+    def derrubar(self) -> None:
+        pytest.skip(self.MOTIVO)
+
+    def levantar(self) -> None:  # pragma: no cover - derrubar já pulou
+        pytest.skip(self.MOTIVO)
+
+
+def _compose_local_autorizado(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    return host in ("localhost", "127.0.0.1") and (
+        os.environ.get("SENTINELA_SMOKE_COMPOSE_LOCAL") == "1"
+    )
+
+
 class CoreCompose:
     def _compose(self, acao: str) -> None:
         subprocess.run(  # noqa: S603 - comando fixo
@@ -214,7 +239,7 @@ def alvo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]:
             url=url.rstrip("/"),
             login=os.environ["SENTINELA_SMOKE_LOGIN"],
             senha=os.environ["SENTINELA_SMOKE_SENHA"],
-            core=CoreCompose(),
+            core=CoreCompose() if _compose_local_autorizado(url) else CoreIntocavel(),
         )
         return
     pasta = tmp_path_factory.mktemp("smoke")
