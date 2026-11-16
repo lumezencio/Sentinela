@@ -46,8 +46,7 @@ async def _aplicar(request: Request, db: SessaoDB) -> None:
     guarda.atualizar(redes)
     for id in pausar:
         agendador.pausar(id, causa="fora_das_subredes")
-    for alvo in adicionar:
-        agendador.adicionar(alvo)
+    agendador.adicionar_lote(adicionar)
     await agendador.aguardar_gravacoes()
 
 

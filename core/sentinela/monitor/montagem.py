@@ -80,6 +80,6 @@ async def montar_monitor(sessoes: async_sessionmaker[AsyncSession], settings: Se
         linhas = await db.execute(
             select(Equipamento, Classe).join(Classe, Equipamento.classe_id == Classe.id)
         )
-        for eq, classe in linhas:
-            agendador.adicionar(alvo_de(eq, classe))  # fora das sub-redes: recusado
+        # um único recalcular para todos; fora das sub-redes: recusado
+        agendador.adicionar_lote(alvo_de(eq, classe) for eq, classe in linhas)
     return Monitor(guarda, barramento, limitador, gravador, agendador)

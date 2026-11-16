@@ -34,7 +34,8 @@ def relogio() -> RelogioFalso:
 
 @pytest.fixture
 def app(settings: Settings, relogio: RelogioFalso) -> FastAPI:
-    return criar_app(settings, relogio=relogio)
+    # laços do monitor desligados: nenhum teste de API dispara sonda de rede real
+    return criar_app(settings, relogio=relogio, iniciar_monitor=False)
 
 
 async def criar_esquema(banco_url: str) -> None:

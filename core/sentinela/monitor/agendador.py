@@ -20,7 +20,7 @@ import logging
 import math
 import random
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import cast
@@ -114,19 +114,36 @@ class Agendador:
     # ---- cadastro ---------------------------------------------------------------------------
 
     def adicionar(self, alvo: Alvo) -> None:
-        if alvo.id in self._registros:
-            self.atualizar(alvo)
-            return
-        autorizado = self._autorizar(alvo)
-        if autorizado is None:
-            return
-        destino, checagem = autorizado
-        inicial = Estado.ONLINE if alvo.estado is Estado.SUSPEITO else alvo.estado
-        reg = _Registro(replace(alvo), destino, checagem, MaquinaEstados(inicial))
-        self._registros[alvo.id] = reg
-        self.recalcular()
-        if reg.ativo:
-            self._agendar_inicial(reg, rapido=self._rodando)
+        self.adicionar_lote((alvo,))
+
+    def adicionar_lote(self, alvos: Iterable[Alvo]) -> None:
+        """Registra vários alvos com um único ``recalcular`` (carga inicial, CSV, sub-redes).
+
+        Cada alvo segue as regras de ``adicionar``: id já conhecido vira atualização, destino
+        proibido é recusado (``alvo_recusado``) e, com o laço rodando, a primeira checagem
+        acontece em até 5 s.
+        """
+        novos: list[_Registro] = []
+        conhecidos: list[Alvo] = []
+        for alvo in alvos:
+            if alvo.id in self._registros:
+                conhecidos.append(alvo)
+                continue
+            autorizado = self._autorizar(alvo)
+            if autorizado is None:
+                continue
+            destino, checagem = autorizado
+            inicial = Estado.ONLINE if alvo.estado is Estado.SUSPEITO else alvo.estado
+            reg = _Registro(replace(alvo), destino, checagem, MaquinaEstados(inicial))
+            self._registros[alvo.id] = reg
+            novos.append(reg)
+        if novos:
+            self.recalcular()  # antes de agendar: a janela inicial usa o intervalo esticado
+            for reg in novos:
+                if reg.ativo:
+                    self._agendar_inicial(reg, rapido=self._rodando)
+        if conhecidos:
+            self.atualizar_lote(conhecidos)
 
     def remover(self, id: str) -> None:
         if self._registros.pop(id, None) is not None:
@@ -134,23 +151,39 @@ class Agendador:
             self.recalcular()
 
     def atualizar(self, alvo: Alvo) -> None:
-        reg = self._registros.get(alvo.id)
-        if reg is None:
-            self.adicionar(alvo)
-            return
-        autorizado = self._autorizar(alvo)
-        if autorizado is None:
-            self.remover(alvo.id)
-            return
-        reg.destino, reg.checagem = autorizado
-        reg.alvo = replace(alvo, estado=reg.maquina.estado)
-        reg.versao += 1  # resultado em voo é do destino antigo: descartado
-        self.recalcular()
-        if reg.ativo and not reg.em_voo:
-            if reg.maquina.precisa_confirmar:
-                self._agendar_proxima(reg)  # mantém a reconfirmação em 5 s com prioridade
-            else:
-                self._agendar_inicial(reg)
+        self.atualizar_lote((alvo,))
+
+    def atualizar_lote(self, alvos: Iterable[Alvo]) -> None:
+        """Atualiza vários alvos com um único ``recalcular``; desconhecidos são adicionados e
+        os que passam a ter destino proibido são removidos."""
+        desconhecidos: list[Alvo] = []
+        alterados: list[_Registro] = []
+        mudou = False
+        for alvo in alvos:
+            reg = self._registros.get(alvo.id)
+            if reg is None:
+                desconhecidos.append(alvo)
+                continue
+            mudou = True
+            autorizado = self._autorizar(alvo)
+            if autorizado is None:
+                del self._registros[alvo.id]
+                self._vigente.pop(alvo.id, None)
+                continue
+            reg.destino, reg.checagem = autorizado
+            reg.alvo = replace(alvo, estado=reg.maquina.estado)
+            reg.versao += 1  # resultado em voo é do destino antigo: descartado
+            alterados.append(reg)
+        if mudou:
+            self.recalcular()
+        for reg in alterados:
+            if self._registros.get(reg.alvo.id) is reg and reg.ativo and not reg.em_voo:
+                if reg.maquina.precisa_confirmar:
+                    self._agendar_proxima(reg)  # mantém a reconfirmação em 5 s com prioridade
+                else:
+                    self._agendar_inicial(reg)
+        if desconhecidos:
+            self.adicionar_lote(desconhecidos)
 
     def pausar(self, id: str, causa: str | None = None) -> None:
         reg = self._registros.get(id)
@@ -172,7 +205,7 @@ class Agendador:
         self._transicao(id, t, causa=causa)
         self.recalcular()
         if not reg.em_voo:
-            self._agendar_inicial(reg)
+            self._agendar_inicial(reg, rapido=self._rodando)  # R13: com o laço, em até 5 s
 
     def estado_de(self, id: str) -> Estado | None:
         reg = self._registros.get(id)
@@ -284,8 +317,20 @@ class Agendador:
                 self._lancar(self._registros[id])
         finally:
             self._rodando = False
-            # blindado: um segundo cancelamento não pula a drenagem nem o descarregar
-            await asyncio.shield(self._encerrar(lote))
+            await self._encerrar_blindado(lote)
+
+    async def _encerrar_blindado(self, lote: asyncio.Task[None]) -> None:
+        """Drena até o fim mesmo sob cancelamentos repetidos; depois repassa o cancelamento."""
+        encerramento = asyncio.ensure_future(self._encerrar(lote))
+        cancelado = False
+        while not encerramento.done():
+            try:
+                await asyncio.shield(encerramento)
+            except asyncio.CancelledError:
+                cancelado = True
+        encerramento.result()  # propaga falha inesperada da drenagem
+        if cancelado:
+            raise asyncio.CancelledError
 
     async def _encerrar(self, lote: asyncio.Task[None]) -> None:
         canceladas = [lote, *self._tarefas]

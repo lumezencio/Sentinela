@@ -1,10 +1,11 @@
 """Dependências comuns da API: sessão de banco, usuário autenticado, papel e CSRF."""
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
+from fastapi.requests import HTTPConnection
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.modelos import Usuario
@@ -26,10 +27,18 @@ async def obter_sessao(request: Request) -> AsyncIterator[AsyncSession]:
 SessaoDB = Annotated[AsyncSession, Depends(obter_sessao)]
 
 
+async def usuario_do_cookie(db: AsyncSession, cookies: Mapping[str, str]) -> Usuario | None:
+    """Dono da sessão do cookie, ou None se ausente, desconhecida, revogada ou expirada.
+
+    Compartilhada pelas rotas HTTP (``usuario_atual``) e pelo WebSocket.
+    """
+    token = cookies.get(COOKIE_SESSAO)
+    return await usuario_da_sessao(db, token, agora_utc()) if token else None
+
+
 async def usuario_atual(request: Request, db: SessaoDB) -> Usuario:
     """Usuário da sessão do cookie; 401 se ausente, desconhecida, revogada ou expirada."""
-    token = request.cookies.get(COOKIE_SESSAO)
-    usuario = await usuario_da_sessao(db, token, agora_utc()) if token else None
+    usuario = await usuario_do_cookie(db, request.cookies)
     if usuario is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Não autenticado.")
     return usuario
@@ -53,14 +62,15 @@ def isento_de_csrf[F: Callable[..., Any]](endpoint: F) -> F:
     return endpoint
 
 
-async def verificar_csrf(request: Request) -> None:
+async def verificar_csrf(conexao: HTTPConnection) -> None:
     """Em escrita (POST/PUT/PATCH/DELETE), o cabeçalho ``X-CSRF`` deve igualar o cookie.
 
     Aplicada globalmente em ``criar_app``; isenções explícitas via ``isento_de_csrf``.
+    WebSocket não tem método de escrita: a proteção dele é a checagem de ``Origin`` (``ws``).
     """
-    if request.method not in METODOS_ESCRITA:
+    if conexao.scope["type"] != "http" or conexao.scope.get("method") not in METODOS_ESCRITA:
         return
-    if request.scope.get("endpoint") in _ISENTOS_DE_CSRF:
+    if conexao.scope.get("endpoint") in _ISENTOS_DE_CSRF:
         return
-    if not tokens_conferem(request.cookies.get(COOKIE_CSRF), request.headers.get(CABECALHO_CSRF)):
+    if not tokens_conferem(conexao.cookies.get(COOKIE_CSRF), conexao.headers.get(CABECALHO_CSRF)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Falha na verificação CSRF.")

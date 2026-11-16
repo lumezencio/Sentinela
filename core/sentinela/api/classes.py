@@ -79,8 +79,8 @@ async def editar(
     equipamentos = (
         await db.execute(select(Equipamento).where(Equipamento.classe_id == classe.id))
     ).scalars()
-    for eq in equipamentos:
-        if agendador.estado_de(eq.id) is not None:
-            agendador.atualizar(alvo_de(eq, classe))
-    agendador.recalcular()
+    # um único recalcular para a classe inteira (R17)
+    agendador.atualizar_lote(
+        [alvo_de(eq, classe) for eq in equipamentos if agendador.estado_de(eq.id) is not None]
+    )
     return _saida(classe)

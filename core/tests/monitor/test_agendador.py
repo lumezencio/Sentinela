@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -545,8 +546,26 @@ async def test_cancelar_durante_gravacao_de_transicao_persiste() -> None:
     lento.liberar.set()
     with pytest.raises(asyncio.CancelledError):
         await tarefa
-    for _ in range(10):
-        await asyncio.sleep(0)
+    # R18: ``executar`` só termina depois da drenagem, mesmo com cancelamentos repetidos
+    assert lento.chamadas == ["primeira", "transicao:suspeito", "descarregar"]
+
+
+async def test_cancelamentos_repetidos_aguardam_a_drenagem() -> None:
+    cena, lento = _cena_lenta()
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [FALHA]
+    cena.agendador.adicionar(alvo)
+    tarefa = asyncio.create_task(cena.agendador.executar())
+    t0 = await _ate_primeira_execucao(cena, alvo.ip)
+    await cena.relogio.avancar_ate(t0 + 1)
+    for _ in range(4):  # cancela de novo a cada volta enquanto a gravação está presa
+        tarefa.cancel()
+        for _ in range(3):
+            await asyncio.sleep(0)
+    assert not tarefa.done()
+    lento.liberar.set()
+    with pytest.raises(asyncio.CancelledError):
+        await tarefa
     assert lento.chamadas == ["primeira", "transicao:suspeito", "descarregar"]
 
 
@@ -677,3 +696,93 @@ async def test_pausar_e_retomar_com_causa_e_aguardar_gravacoes() -> None:
 
 async def test_aguardar_gravacoes_sem_nada_pendente_retorna() -> None:
     await _cena().agendador.aguardar_gravacoes()
+
+
+# ---- Task 10: lotes (R17) e retomada rápida (R13) ------------------------------------------
+
+
+class AgendadorContado(Agendador):
+    recalculos = 0
+
+    def recalcular(self) -> None:
+        self.recalculos += 1
+        super().recalcular()
+
+
+def _cena_contada() -> tuple[Cena, AgendadorContado]:
+    cena = _cena()
+    contado = AgendadorContado(
+        guarda=Guarda([REDE]),
+        limitador=cena.limitador,
+        relogio=cena.relogio,
+        barramento=cena.barramento,
+        gravador=cena.gravador,
+        checagens=lambda _tipo: cena.checagem,
+        rng=random.Random(7),  # noqa: S311 - jitter determinístico no teste
+        agora_parede=lambda: INICIO_PAREDE,
+    )
+    cena.agendador = contado
+    return cena, contado
+
+
+async def test_adicionar_lote_recalcula_uma_vez() -> None:
+    cena, contado = _cena_contada()
+    contado.adicionar_lote([_alvo(n) for n in range(30)])
+    assert contado.recalculos == 1
+    assert all(contado.estado_de(f"eq{n}") is Estado.ONLINE for n in range(30))
+
+
+async def test_adicionar_lote_de_5000_em_menos_de_meio_segundo() -> None:
+    cena = _cena()
+    alvos = [_alvo(n, critico=n % 5 == 0) for n in range(5000)]
+    inicio = time.perf_counter()
+    cena.agendador.adicionar_lote(alvos)
+    assert time.perf_counter() - inicio < 0.5
+    assert cena.agendador.estado_de("eq4999") is Estado.ONLINE
+
+
+async def test_adicionar_lote_recusa_e_atualiza_como_adicionar() -> None:
+    cena = _cena()
+    cena.agendador.adicionar(_alvo(1, intervalo=30.0))
+    fora = replace(_alvo(2), ip="192.168.200.1")
+    cena.agendador.adicionar_lote([_alvo(1, intervalo=45.0), fora, _alvo(3)])
+    assert cena.agendador.intervalo_efetivo("eq1") == 45.0
+    assert cena.agendador.estado_de("eq2") is None
+    assert cena.agendador.estado_de("eq3") is Estado.ONLINE
+    assert [m.dados["id"] for _, m in cena.barramento.do_tipo("alvo_recusado")] == ["eq2"]
+
+
+async def test_adicionar_lote_com_laco_rodando_checa_em_ate_5s(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    rodando(cena)
+    await cena.relogio.avancar_ate(10)
+    novos = [_alvo(n, critico=False) for n in range(20)]
+    cena.agendador.adicionar_lote(novos)
+    await cena.relogio.avancar_ate(15 + 1e-9)
+    assert {ip for _, ip in cena.checagem.execucoes} == {a.ip for a in novos}
+
+
+async def test_atualizar_lote_recalcula_uma_vez() -> None:
+    cena, contado = _cena_contada()
+    contado.adicionar_lote([_alvo(n, critico=False) for n in range(10)])
+    contado.recalculos = 0
+    contado.atualizar_lote([_alvo(n, critico=False, intervalo=120.0) for n in range(10)])
+    assert contado.recalculos == 1
+    assert all(contado.intervalo_efetivo(f"eq{n}") == 120.0 for n in range(10))
+
+
+async def test_retomar_com_laco_rodando_checa_em_ate_5s(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    alvos = [_alvo(n, critico=False) for n in range(20)]
+    cena.agendador.adicionar_lote(alvos)
+    for a in alvos:
+        cena.agendador.pausar(a.id)
+    rodando(cena)
+    await cena.relogio.avancar_ate(100)
+    assert cena.checagem.execucoes == []
+    for a in alvos:
+        cena.agendador.retomar(a.id)
+    await cena.relogio.avancar_ate(105 + 1e-9)
+    assert {ip for _, ip in cena.checagem.execucoes} == {a.ip for a in alvos}

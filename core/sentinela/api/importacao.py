@@ -168,6 +168,5 @@ async def importar(request: Request, db: SessaoDB, admin: Admin) -> ResultadoImp
         raise erro(status.HTTP_409_CONFLICT, "Conflito com outro equipamento.") from None
 
     agendador: Agendador = request.app.state.agendador
-    for eq, classe in novos:
-        agendador.adicionar(alvo_de(eq, classe))
+    agendador.adicionar_lote(alvo_de(eq, classe) for eq, classe in novos)
     return ResultadoImportacao(importados=len(novos), erros=erros)
