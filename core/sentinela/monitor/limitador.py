@@ -37,6 +37,10 @@ class Limitador:
             raise ValueError("taxa deve ser positiva")
 
     @property
+    def taxa(self) -> float:
+        return self._taxa
+
+    @property
     def capacidade(self) -> float:
         if self._capacidade_fixa is not None:
             return float(max(self._capacidade_fixa, CUSTO_MAX))

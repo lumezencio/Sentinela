@@ -85,6 +85,13 @@ async def test_definir_taxa_em_execucao() -> None:
     assert relogio.agora() == pytest.approx(0.1)
 
 
+async def test_taxa_exposta_para_leitura() -> None:
+    lim = Limitador(20, RelogioFalso())
+    assert lim.taxa == 20
+    lim.definir_taxa(35)
+    assert lim.taxa == 35
+
+
 async def test_taxa_invalida() -> None:
     with pytest.raises(ValueError):
         Limitador(0, RelogioFalso())
