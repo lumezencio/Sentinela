@@ -14,6 +14,7 @@ from sentinela.api.deps import verificar_csrf
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
+from sentinela.demo.simulador import ChecagemSimulada, semear_demo
 from sentinela.monitor.gravador import GravadorAmostras
 from sentinela.monitor.montagem import montar_monitor
 from sentinela.relogio import Relogio, RelogioReal
@@ -47,7 +48,12 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
 
 async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     """Guarda, barramento, limitador e agendador com os alvos do banco (laços não iniciados)."""
-    monitor = await montar_monitor(app.state.sessoes, settings)
+    if settings.demo:
+        await semear_demo(app.state.sessoes)
+        simulada = ChecagemSimulada(relogio=app.state.relogio)  # uma por app, para todo tipo
+        monitor = await montar_monitor(app.state.sessoes, settings, lambda _tipo: simulada)
+    else:
+        monitor = await montar_monitor(app.state.sessoes, settings)
     app.state.guarda = monitor.guarda
     app.state.barramento = monitor.barramento
     app.state.limitador = monitor.limitador

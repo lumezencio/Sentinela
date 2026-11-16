@@ -3,6 +3,7 @@
 Usado pelo lifespan (R4). Os laços (``executar``, descarregar) NÃO são iniciados aqui.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from ipaddress import IPv4Network
 
@@ -13,6 +14,7 @@ from sentinela.barramento import Barramento
 from sentinela.config import Settings
 from sentinela.db.modelos import Classe, Equipamento, SubRede
 from sentinela.monitor.agendador import Agendador, Alvo
+from sentinela.monitor.checagens import Checagem, checagem_para
 from sentinela.monitor.estados import Estado
 from sentinela.monitor.gravador import GravadorSql
 from sentinela.monitor.limitador import Limitador
@@ -63,7 +65,11 @@ async def sub_redes_do_banco(db: AsyncSession) -> list[IPv4Network]:
     return redes
 
 
-async def montar_monitor(sessoes: async_sessionmaker[AsyncSession], settings: Settings) -> Monitor:
+async def montar_monitor(
+    sessoes: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    checagens: Callable[[str], Checagem] = checagem_para,
+) -> Monitor:
     relogio = RelogioReal()
     async with sessoes() as db:
         guarda = Guarda(await sub_redes_do_banco(db))
@@ -76,6 +82,7 @@ async def montar_monitor(sessoes: async_sessionmaker[AsyncSession], settings: Se
             relogio=relogio,
             barramento=barramento,
             gravador=gravador,
+            checagens=checagens,
         )
         linhas = await db.execute(
             select(Equipamento, Classe).join(Classe, Equipamento.classe_id == Classe.id)
