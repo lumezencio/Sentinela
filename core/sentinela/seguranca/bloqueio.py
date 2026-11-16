@@ -6,6 +6,10 @@
   resposta não revele se a conta existe.
 - Por IP (``LimitadorIP``): 20 falhas em 10 min (janela deslizante) bloqueiam o IP.
 
+Concorrência: ``reservar`` verifica e registra a tentativa no mesmo passo síncrono (sem
+``await`` no meio), ANTES da verificação lenta da senha. Assim N requisições simultâneas não
+passam todas pela checagem antes de a primeira falha ser contada.
+
 A memória é limitada (``max_chaves``, descarta o mais antigo) para não virar vetor de
 esgotamento.
 """
@@ -45,6 +49,16 @@ class BloqueioFantasma:
     def restante(self, login: str) -> float:
         _, ate = self._estado.get(login, (0, 0.0))
         return max(0.0, ate - self._relogio.agora())
+
+    def reservar(self, login: str) -> float:
+        """Se bloqueado, devolve a espera (s) sem contar; senão conta a falha e devolve 0.
+
+        Para login inexistente toda tentativa é falha, então reservar = registrar."""
+        espera = self.restante(login)
+        if espera:
+            return espera
+        self.registrar_falha(login)
+        return 0.0
 
     def registrar_falha(self, login: str) -> None:
         falhas, _ = self._estado.pop(login, (0, 0.0))
@@ -92,6 +106,23 @@ class LimitadorIP:
             return 0.0
         # libera quando a falha mais antiga que mantém a contagem no limite sair da janela
         return max(0.0, instantes[-self._max_falhas] + self._janela - self._relogio.agora())
+
+    def reservar(self, ip: str) -> float:
+        """Se o IP está sem cota, devolve a espera (s) sem registrar; senão registra a
+        tentativa como falha provisória e devolve 0 (desfeita por ``liberar`` no sucesso)."""
+        espera = self.restante(ip)
+        if espera:
+            return espera
+        self.registrar_falha(ip)
+        return 0.0
+
+    def liberar(self, ip: str) -> None:
+        """Devolve uma tentativa reservada que deu certo (remove o registro mais recente)."""
+        instantes = self._podar(ip)
+        if instantes:
+            instantes.pop()
+            if not instantes:
+                del self._falhas[ip]
 
     def registrar_falha(self, ip: str) -> None:
         instantes = self._podar(ip) or deque()

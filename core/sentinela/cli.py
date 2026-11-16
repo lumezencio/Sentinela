@@ -13,11 +13,12 @@ import os
 import sys
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from sentinela.config import Settings, obter_settings
 from sentinela.db.modelos import Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
-from sentinela.seguranca.senhas import gerar_hash, validar_senha
+from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 
 VARIAVEL_SENHA = "SENTINELA_ADMIN_SENHA"
 
@@ -54,9 +55,13 @@ async def _criar_admin(settings: Settings, login: str) -> None:
             existe = await db.scalar(select(Usuario.id).where(Usuario.login == login))
             if existe is not None:
                 raise ErroCli(f"o login {login!r} já existe; nada foi alterado", 1)
-            hash_senha = await asyncio.to_thread(gerar_hash, senha)
+            hash_senha = await gerar_hash_async(senha)
             db.add(Usuario(login=login, hash_senha=hash_senha, papel="admin"))
-            await db.commit()
+            try:
+                await db.commit()
+            except IntegrityError:
+                # outro criar-admin gravou o mesmo login entre a checagem e o INSERT
+                raise ErroCli(f"o login {login!r} já existe; nada foi alterado", 1) from None
     finally:
         await motor.dispose()
 

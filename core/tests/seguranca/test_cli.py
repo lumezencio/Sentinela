@@ -9,7 +9,7 @@ from sentinela import cli
 from sentinela.config import Settings
 from sentinela.db.modelos import Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
-from sentinela.seguranca.senhas import verificar
+from sentinela.seguranca.senhas import gerar_hash_async, verificar
 from tests.conftest import criar_esquema
 
 SENHA = "senha-do-admin-longa"
@@ -97,3 +97,30 @@ async def test_senha_curta_falha(
     assert await _usuarios(settings) == []
     saida = capsys.readouterr()
     assert "curta" not in saida.out + saida.err
+
+
+async def test_corrida_entre_dois_criar_admin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sem_getpass: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = _settings(tmp_path, "teste")
+    await criar_esquema(settings.banco_url)
+    monkeypatch.setenv("SENTINELA_ADMIN_SENHA", SENHA)
+
+    async def _outro_processo_cria_antes(senha: str) -> str:
+        # outro criar-admin grava o mesmo login entre a checagem e o INSERT
+        motor = criar_motor(settings.banco_url)
+        try:
+            async with fabrica_sessao(motor)() as db:
+                db.add(Usuario(login="chefe", hash_senha="x", papel="admin"))
+                await db.commit()
+        finally:
+            await motor.dispose()
+        return await gerar_hash_async(senha)
+
+    monkeypatch.setattr("sentinela.cli.gerar_hash_async", _outro_processo_cria_antes)
+    assert await cli.executar(["criar-admin", "--login", "chefe"], settings) == 1
+    assert "já existe" in capsys.readouterr().err
+    assert len(await _usuarios(settings)) == 1

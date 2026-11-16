@@ -1,8 +1,15 @@
+import asyncio
+import hashlib
 import logging
+import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
+from argon2 import PasswordHasher
 from fastapi import Depends, FastAPI
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -10,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sentinela.api.deps import exigir_admin, verificar_csrf
 from sentinela.db.modelos import Sessao, Usuario
 from sentinela.relogio import RelogioFalso
+from sentinela.seguranca import senhas
 from sentinela.seguranca.senhas import gerar_hash, verificar
 from sentinela.seguranca.sessoes import hash_token
 from tests.seguranca.conftest import CriarUsuario
@@ -287,3 +295,189 @@ async def test_senha_e_tokens_nunca_no_log(
         assert segredo not in texto  # ...mas nunca com senha ou token
     assert hash_token(token) not in texto
     assert "$argon2" not in texto
+
+
+# --- fix round 1: concorrência, executor, logs, 422, CSRF global -----------
+
+
+async def test_rajada_concorrente_bloqueia_apos_cinco(
+    cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> None:
+    await criar_usuario("ana", SENHA)
+    respostas = await asyncio.gather(
+        *(_login(cliente, "ana", "senha-errada-qualquer") for _ in range(10))
+    )
+    codigos = sorted(r.status_code for r in respostas)
+    assert codigos.count(401) <= 5
+    assert codigos.count(401) + codigos.count(429) == 10
+
+    # senha certa numa nova rajada, já com a conta bloqueada
+    mistas = await asyncio.gather(
+        _login(cliente, "ana", "senha-errada-qualquer"),
+        _login(cliente, "ana", SENHA),
+        _login(cliente, "ana", "senha-errada-qualquer"),
+    )
+    assert [r.status_code for r in mistas] == [429, 429, 429]
+
+
+async def test_rajada_concorrente_inexistente_bloqueia_apos_cinco(
+    cliente: httpx.AsyncClient,
+) -> None:
+    respostas = await asyncio.gather(
+        *(_login(cliente, "fantasma", "senha-errada-qualquer") for _ in range(10))
+    )
+    codigos = [r.status_code for r in respostas]
+    assert codigos.count(401) == 5
+    assert codigos.count(429) == 5
+
+
+async def test_rajada_concorrente_respeita_limite_por_ip(cliente: httpx.AsyncClient) -> None:
+    respostas = await asyncio.gather(
+        *(_login(cliente, f"desconhecido{i}", "senha-errada-qualquer") for i in range(30))
+    )
+    codigos = [r.status_code for r in respostas]
+    assert codigos.count(401) == 20
+    assert codigos.count(429) == 10
+
+
+async def test_sucesso_nao_consome_cota_do_ip(
+    cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> None:
+    await criar_usuario("ana", SENHA)
+    for i in range(19):
+        assert (await _login(cliente, f"desconhecido{i}", "senha-errada")).status_code == 401
+    for _ in range(3):
+        cliente.cookies.clear()
+        assert (await _login(cliente, "ana", SENHA)).status_code == 204
+    assert (await _login(cliente, "outro", "senha-errada")).status_code == 401
+    assert (await _login(cliente, "ana", SENHA)).status_code == 429
+
+
+class _HasherPreso:
+    """Delegador que trava em ``verify`` até ser liberado (prende a thread do argon2)."""
+
+    def __init__(self, real: PasswordHasher) -> None:
+        self.real = real
+        self.comecou = threading.Event()
+        self.liberar = threading.Event()
+
+    def verify(self, h: str, senha: str) -> bool:
+        self.comecou.set()
+        self.liberar.wait(10)
+        return self.real.verify(h, senha)
+
+    def __getattr__(self, nome: str) -> Any:
+        return getattr(self.real, nome)
+
+
+async def test_argon2_nao_ocupa_o_executor_padrao(
+    cliente: httpx.AsyncClient, criar_usuario: CriarUsuario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await criar_usuario("ana", SENHA)
+    preso = _HasherPreso(senhas._hasher)
+    monkeypatch.setattr(senhas, "_hasher", preso)
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+
+    tarefas = [
+        asyncio.create_task(_login(cliente, "ana", "senha-errada-qualquer")) for _ in range(4)
+    ]
+    try:
+        for _ in range(500):
+            if preso.comecou.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert preso.comecou.is_set()
+        # o executor padrão continua livre para quem não tem nada a ver com login
+        assert await asyncio.wait_for(asyncio.to_thread(int, "7"), timeout=2) == 7
+    finally:
+        preso.liberar.set()
+        await asyncio.gather(*tarefas)
+
+
+async def test_sexta_falha_bloqueia_120s(
+    app: FastAPI, cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> None:
+    await criar_usuario("ana", SENHA)
+    for _ in range(5):
+        await _login(cliente, "ana", "senha-errada-qualquer")
+    async with _sessoes(app)() as db:
+        await db.execute(
+            update(Usuario).values(bloqueado_ate=datetime.now(UTC) - timedelta(seconds=1))
+        )
+        await db.commit()
+    assert (await _login(cliente, "ana", "senha-errada-qualquer")).status_code == 401
+    r = await _login(cliente, "ana", SENHA)
+    assert r.status_code == 429
+    assert 115 <= int(r.headers["retry-after"]) <= 120
+
+
+async def test_segundo_login_revoga_sessao_apresentada(
+    app: FastAPI, cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> None:
+    await criar_usuario("ana", SENHA)
+    await _login(cliente, "ana", SENHA)
+    primeiro = cliente.cookies["sentinela_sessao"]
+    await _login(cliente, "ana", SENHA)
+    segundo = cliente.cookies["sentinela_sessao"]
+    assert primeiro != segundo
+    async with _sessoes(app)() as db:
+        estado = {jti: rev for jti, rev in await db.execute(select(Sessao.jti, Sessao.revogada))}
+    assert estado == {hash_token(primeiro): True, hash_token(segundo): False}
+
+
+async def test_cookies_com_path_raiz(
+    cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> None:
+    await criar_usuario("ana", SENHA)
+    r = await _login(cliente, "ana", SENHA)
+    for nome in ("sentinela_sessao", "sentinela_csrf"):
+        assert "path=/" in _cookie_header(r, nome).lower().replace("; ", ";").split(";")
+
+
+async def test_login_desconhecido_logado_so_como_hash(
+    log_debug: pytest.LogCaptureFixture, cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> None:
+    await criar_usuario("ana", SENHA)
+    digitado = "minha-senha-no-campo-login"
+    await _login(cliente, digitado, "qualquer-coisa")
+    await _login(cliente, "ana", "senha-errada-qualquer")
+    texto = log_debug.text
+    assert digitado not in texto
+    assert hashlib.sha256(digitado.encode()).hexdigest()[:12] in texto
+    assert "login='ana'" in texto
+
+
+async def test_422_nao_ecoa_entrada(cliente: httpx.AsyncClient) -> None:
+    secreta = "segredo-" + "x" * 1100
+    r = await _login(cliente, "ana", secreta)
+    assert r.status_code == 422
+    assert "segredo-" not in r.text
+    for erro in r.json()["detail"]:
+        assert set(erro) <= {"loc", "msg", "type"}
+    r2 = await cliente.post(LOGIN_URL, json={"login": "ana", "senha": SENHA, "extra": "vaza"})
+    assert r2.status_code == 422
+    assert "vaza" not in r2.text
+    assert SENHA not in r2.text
+
+
+async def test_csrf_global_em_toda_escrita_da_api(app: FastAPI, cliente: httpx.AsyncClient) -> None:
+    # o esquema OpenAPI (ligado fora de produção) é a lista pública de rotas
+    caminhos: dict[str, dict[str, object]] = app.openapi()["paths"]
+    verificadas = 0
+    for caminho, operacoes in caminhos.items():
+        if not caminho.startswith("/api/v1") or caminho == LOGIN_URL:
+            continue
+        concreto = re.sub(r"\{[^}]+\}", "1", caminho)
+        for metodo in {m.upper() for m in operacoes} - {"GET", "HEAD", "OPTIONS"}:
+            r = await cliente.request(metodo, concreto)
+            assert r.status_code == 403, (metodo, caminho, r.status_code)
+            verificadas += 1
+    assert verificadas >= 1  # ao menos o logout
+
+
+async def test_csrf_global_vale_para_rotas_novas(app: FastAPI, cliente: httpx.AsyncClient) -> None:
+    @app.put("/api/v1/teste/escrita")
+    async def escrita() -> dict[str, bool]:
+        return {"ok": True}
+
+    assert (await cliente.put("/api/v1/teste/escrita")).status_code == 403

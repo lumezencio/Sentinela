@@ -52,3 +52,22 @@ def test_bloqueio_fantasma_memoria_limitada() -> None:
     for i in range(10):
         fantasma.registrar_falha(f"login{i}")
     assert len(fantasma) <= 3
+
+
+async def test_limitador_ip_reserva_e_libera() -> None:
+    relogio = RelogioFalso()
+    lim = LimitadorIP(relogio, max_falhas=2, janela_s=10)
+    assert lim.reservar("10.99.0.5") == 0  # reservou (conta como tentativa)
+    assert lim.reservar("10.99.0.5") == 0
+    assert lim.reservar("10.99.0.5") == pytest.approx(10)  # sem cota: não reserva
+    lim.liberar("10.99.0.5")  # a tentativa deu certo: devolve a cota
+    assert lim.restante("10.99.0.5") == 0
+    lim.liberar("10.99.0.9")  # IP sem registro: não falha
+
+
+async def test_bloqueio_fantasma_reserva() -> None:
+    fantasma = BloqueioFantasma(RelogioFalso())
+    esperas = [fantasma.reservar("x") for _ in range(7)]
+    assert esperas[:5] == [0, 0, 0, 0, 0]
+    assert esperas[5] == pytest.approx(60)
+    assert esperas[6] == pytest.approx(60)  # bloqueado não acumula falha
