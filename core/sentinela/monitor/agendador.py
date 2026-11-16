@@ -186,13 +186,22 @@ class Agendador:
             self.adicionar_lote(desconhecidos)
 
     def pausar(self, id: str, causa: str | None = None) -> None:
-        reg = self._registros.get(id)
-        if reg is None:
-            return
-        reg.versao += 1
-        self._vigente.pop(id, None)
-        self._transicao(id, reg.maquina.pausar(), causa=causa)
-        self.recalcular()
+        self.pausar_lote((id,), causa)
+
+    def pausar_lote(self, ids: Iterable[str], causa: str | None = None) -> None:
+        """Pausa vários (ex.: sub-rede removida) com um único ``recalcular``; ids desconhecidos
+        são ignorados. Cada transição é publicada e gravada como em ``pausar``."""
+        mudou = False
+        for id in ids:
+            reg = self._registros.get(id)
+            if reg is None:
+                continue
+            mudou = True
+            reg.versao += 1
+            self._vigente.pop(id, None)
+            self._transicao(id, reg.maquina.pausar(), causa=causa)
+        if mudou:
+            self.recalcular()
 
     def retomar(self, id: str, causa: str | None = None) -> None:
         reg = self._registros.get(id)

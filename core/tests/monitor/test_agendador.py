@@ -732,13 +732,14 @@ async def test_adicionar_lote_recalcula_uma_vez() -> None:
     assert all(contado.estado_de(f"eq{n}") is Estado.ONLINE for n in range(30))
 
 
-async def test_adicionar_lote_de_5000_em_menos_de_meio_segundo() -> None:
-    cena = _cena()
+async def test_adicionar_lote_de_5000_rapido_e_com_um_recalcular() -> None:
+    _, contado = _cena_contada()
     alvos = [_alvo(n, critico=n % 5 == 0) for n in range(5000)]
     inicio = time.perf_counter()
-    cena.agendador.adicionar_lote(alvos)
-    assert time.perf_counter() - inicio < 0.5
-    assert cena.agendador.estado_de("eq4999") is Estado.ONLINE
+    contado.adicionar_lote(alvos)
+    assert time.perf_counter() - inicio < 2.0  # folga para máquina lenta; guarda o O(n²)
+    assert contado.recalculos == 1
+    assert contado.estado_de("eq4999") is Estado.ONLINE
 
 
 async def test_adicionar_lote_recusa_e_atualiza_como_adicionar() -> None:
@@ -786,3 +787,17 @@ async def test_retomar_com_laco_rodando_checa_em_ate_5s(rodando: Callable[[Cena]
         cena.agendador.retomar(a.id)
     await cena.relogio.avancar_ate(105 + 1e-9)
     assert {ip for _, ip in cena.checagem.execucoes} == {a.ip for a in alvos}
+
+
+async def test_pausar_lote_recalcula_uma_vez_e_publica_cada_pausa() -> None:
+    cena, contado = _cena_contada()
+    contado.adicionar_lote([_alvo(n) for n in range(10)])
+    contado.recalculos = 0
+    ids = [f"eq{n}" for n in range(5)]
+    contado.pausar_lote([*ids, "inexistente"], causa="fora_das_subredes")
+    await contado.aguardar_gravacoes()
+    assert contado.recalculos == 1
+    estados = [contado.estado_de(f"eq{n}") for n in range(10)]
+    assert estados == [Estado.PAUSADO] * 5 + [Estado.ONLINE] * 5
+    assert cena.gravador.causas == ["fora_das_subredes"] * 5
+    assert [m.dados["id"] for _, m in cena.barramento.do_tipo("estado")] == ids

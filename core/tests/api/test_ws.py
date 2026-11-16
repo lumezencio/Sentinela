@@ -17,10 +17,12 @@ from fastapi import FastAPI
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinela.api import ws as ws_mod
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.config import Settings
 from sentinela.db.modelos import Classe, Equipamento, Sessao
 from sentinela.main import criar_app
+from sentinela.monitor.agendador import Agendador
 from sentinela.relogio import RelogioFalso
 from tests.conftest import criar_esquema
 
@@ -90,6 +92,14 @@ class ClienteWs:
         assert msg["type"] == "websocket.send", msg
         dados: dict[str, Any] = json.loads(msg["text"])
         return dados
+
+    async def recusa(self) -> int:
+        """R19: o handshake é aceito e fechado em seguida, sem nenhum dado; devolve o código."""
+        assert (await self.conectar())["type"] == "websocket.accept"
+        msg = await self.proxima()
+        assert msg["type"] == "websocket.close", msg  # nada enviado antes do fechamento
+        await self.terminar()
+        return int(msg["code"])
 
     async def fechamento(self) -> int:
         """Pula mensagens até o servidor fechar; devolve o código."""
@@ -182,14 +192,11 @@ async def _aberto(abrir_ws: AbrirWs, cliente: httpx.AsyncClient) -> ClienteWs:
 
 
 async def test_sem_cookie_fecha_4401(abrir_ws: AbrirWs) -> None:
-    ws = abrir_ws()
-    msg = await ws.conectar()
-    assert msg == {"type": "websocket.close", "code": 4401, "reason": ""}
+    assert await abrir_ws().recusa() == 4401
 
 
 async def test_cookie_invalido_fecha_4401(abrir_ws: AbrirWs) -> None:
-    msg = await abrir_ws(cookie="token-que-nao-existe").conectar()
-    assert msg["type"] == "websocket.close" and msg["code"] == 4401
+    assert await abrir_ws(cookie="token-que-nao-existe").recusa() == 4401
 
 
 async def test_sessao_revogada_fecha_4401(
@@ -199,8 +206,7 @@ async def test_sessao_revogada_fecha_4401(
     async with _sessoes(app)() as db:
         await db.execute(update(Sessao).values(revogada=True))
         await db.commit()
-    msg = await abrir_ws(cookie=token).conectar()
-    assert msg["type"] == "websocket.close" and msg["code"] == 4401
+    assert await abrir_ws(cookie=token).recusa() == 4401
 
 
 @pytest.mark.parametrize(
@@ -209,15 +215,49 @@ async def test_sessao_revogada_fecha_4401(
 async def test_origem_estranha_recusada(
     cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs, origem: str
 ) -> None:
-    msg = await abrir_ws(cookie=_token(cliente_visualizador), origem=origem).conectar()
-    assert msg["type"] == "websocket.close" and msg["code"] == 4403
+    ws = abrir_ws(cookie=_token(cliente_visualizador), origem=origem)
+    assert await ws.recusa() == 4403
 
 
 async def test_sem_origem_recusada(
     cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
 ) -> None:
-    msg = await abrir_ws(cookie=_token(cliente_visualizador), origem=None).conectar()
-    assert msg["type"] == "websocket.close" and msg["code"] == 4403
+    assert await abrir_ws(cookie=_token(cliente_visualizador), origem=None).recusa() == 4403
+
+
+async def test_origem_checada_antes_de_consultar_o_banco(
+    cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def proibido(*_args: object) -> None:
+        raise AssertionError("consultou a sessão com Origin inválido")
+
+    monkeypatch.setattr(ws_mod, "usuario_do_cookie", proibido)
+    ws = abrir_ws(cookie=_token(cliente_visualizador), origem="https://outro.exemplo")
+    assert await ws.recusa() == 4403
+
+
+async def test_producao_aceita_so_https(
+    app: FastAPI,
+    settings: Settings,
+    cliente_visualizador: httpx.AsyncClient,
+    abrir_ws: AbrirWs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    producao = settings.model_copy(update={"ambiente": "producao"})
+    monkeypatch.setattr(app.state, "settings", producao)
+    token = _token(cliente_visualizador)
+    assert await abrir_ws(cookie=token, origem="http://teste").recusa() == 4403
+    ws = abrir_ws(cookie=token, origem="https://teste")
+    assert (await ws.conectar())["type"] == "websocket.accept"
+    assert (await ws.json())["tipo"] == "snapshot"
+
+
+async def test_fora_de_producao_aceita_http_do_mesmo_host(
+    cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    ws = abrir_ws(cookie=_token(cliente_visualizador), origem="http://teste")
+    assert (await ws.conectar())["type"] == "websocket.accept"
+    assert (await ws.json())["tipo"] == "snapshot"
 
 
 @pytest.mark.parametrize("origem", ["https://teste:8443", "http://teste:8443"])
@@ -474,3 +514,67 @@ async def test_lifespan_sem_monitor_nao_inicia_lacos(app: FastAPI, settings: Set
 
 def test_fixture_padrao_nao_roda_sondas(app: FastAPI) -> None:
     assert app.state.iniciar_monitor is False
+
+
+# ---- Fix round 1: falha dos laços vira sinal (log + /saude 503) -----------------------------
+
+
+async def _saude(app: FastAPI) -> httpx.Response:
+    transporte = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transporte, base_url="https://teste") as c:
+        return await c.get("/api/v1/saude")
+
+
+async def test_saude_ok_com_monitor_rodando(app_com_monitor: FastAPI, settings: Settings) -> None:
+    async def corpo() -> None:
+        await asyncio.sleep(0)
+        r = await _saude(app_com_monitor)
+        assert (r.status_code, r.json()) == (200, {"status": "ok"})
+
+    await _rodar_lifespan(app_com_monitor, settings, corpo)
+
+
+async def test_agendador_que_falha_registra_erro_e_saude_503(
+    app_com_monitor: FastAPI,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def executar_quebrado(self: Agendador) -> None:
+        raise RuntimeError("defeito simulado")
+
+    monkeypatch.setattr(Agendador, "executar", executar_quebrado)
+    app = app_com_monitor
+
+    async def corpo() -> None:
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert app.state.monitor_falhou is True
+        assert app.state.monitor_motivo == "sentinela-agendador"
+        r = await _saude(app)
+        assert (r.status_code, r.json()) == (503, {"status": "degradado"})
+        erros = [rec for rec in caplog.records if rec.levelname == "ERROR"]
+        assert any(rec.exc_info and "sentinela-agendador" in rec.getMessage() for rec in erros)
+
+    await _rodar_lifespan(app, settings, corpo)
+
+
+async def test_saude_503_se_laco_terminou_sem_excecao(
+    app_com_monitor: FastAPI, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def executar_que_retorna(self: Agendador) -> None:
+        return None
+
+    monkeypatch.setattr(Agendador, "executar", executar_que_retorna)
+
+    async def corpo() -> None:
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert (await _saude(app_com_monitor)).status_code == 503
+
+    await _rodar_lifespan(app_com_monitor, settings, corpo)
+
+
+async def test_saude_ok_sem_monitor(cliente: httpx.AsyncClient) -> None:
+    r = await cliente.get("/api/v1/saude")
+    assert (r.status_code, r.json()) == (200, {"status": "ok"})

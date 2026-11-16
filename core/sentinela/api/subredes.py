@@ -44,8 +44,7 @@ async def _aplicar(request: Request, db: SessaoDB) -> None:
     pausar, adicionar = await sincronizar(db, agendador, Guarda(redes))
     await db.commit()
     guarda.atualizar(redes)
-    for id in pausar:
-        agendador.pausar(id, causa="fora_das_subredes")
+    agendador.pausar_lote(pausar, causa="fora_das_subredes")
     agendador.adicionar_lote(adicionar)
     await agendador.aguardar_gravacoes()
 

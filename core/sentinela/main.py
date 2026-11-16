@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -62,6 +63,8 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     """
     tarefas: list[asyncio.Task[None]] = []
     app.state.tarefas_monitor = tarefas
+    app.state.monitor_falhou = False
+    app.state.monitor_motivo = None
     if app.state.iniciar_monitor:
         tarefas.append(
             asyncio.create_task(
@@ -72,17 +75,24 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
         )
+        for tarefa in tarefas:
+            tarefa.add_done_callback(functools.partial(_laco_terminou, app))
     try:
         yield
     finally:
         for tarefa in tarefas:  # uma de cada vez, na ordem: descarga, agendador
             tarefa.cancel()
-            try:
-                await tarefa
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.exception("tarefa do monitor terminou com erro")
+            # falha já registrada por ``_laco_terminou``; aqui só espera o fim
+            await asyncio.gather(tarefa, return_exceptions=True)
+
+
+def _laco_terminou(app: FastAPI, tarefa: asyncio.Task[None]) -> None:
+    """Laço que termina sem ser cancelado parou o monitor: log de erro e /saude em 503."""
+    if tarefa.cancelled():
+        return
+    app.state.monitor_falhou = True
+    app.state.monitor_motivo = tarefa.get_name()
+    log.error("laço do monitor parou: %s", tarefa.get_name(), exc_info=tarefa.exception())
 
 
 async def _descarregar_periodicamente(
