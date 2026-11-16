@@ -19,7 +19,7 @@ from sentinela.monitor.estados import Estado
 from sentinela.monitor.gravador import GravadorSql
 from sentinela.monitor.limitador import Limitador
 from sentinela.rede.guarda import DestinoProibido, Guarda
-from sentinela.relogio import RelogioReal
+from sentinela.relogio import Relogio, RelogioReal
 
 
 @dataclass
@@ -69,8 +69,9 @@ async def montar_monitor(
     sessoes: async_sessionmaker[AsyncSession],
     settings: Settings,
     checagens: Callable[[str], Checagem] = checagem_para,
+    relogio: Relogio | None = None,
 ) -> Monitor:
-    relogio = RelogioReal()
+    relogio = relogio or RelogioReal()
     async with sessoes() as db:
         guarda = Guarda(await sub_redes_do_banco(db))
         barramento = Barramento()

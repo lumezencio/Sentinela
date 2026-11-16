@@ -1,8 +1,10 @@
 import ast
+import logging
 import subprocess
 import sys
 import textwrap
 from collections import Counter
+from datetime import UTC, datetime
 from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 
@@ -13,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import sentinela.demo.simulador as simulador
 from sentinela.config import Settings
-from sentinela.db.modelos import Equipamento, SubRede, Usuario
+from sentinela.db.modelos import Classe, Equipamento, SubRede, Usuario
 from sentinela.demo.simulador import ChecagemSimulada, gerar_rede
 from sentinela.main import criar_app
 from sentinela.rede.guarda import DestinoAutorizado, Guarda
@@ -173,11 +175,18 @@ def test_nunca_abre_socket_em_subprocesso() -> None:
         import sentinela.demo.simulador as sim
         from sentinela.rede.guarda import Guarda
 
+        import _socket
+        chamadas = []
+
         def proibido(*a, **k):
+            chamadas.append(a)
             raise AssertionError("socket aberto")
 
         loop = asyncio.new_event_loop()  # o laço do Windows usa socketpair ao nascer
         socket.socket = proibido
+        _socket.socket = proibido
+        socket.create_connection = proibido
+        socket.socketpair = proibido
 
         async def main():
             guarda = Guarda([IPv4Network("10.99.10.0/24")])
@@ -186,6 +195,7 @@ def test_nunca_abre_socket_em_subprocesso() -> None:
                 r = await c.executar(guarda.validar(f"10.99.10.{i}", None, "icmp"))
                 assert r.ok or r.erro
         loop.run_until_complete(main())
+        assert chamadas == [], chamadas
         print("ok")
         """
     )
@@ -250,3 +260,72 @@ async def test_demo_desligado_nao_semeia(settings: Settings) -> None:
     async with app.router.lifespan_context(app):
         async with app.state.sessoes() as db:
             assert await db.scalar(select(func.count()).select_from(Equipamento)) == 0
+
+
+async def _app_sobre_banco_real(settings: Settings) -> None:
+    """Banco com um equipamento real (sem marca de demonstração)."""
+    await criar_esquema(settings.banco_url)
+    app = criar_app(settings, relogio=RelogioFalso(), iniciar_monitor=False)
+    async with app.router.lifespan_context(app):
+        async with app.state.sessoes() as db:
+            classe = await db.scalar(select(Classe).where(Classe.slug == "servidor"))
+            assert classe is not None
+            agora = datetime.now(UTC)
+            db.add(
+                Equipamento(
+                    nome="Real", ip="10.0.0.5", mac="aa:bb:cc:dd:ee:ff", classe_id=classe.id,
+                    estado_desde=agora, criado_em=agora,
+                )
+            )  # fmt: skip
+            await db.commit()
+
+
+async def test_demo_recusa_banco_com_dados_reais(
+    settings: Settings, settings_demo: Settings
+) -> None:
+    await _app_sobre_banco_real(settings)
+    app = criar_app(settings_demo, relogio=RelogioFalso(), iniciar_monitor=False)
+    with pytest.raises(RuntimeError, match="banco com dados reais"):
+        async with app.router.lifespan_context(app):
+            pytest.fail("não deveria iniciar")
+    # nada foi semeado
+    app2 = criar_app(settings, relogio=RelogioFalso(), iniciar_monitor=False)
+    async with app2.router.lifespan_context(app2):
+        async with app2.state.sessoes() as db:
+            assert await db.scalar(select(func.count()).select_from(Equipamento)) == 1
+            assert await db.scalar(select(func.count()).select_from(SubRede)) == 0
+
+
+async def test_demo_avisa_que_checagens_sao_simuladas(
+    settings_demo: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    await criar_esquema(settings_demo.banco_url)
+    app = criar_app(settings_demo, relogio=RelogioFalso(), iniciar_monitor=False)
+    with caplog.at_level(logging.WARNING, logger="sentinela.main"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert any(r.levelno == logging.WARNING and "simulad" in r.getMessage() for r in caplog.records)
+
+
+async def test_demo_reabre_banco_marcado_como_demo(settings_demo: Settings) -> None:
+    await criar_esquema(settings_demo.banco_url)
+    for _ in range(2):  # a segunda vez o banco já é de demonstração: aceita
+        app = criar_app(settings_demo, relogio=RelogioFalso(), iniciar_monitor=False)
+        async with app.router.lifespan_context(app):
+            pass
+
+
+async def test_demo_desligado_em_banco_demo_avisa_e_funciona(
+    settings: Settings, settings_demo: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    await criar_esquema(settings.banco_url)
+    app = criar_app(settings_demo, relogio=RelogioFalso(), iniciar_monitor=False)
+    async with app.router.lifespan_context(app):
+        pass
+    app2 = criar_app(settings, relogio=RelogioFalso(), iniciar_monitor=False)
+    with caplog.at_level(logging.WARNING, logger="sentinela.main"):
+        async with app2.router.lifespan_context(app2):
+            assert app2.state.agendador is not None
+    assert any(
+        "banco de demonstração em uso com demo desligado" in r.getMessage() for r in caplog.records
+    )

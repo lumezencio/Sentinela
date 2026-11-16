@@ -14,7 +14,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.modelos import Classe, Equipamento, SubRede
-from sentinela.monitor.checagens.base import exigir_destino
 from sentinela.monitor.estados import ResultadoChecagem
 from sentinela.rede.guarda import DestinoAutorizado
 from sentinela.relogio import Relogio, RelogioReal
@@ -173,8 +172,9 @@ class ChecagemSimulada:
         destino: DestinoAutorizado,
         timeout: float = 2.0,  # noqa: ASYNC109 - contrato do plano
     ) -> ResultadoChecagem:
-        # exercita o caminho da Guarda como as checagens reais
-        destino = exigir_destino(destino, getattr(destino, "protocolo", ""))
+        # só destino emitido pela Guarda (um tipo serve a todos os protocolos)
+        if not isinstance(destino, DestinoAutorizado):
+            raise TypeError("A checagem exige um DestinoAutorizado emitido pela Guarda")
         agora = self._relogio.agora()
         if agora >= self._proxima_queda_switch:
             self._queda_de_switch(agora)
@@ -218,3 +218,20 @@ async def semear_demo(sessoes: async_sessionmaker[AsyncSession], seed: int = 366
             )
         await db.commit()
     return True
+
+
+async def banco_e_demo(sessoes: async_sessionmaker[AsyncSession]) -> bool:
+    """Marca de banco de demonstração (sem tabela de config): as 6 sub-redes demo e todo
+    equipamento com MAC ``02:00:00:...`` (localmente administrado), e ao menos um."""
+    async with sessoes() as db:
+        cidrs = set((await db.execute(select(SubRede.cidr))).scalars())
+        total = await db.scalar(select(func.count()).select_from(Equipamento)) or 0
+        demo = await db.scalar(
+            select(func.count()).select_from(Equipamento).where(Equipamento.mac.like("02:00:00:%"))
+        )
+    return total > 0 and demo == total and set(SUB_REDES_DEMO) <= cidrs
+
+
+async def tem_equipamentos(sessoes: async_sessionmaker[AsyncSession]) -> bool:
+    async with sessoes() as db:
+        return bool(await db.scalar(select(func.count()).select_from(Equipamento)))
