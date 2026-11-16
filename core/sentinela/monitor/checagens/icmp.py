@@ -1,5 +1,7 @@
 """Checagem ICMP (ping sem privilégio, um pacote)."""
 
+import asyncio
+
 import icmplib
 
 from sentinela.monitor.checagens.base import exigir_destino, falha
@@ -17,9 +19,13 @@ class ChecagemIcmp:
     ) -> ResultadoChecagem:
         destino = exigir_destino(destino, "icmp")
         try:
-            host = await icmplib.async_ping(
-                str(destino.ip), count=1, timeout=timeout, privileged=False
-            )
+            # Prazo defensivo caso a biblioteca não respeite o timeout.
+            async with asyncio.timeout(timeout + 1.0):
+                host = await icmplib.async_ping(
+                    str(destino.ip), count=1, timeout=timeout, privileged=False
+                )
+        except TimeoutError:
+            return falha("Tempo esgotado")
         except icmplib.SocketPermissionError:
             return falha("ICMP sem permissão no host")
         except icmplib.ICMPLibError:

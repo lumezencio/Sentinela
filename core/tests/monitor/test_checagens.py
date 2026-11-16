@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from ipaddress import IPv4Network
@@ -200,3 +201,57 @@ def test_checagem_para_e_custos() -> None:
     assert (ChecagemIcmp.custo, ChecagemTcp.custo, ChecagemHttp.custo) == (1, 1, 3)
     with pytest.raises(ValueError):
         checagem_para("ftp")
+
+
+async def test_http_prazo_total_contra_gotejamento() -> None:
+    async def gotejar(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        await r.readuntil(b"\r\n\r\n")
+        try:
+            w.write(b"HTTP/1.1 200 OK\r\n")
+            for _ in range(100):
+                w.write(b"X")
+                await w.drain()
+                await asyncio.sleep(0.1)
+        except OSError:
+            pass
+        w.close()
+
+    async with _servidor(gotejar) as porta:
+        inicio = time.perf_counter()
+        res = await ChecagemHttp().executar(_destino(porta, "http"), timeout=0.3)
+        decorrido = time.perf_counter() - inicio
+    assert res.ok is False
+    assert res.erro == "Tempo esgotado"
+    assert decorrido < 0.6
+
+
+async def test_http_get_fallback_500_falha() -> None:
+    def resposta(metodo: str) -> bytes:
+        return _resp("405 Method Not Allowed") if metodo == "HEAD" else _resp("500 Erro")
+
+    async with _servidor(_http(resposta, [])) as porta:
+        res = await ChecagemHttp().executar(_destino(porta, "http"))
+    assert res.ok is False
+    assert res.erro == "HTTP 500"
+
+
+async def test_http_erro_inesperado_nao_propaga(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def explode(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("segredo")
+
+    monkeypatch.setattr(ChecagemHttp, "_status", staticmethod(explode))
+    res = await ChecagemHttp().executar(_destino(80, "http"))
+    assert res.ok is False
+    assert res.erro == "Erro inesperado na checagem HTTP"
+
+
+async def test_icmp_prazo_defensivo(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def trava(endereco: str, **kwargs: Any) -> Any:
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(icmplib, "async_ping", trava)
+    inicio = time.perf_counter()
+    res = await ChecagemIcmp().executar(_destino(None, "icmp"), timeout=0.05)
+    assert res.ok is False
+    assert res.erro == "Tempo esgotado"
+    assert time.perf_counter() - inicio < 3
