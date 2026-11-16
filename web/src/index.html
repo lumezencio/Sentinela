@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <title>Sentinela · Lista</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/componentes.css">
+  <script src="js/tema.js"></script>
+  <script type="module" src="js/app.js"></script>
+  <script defer src="vendor/alpine-csp.min.js"></script>
+</head>
+<body x-data="painel">
+  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div></div>
+
+  <!-- ícones de estado: forma muda junto com a cor (§12.3) -->
+  <svg width="0" height="0" class="so-leitor" aria-hidden="true" focusable="false">
+    <symbol id="i-online" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="currentColor"/></symbol>
+    <symbol id="i-instavel" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/></symbol>
+    <symbol id="i-offline" viewBox="0 0 16 16"><circle class="sym-onda" cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 5l6 6M11 5l-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-pausado" viewBox="0 0 16 16"><rect x="3.5" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9.5" y="3" width="3" height="10" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-desconhecido" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="2.6 2.4"/></symbol>
+    <symbol id="i-total" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4" fill="currentColor"/><ellipse cx="8" cy="8" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.1"/><ellipse cx="8" cy="8" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.1" transform="rotate(60 8 8)"/><ellipse cx="8" cy="8" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.1" transform="rotate(120 8 8)"/></symbol>
+  </svg>
+
+  <header class="topo vidro">
+    <div class="topo-interno">
+      <div class="marca">
+        <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+          <g class="giro"><ellipse class="orbita" cx="20" cy="20" rx="17" ry="7"/><circle class="eletron" cx="37" cy="20" r="2.2"/></g>
+          <g class="giro giro-2"><ellipse class="orbita orbita-2" cx="20" cy="20" rx="7" ry="17"/><circle class="eletron" cx="20" cy="3" r="1.8"/></g>
+          <circle class="nucleo" cx="20" cy="20" r="4.5"/>
+        </svg>
+        <span>Sentinela</span>
+      </div>
+
+      <nav class="abas" role="tablist" aria-label="Visões">
+        <button class="aba" role="tab" type="button" aria-selected="true" aria-controls="conteudo-lista" id="aba-lista">Lista</button>
+        <button class="aba" role="tab" type="button" disabled aria-disabled="true">Teia <span class="selo">em breve</span></button>
+        <button class="aba" role="tab" type="button" disabled aria-disabled="true">Organograma <span class="selo">em breve</span></button>
+      </nav>
+
+      <div class="topo-acoes">
+        <span class="ao-vivo" x-show="aoVivo"><span class="ponto" aria-hidden="true"></span><span>Ao vivo</span></span>
+        <span class="usuario" x-text="usuario"></span>
+        <button class="botao botao-fantasma botao-icone" type="button" @click="alternarTema" :aria-label="rotuloTema" :title="rotuloTema">
+          <svg viewBox="0 0 24 24" aria-hidden="true" x-show="temaEscuro"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true" x-show="!temaEscuro"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+        </button>
+        <button class="botao botao-fantasma botao-icone" type="button" @click="sair" aria-label="Sair" title="Sair">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="casca" id="conteudo-lista" role="tabpanel" aria-labelledby="aba-lista">
+    <div id="banner-conexao" class="banner" role="status" aria-live="polite" hidden :hidden="!bannerVisivel" :class="bannerErro ? 'banner-erro' : ''">
+      <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span>
+      <span x-text="textoBanner">Reconectando…</span>
+    </div>
+
+    <h1 class="so-leitor">Equipamentos monitorados</h1>
+
+    <section class="contadores" aria-label="Resumo por estado">
+      <div class="contador contador-total">
+        <svg class="icone-status" aria-hidden="true"><use href="#i-total"/></svg>
+        <span class="numero" id="contador-total" x-text="contadores.total">0</span>
+        <span class="legenda">equipamentos · <span id="contador-aguardando" x-text="contadores.aguardando">0</span> aguardando</span>
+      </div>
+      <button class="contador st-online" type="button" @click="filtrarEstado('online')" :aria-pressed="pressionado('online')">
+        <svg class="icone-status" aria-hidden="true"><use href="#i-online"/></svg>
+        <span class="numero" id="contador-online" x-text="contadores.online">0</span>
+        <span class="legenda">online</span>
+      </button>
+      <button class="contador st-instavel" type="button" @click="filtrarEstado('instavel')" :aria-pressed="pressionado('instavel')">
+        <svg class="icone-status" aria-hidden="true"><use href="#i-instavel"/></svg>
+        <span class="numero" id="contador-instavel" x-text="contadores.instavel">0</span>
+        <span class="legenda">instáveis</span>
+      </button>
+      <button class="contador st-offline" type="button" @click="filtrarEstado('offline')" :aria-pressed="pressionado('offline')">
+        <svg class="icone-status" aria-hidden="true"><use href="#i-offline"/></svg>
+        <span class="numero" id="contador-offline" x-text="contadores.offline">0</span>
+        <span class="legenda">offline</span>
+      </button>
+      <button class="contador st-pausado" type="button" @click="filtrarEstado('pausado')" :aria-pressed="pressionado('pausado')">
+        <svg class="icone-status" aria-hidden="true"><use href="#i-pausado"/></svg>
+        <span class="numero" id="contador-pausado" x-text="contadores.pausado">0</span>
+        <span class="legenda">pausados</span>
+      </button>
+    </section>
+
+    <section class="ferramentas" aria-label="Filtros">
+      <div class="campo-form busca">
+        <label for="busca">Buscar</label>
+        <input id="busca" type="search" placeholder="Nome ou IP" autocomplete="off" x-model="busca" @input.debounce.150ms="aoFiltrar">
+      </div>
+      <div class="campo-form">
+        <label for="filtro-classe">Classe</label>
+        <select id="filtro-classe" x-model="filtroClasse" @change="aoFiltrar">
+          <option value="">Todas</option>
+          <template x-for="c in classes" :key="c.slug">
+            <option :value="c.slug" x-text="c.nome"></option>
+          </template>
+        </select>
+      </div>
+      <div class="campo-form">
+        <label for="filtro-estado">Estado</label>
+        <select id="filtro-estado" x-model="filtroEstado" @change="aoFiltrar">
+          <option value="">Todos</option>
+          <option value="online">Online</option>
+          <option value="instavel">Instável</option>
+          <option value="offline">Offline</option>
+          <option value="pausado">Pausado</option>
+          <option value="aguardando">Aguardando</option>
+        </select>
+      </div>
+      <div class="acoes-admin" x-show="admin">
+        <button class="botao botao-primario" type="button" @click="abrirNovo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Novo equipamento
+        </button>
+        <button class="botao" type="button" @click="abrirCsv">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg>Importar CSV
+        </button>
+      </div>
+    </section>
+
+    <div class="resumo">
+      <span><strong id="total-filtrado" x-text="totalFiltrado">0</strong> resultado(s)</span>
+      <span role="status" x-text="aviso"></span>
+    </div>
+
+    <div class="painel-lista">
+      <table class="tabela" id="lista">
+        <caption class="so-leitor">Equipamentos, com estado, IP, classe, tempo no estado e latência</caption>
+        <thead>
+          <tr>
+            <th scope="col" :aria-sort="ariaSort('nome')"><button class="ordenar" type="button" @click="ordenar('nome')">Nome <svg class="icone seta" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5"/></svg></button></th>
+            <th scope="col" :aria-sort="ariaSort('estado')"><button class="ordenar" type="button" @click="ordenar('estado')">Estado <svg class="icone seta" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5"/></svg></button></th>
+            <th scope="col" :aria-sort="ariaSort('ip')"><button class="ordenar" type="button" @click="ordenar('ip')">IP <svg class="icone seta" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5"/></svg></button></th>
+            <th scope="col" :aria-sort="ariaSort('classe')"><button class="ordenar" type="button" @click="ordenar('classe')">Classe <svg class="icone seta" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5"/></svg></button></th>
+            <th scope="col" :aria-sort="ariaSort('desde')"><button class="ordenar" type="button" @click="ordenar('desde')">Desde <svg class="icone seta" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5"/></svg></button></th>
+            <th scope="col" class="th-latencia" :aria-sort="ariaSort('latencia')"><button class="ordenar" type="button" @click="ordenar('latencia')">Latência <svg class="icone seta" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5"/></svg></button></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="l in linhas" :key="l.id">
+            <tr class="linha">
+              <td class="td-nome col-nome" x-text="l.nome"></td>
+              <td class="td-estado">
+                <span :class="l.estadoClasse" :title="l.estadoDica">
+                  <svg class="icone-status" aria-hidden="true"><use :href="l.estadoIcone"/></svg>
+                  <span class="estado-rotulo" x-text="l.estadoRotulo"></span>
+                </span>
+              </td>
+              <td class="td-ip col-ip" x-text="l.ip"></td>
+              <td class="td-classe"><span class="classe"><span class="pino" aria-hidden="true" :style="{ '--cor-classe': l.corClasse }"></span><span class="col-classe" x-text="l.classe"></span></span></td>
+              <td class="td-desde suave" :title="l.desdeTitulo" x-text="l.desde"></td>
+              <td class="td-latencia col-latencia" x-text="l.latencia"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <p class="vazio" x-show="carregando">Conectando ao Sentinela…</p>
+      <p class="vazio" x-show="vazio" x-cloak>Nenhum equipamento com esses filtros.</p>
+    </div>
+
+    <nav class="paginacao" aria-label="Paginação">
+      <button class="botao botao-icone" type="button" @click="anterior" :disabled="semAnterior" aria-label="Página anterior">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <span id="pagina-info" x-text="infoPagina">Página 1 de 1</span>
+      <button class="botao botao-icone" type="button" @click="proxima" :disabled="semProxima" aria-label="Próxima página">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    </nav>
+  </main>
+
+  <dialog class="dialogo" x-ref="dlgNovo" aria-labelledby="titulo-novo">
+    <form @submit.prevent="criar" novalidate>
+      <h2 id="titulo-novo">Novo equipamento</h2>
+      <div class="campo-form">
+        <label for="novo-nome">Nome</label>
+        <input id="novo-nome" required maxlength="80" x-model="novo.nome" autocomplete="off">
+      </div>
+      <div class="grade-2">
+        <div class="campo-form">
+          <label for="novo-ip">IP</label>
+          <input id="novo-ip" required maxlength="45" inputmode="decimal" placeholder="10.99.0.10" x-model="novo.ip" autocomplete="off">
+        </div>
+        <div class="campo-form">
+          <label for="novo-mac">MAC (opcional)</label>
+          <input id="novo-mac" maxlength="32" placeholder="02:00:00:00:00:01" x-model="novo.mac" autocomplete="off">
+        </div>
+      </div>
+      <div class="grade-2">
+        <div class="campo-form">
+          <label for="novo-classe">Classe</label>
+          <select id="novo-classe" required x-model="novo.classe">
+            <option value="">Escolha…</option>
+            <template x-for="c in classes" :key="c.slug">
+              <option :value="c.slug" x-text="c.nome"></option>
+            </template>
+          </select>
+        </div>
+        <div class="campo-form">
+          <label for="novo-checagem">Checagem</label>
+          <select id="novo-checagem" x-model="novo.checagem">
+            <option value="icmp">ICMP (ping)</option>
+            <option value="tcp">TCP (porta)</option>
+            <option value="http">HTTP</option>
+          </select>
+        </div>
+      </div>
+      <div class="campo-form">
+        <label for="novo-porta">Porta (TCP/HTTP)</label>
+        <input id="novo-porta" inputmode="numeric" maxlength="5" x-model="novo.porta" autocomplete="off">
+      </div>
+      <p class="alerta" role="alert" x-show="novoErro" x-text="novoErro"></p>
+      <div class="rodape">
+        <button class="botao botao-fantasma" type="button" @click="fecharNovo">Cancelar</button>
+        <button class="botao botao-primario" type="submit" :disabled="enviando">Cadastrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialogo" x-ref="dlgCsv" aria-labelledby="titulo-csv">
+    <form x-ref="formCsv" @submit.prevent="importar">
+      <h2 id="titulo-csv">Importar CSV</h2>
+      <p class="dica">Colunas: <code>nome,ip,classe</code> e, opcionais, <code>mac,checagem,porta</code>. Até 1 MB.</p>
+      <div class="campo-form">
+        <label for="arquivo-csv">Arquivo</label>
+        <input id="arquivo-csv" type="file" accept=".csv,text/csv" x-ref="arquivoCsv">
+      </div>
+      <p class="alerta" role="alert" x-show="csvErro" x-text="csvErro"></p>
+      <template x-if="csvResultado">
+        <div class="alerta alerta-ok" role="status">
+          <p x-text="csvResultado.resumo"></p>
+          <ul class="erros-csv" x-show="temErrosCsv">
+            <template x-for="e in csvResultado.erros" :key="e.chave">
+              <li x-text="e.texto"></li>
+            </template>
+          </ul>
+        </div>
+      </template>
+      <div class="rodape">
+        <button class="botao botao-fantasma" type="button" @click="fecharCsv">Fechar</button>
+        <button class="botao botao-primario" type="submit" :disabled="enviando">Importar</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

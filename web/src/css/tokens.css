@@ -1,0 +1,75 @@
+/* Tokens do §12.3. Escuro é o padrão; claro por preferência do sistema ou pelo botão. */
+:root {
+  color-scheme: dark;
+  --fundo: #15181f;
+  --superficie: #1b1f28;
+  --superficie-2: #222733;
+  --borda: #2e3442;
+  --texto: #e8ebf2;
+  --texto-suave: #a9b0c0;
+  --primaria: #8793e8;
+  --primaria-texto: #15181f;
+  --acento: #68c7bc;
+  --vidro: rgba(27, 31, 40, 0.72);
+  --halo-1: rgba(135, 147, 232, 0.22);
+  --halo-2: rgba(104, 199, 188, 0.16);
+  --sombra: 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  --online: #4ca878;
+  --instavel: #d9a441;
+  --offline: #d97373;
+  --pausado: #7a8194;
+  --desconhecido: #8a90a0;
+
+  --raio: 14px;
+  --raio-p: 9px;
+  --fonte: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Inter",
+    "Helvetica Neue", Arial, sans-serif;
+  --fonte-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-tema="escuro"]) {
+    color-scheme: light;
+    --fundo: #f3f4f8;
+    --superficie: #ffffff;
+    --superficie-2: #eceef5;
+    --borda: #d6dae5;
+    --texto: #1c2030;
+    --texto-suave: #4f566a;
+    --primaria: #4e5ac2;
+    --primaria-texto: #ffffff;
+    --acento: #23786f;
+    --vidro: rgba(255, 255, 255, 0.74);
+    --halo-1: rgba(78, 90, 194, 0.14);
+    --halo-2: rgba(35, 120, 111, 0.12);
+    --sombra: 0 10px 30px rgba(28, 32, 48, 0.12);
+    --online: #2f8a5c;
+    --instavel: #a8761b;
+    --offline: #bf4f4f;
+    --pausado: #626a7c;
+    --desconhecido: #6f7586;
+  }
+}
+
+:root[data-tema="claro"] {
+  color-scheme: light;
+  --fundo: #f3f4f8;
+  --superficie: #ffffff;
+  --superficie-2: #eceef5;
+  --borda: #d6dae5;
+  --texto: #1c2030;
+  --texto-suave: #4f566a;
+  --primaria: #4e5ac2;
+  --primaria-texto: #ffffff;
+  --acento: #23786f;
+  --vidro: rgba(255, 255, 255, 0.74);
+  --halo-1: rgba(78, 90, 194, 0.14);
+  --halo-2: rgba(35, 120, 111, 0.12);
+  --sombra: 0 10px 30px rgba(28, 32, 48, 0.12);
+  --online: #2f8a5c;
+  --instavel: #a8761b;
+  --offline: #bf4f4f;
+  --pausado: #626a7c;
+  --desconhecido: #6f7586;
+}
