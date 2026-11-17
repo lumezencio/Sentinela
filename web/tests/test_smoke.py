@@ -11,9 +11,10 @@ URL local e ``SENTINELA_SMOKE_COMPOSE_LOCAL=1`` (senão o cenário é pulado).
 """
 
 import gzip
+import re
 from typing import Any
 
-from playwright.sync_api import Browser, ConsoleMessage, Page, Response, expect
+from playwright.sync_api import Browser, ConsoleMessage, Page, Response, Route, expect
 
 from conftest import Alvo
 
@@ -108,6 +109,8 @@ def test_celular_360_vira_cartoes_sem_rolagem_horizontal(browser: Browser, alvo:
             "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
         )
         assert largura[0] <= largura[1], largura
+        # o tipo de checagem também aparece no cartão
+        expect(linhas(page).first.locator(".col-checagem")).to_be_visible()
     finally:
         contexto.close()
 
@@ -150,3 +153,94 @@ def test_movimento_reduzido_desliga_animacoes(browser: Browser, alvo: Alvo) -> N
         assert duracao in ("1e-05s", "0.00001s", "0s"), duracao
     finally:
         contexto.close()
+
+
+# ---- revisão final ---------------------------------------------------------------------------
+
+
+def test_lista_mostra_tipo_de_checagem(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    expect(page.get_by_role("columnheader", name="Checagem")).to_be_visible()
+    formato = re.compile(r"^(ICMP|TCP \d{1,5}|HTTP \d{1,5})$")
+    for texto in linhas(page).locator(".col-checagem").all_inner_texts():
+        assert formato.match(texto), texto
+    classe = page.get_by_role("combobox", name="Classe")
+    for rotulo, esperado in (("Gravadores", "TCP 554"), ("Controle de acesso", "HTTP 80")):
+        classe.select_option(label=rotulo)
+        expect(linhas(page).first.locator(".col-checagem")).to_have_text(esperado)
+        assert set(linhas(page).locator(".col-checagem").all_inner_texts()) == {esperado}
+    classe.select_option(label="Câmeras")
+    expect(linhas(page).first.locator(".col-checagem")).to_have_text("ICMP")
+
+
+def test_core_fora_ao_abrir_tenta_de_novo_e_carrega(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    falhas = {"restantes": 2}
+
+    def eu(route: Route) -> None:
+        if falhas["restantes"] > 0:
+            falhas["restantes"] -= 1
+            route.fulfill(status=502, body="")
+        else:
+            route.continue_()
+
+    page.route("**/api/v1/auth/eu", eu)
+    page.reload()
+    banner = page.locator("#banner-conexao")
+    expect(banner).to_contain_text("Reconectando…", timeout=5_000)
+    # 1 s + 2 s de recuo e a página carrega sozinha, sem recarregar
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    expect(banner).to_be_hidden()
+    assert falhas["restantes"] == 0
+
+
+def test_sair_com_falha_fica_na_pagina_e_avisa(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    page.route("**/api/v1/auth/logout", lambda r: r.fulfill(status=500, body=""))
+    page.get_by_role("button", name="Sair").click()
+    expect(page.get_by_text("Não foi possível sair. Tente de novo.")).to_be_visible()
+    assert page.url.endswith("/index.html")
+    page.unroute("**/api/v1/auth/logout")
+    page.get_by_role("button", name="Sair").click()
+    page.wait_for_url("**/login.html", timeout=10_000)
+
+
+def test_painel_de_sub_redes_lista_adiciona_e_remove(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    page.get_by_role("button", name="Sub-redes").click()
+    dialogo = page.get_by_role("dialog", name="Sub-redes monitoradas")
+    expect(dialogo).to_be_visible()
+    itens = page.locator("#lista-subredes li code")
+    expect(itens.first).to_have_text(re.compile(r"^10\.99\.\d+\.0/24$"))
+    antes = itens.count()
+    # sub-rede vazia (nenhum equipamento da demonstração nela): entra e sai sem efeito
+    nova = "10.99.250.0/24"
+    page.get_by_label("Nova sub-rede (CIDR)").fill(nova)
+    dialogo.get_by_role("button", name="Adicionar").click()
+    expect(dialogo.get_by_text(f"Sub-rede {nova} adicionada.")).to_be_visible()
+    expect(itens).to_have_count(antes + 1)
+    page.get_by_label("Nova sub-rede (CIDR)").fill("8.8.8.0/24")
+    dialogo.get_by_role("button", name="Adicionar").click()
+    expect(dialogo.get_by_role("alert")).to_have_text("A sub-rede deve ser privada (RFC 1918).")
+    page.once("dialog", lambda d: d.accept())
+    dialogo.get_by_role("button", name=f"Remover {nova}").click()
+    expect(dialogo.get_by_text(f"Sub-rede {nova} removida.")).to_be_visible()
+    expect(itens).to_have_count(antes)
+    dialogo.get_by_role("button", name="Fechar").click()
+    expect(dialogo).to_be_hidden()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO))
+
+
+def test_csv_mostra_total_de_erros(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    page.get_by_role("button", name="Importar CSV").click()
+    # 60 linhas inválidas (IP público): nada é importado, a demonstração não muda
+    corpo = "nome;ip;classe\n" + "".join(f"x{n};8.8.8.{n + 1};camera\n" for n in range(60))
+    page.get_by_label("Arquivo").set_input_files(
+        files=[{"name": "erros.csv", "mimeType": "text/csv", "buffer": corpo.encode()}]
+    )
+    page.get_by_role("dialog", name="Importar CSV").get_by_role("button", name="Importar").click()
+    expect(
+        page.get_by_text("0 importado(s), 60 linha(s) com erro (mostrando as primeiras 50).")
+    ).to_be_visible()
+    expect(page.locator(".erros-csv li")).to_have_count(50)

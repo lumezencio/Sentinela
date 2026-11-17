@@ -287,6 +287,7 @@
 
 .acoes-admin {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -486,6 +487,34 @@
   font-family: var(--fonte-mono);
 }
 
+.col-checagem {
+  font-family: var(--fonte-mono);
+}
+
+.lista-subredes {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.lista-subredes li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+}
+
+.lista-subredes code {
+  font-family: var(--fonte-mono);
+}
+
 .erros-csv {
   max-height: 160px;
   margin: 0;
@@ -583,7 +612,8 @@
   .tabela .td-ip,
   .tabela .td-classe,
   .tabela .td-desde,
-  .tabela .td-latencia {
+  .tabela .td-latencia,
+  .tabela .td-checagem {
     color: var(--texto-suave);
     font-size: 13px;
   }

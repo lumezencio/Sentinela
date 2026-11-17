@@ -61,6 +61,8 @@ export function prepararItem(e) {
     estado: e.estado,
     desde: e.desde,
     latencia_ms: e.latencia_ms ?? null,
+    checagem: e.checagem || "icmp",
+    porta: e.porta ?? null,
     _busca: normalizar(`${e.nome} ${e.ip}`),
     _ip: ipNumerico(e.ip),
   };
@@ -146,6 +148,12 @@ export function formatarLatencia(ms) {
   return ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`;
 }
 
+/** "ICMP", "TCP 554", "HTTP 80": tipo de checagem e porta, para a lista. */
+export function rotuloChecagem(checagem, porta) {
+  const tipo = String(checagem || "icmp").toUpperCase();
+  return porta ? `${tipo} ${porta}` : tipo;
+}
+
 /** Linha pronta para a tela (objeto plano, sem referência ao store). */
 export function linhaDeTela(item, store, agora) {
   const est = ESTADOS[item.estado] || ESTADOS.desconhecido;
@@ -163,5 +171,6 @@ export function linhaDeTela(item, store, agora) {
     desde: haQuanto(item.desde, agora),
     desdeTitulo: item.desde,
     latencia: formatarLatencia(item.latencia_ms),
+    checagem: rotuloChecagem(item.checagem, item.porta),
   };
 }

@@ -15,6 +15,14 @@ import { criarConexao } from "./ws.js";
 
 const CHAVE_TEMA = "sentinela-tema";
 const LIMITE_CSV = 1024 * 1024;
+const ERROS_CSV_NA_TELA = 50;
+const RECUO_INICIAL_MS = 1000; // mesmo recuo do WS: 1 s → 30 s
+const RECUO_MAXIMO_MS = 30000;
+const MSG_SAIR = "Não foi possível sair. Tente de novo.";
+
+function dormir(ms) {
+  return new Promise((resolver) => window.setTimeout(resolver, ms));
+}
 
 function temaAtual() {
   const forcado = document.documentElement.dataset.tema;
@@ -57,12 +65,21 @@ function painel() {
     enviando: false,
     csvErro: "",
     csvResultado: null,
+    subredes: [],
+    novaSubrede: "",
+    subredeErro: "",
+    subredeAviso: "",
 
     async init() {
-      const eu = await api.eu();
-      if (!eu.ok) {
-        if (eu.status !== 401) this.conexao = "reconectando";
-        return; // 401 já redireciona
+      // core fora do ar ao abrir a página: tenta de novo com recuo (1 s → 30 s)
+      let eu = await api.eu();
+      let recuo = RECUO_INICIAL_MS;
+      while (!eu.ok) {
+        if (eu.status === 401) return; // api.js já mandou para o login
+        this.conexao = "reconectando";
+        await dormir(recuo);
+        recuo = Math.min(recuo * 2, RECUO_MAXIMO_MS);
+        eu = await api.eu();
       }
       this.usuario = eu.dados.login;
       this.admin = eu.dados.papel === "admin";
@@ -214,9 +231,14 @@ function painel() {
       return this.tema === "escuro";
     },
     async sair() {
-      if (conexao) conexao.parar();
-      await api.sair();
-      irParaLogin();
+      const r = await api.sair();
+      if (r.status === 204 || r.status === 401) {
+        if (conexao) conexao.parar();
+        irParaLogin();
+        return;
+      }
+      // a sessão pode continuar válida no servidor: fica na página e avisa
+      this.aviso = MSG_SAIR;
     },
 
     // ---------- novo equipamento (admin) ----------
@@ -291,14 +313,86 @@ function painel() {
         return;
       }
       const erros = Array.isArray(r.dados.erros) ? r.dados.erros : [];
+      const total = Number.isInteger(r.dados.total_erros) ? r.dados.total_erros : erros.length;
+      const mostrados = erros.slice(0, ERROS_CSV_NA_TELA);
+      const parcial = total > mostrados.length ? ` (mostrando as primeiras ${mostrados.length})` : "";
       this.csvResultado = {
-        resumo: `${r.dados.importados} importado(s), ${erros.length} linha(s) com erro.`,
-        erros: erros.slice(0, 50).map((x) => ({ chave: x.linha, texto: `Linha ${x.linha}: ${x.motivo}` })),
+        resumo: `${r.dados.importados} importado(s), ${total} linha(s) com erro${parcial}.`,
+        erros: mostrados.map((x) => ({ chave: x.linha, texto: `Linha ${x.linha}: ${x.motivo}` })),
       };
       if (r.dados.importados > 0 && conexao) conexao.ressincronizar();
     },
     get temErrosCsv() {
       return Boolean(this.csvResultado && this.csvResultado.erros.length);
+    },
+
+    // ---------- sub-redes (admin) ----------
+    async abrirSubredes() {
+      this.novaSubrede = "";
+      this.subredeErro = "";
+      this.subredeAviso = "";
+      this.$refs.dlgSubredes.showModal();
+      await this.carregarSubredes();
+    },
+    fecharSubredes() {
+      this.$refs.dlgSubredes.close();
+    },
+    async carregarSubredes() {
+      const r = await api.listarSubredes();
+      if (!r.ok) {
+        this.subredeErro = r.erro;
+        return;
+      }
+      this.subredes = (Array.isArray(r.dados) ? r.dados : []).map((s) => ({
+        id: s.id,
+        cidr: s.cidr,
+        rotulo: `Remover ${s.cidr}`,
+      }));
+    },
+    get semSubredes() {
+      return this.subredes.length === 0 && !this.subredeErro;
+    },
+    async adicionarSubrede() {
+      if (this.enviando) return;
+      const cidr = this.novaSubrede.trim();
+      this.subredeErro = "";
+      this.subredeAviso = "";
+      if (!cidr) {
+        this.subredeErro = "Informe a sub-rede, ex. 10.99.0.0/24.";
+        return;
+      }
+      this.enviando = true;
+      const r = await api.criarSubrede(cidr);
+      this.enviando = false;
+      if (!r.ok) {
+        this.subredeErro = r.erro;
+        return;
+      }
+      this.novaSubrede = "";
+      this.subredeAviso = `Sub-rede ${r.dados.cidr} adicionada.`;
+      await this.carregarSubredes();
+      if (conexao) conexao.ressincronizar(); // equipamentos podem ter sido retomados
+    },
+    async removerSubrede(id) {
+      if (this.enviando) return;
+      const sub = this.subredes.find((s) => s.id === id);
+      if (!sub) return;
+      const ok = window.confirm(
+        `Remover ${sub.cidr}? Os equipamentos dela ficam pausados até a sub-rede voltar.`,
+      );
+      if (!ok) return;
+      this.subredeErro = "";
+      this.subredeAviso = "";
+      this.enviando = true;
+      const r = await api.removerSubrede(id);
+      this.enviando = false;
+      if (!r.ok) {
+        this.subredeErro = r.erro;
+        return;
+      }
+      this.subredeAviso = `Sub-rede ${sub.cidr} removida.`;
+      await this.carregarSubredes();
+      if (conexao) conexao.ressincronizar();
     },
   };
 }

@@ -76,6 +76,9 @@ export const api = {
   sair: () => requisitar("POST", "/auth/logout", { redirecionar401: false }),
   eu: () => requisitar("GET", "/auth/eu"),
   criarEquipamento: (dados) => requisitar("POST", "/equipamentos", { json: dados }),
+  listarSubredes: () => requisitar("GET", "/subredes"),
+  criarSubrede: (cidr) => requisitar("POST", "/subredes", { json: { cidr } }),
+  removerSubrede: (id) => requisitar("DELETE", `/subredes/${encodeURIComponent(id)}`),
   importarCsv: (arquivo) => {
     const form = new FormData();
     form.append("arquivo", arquivo);

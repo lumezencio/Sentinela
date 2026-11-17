@@ -7,7 +7,8 @@
 # Gera .env (só se não existir; nunca sobrescreve), uma CA local e o certificado do
 # host em certs/, sobe o compose e imprime a URL e o caminho da CA para instalar nos
 # dispositivos. Variáveis opcionais: SENTINELA_PORTA_HTTPS, SENTINELA_PORTA_HTTP (gravadas
-# no .env na criação) e SENTINELA_IPS (IPs extras para o certificado, separados por espaço).
+# no .env na criação), SENTINELA_IPS (IPs extras para o certificado, separados por espaço)
+# e SENTINELA_NOMES (nomes DNS extras para o certificado, separados por vírgula).
 set -euo pipefail
 
 # Git Bash no Windows: não converter "/CN=..." do openssl em caminho
@@ -21,7 +22,7 @@ for arg in "$@"; do
   case "$arg" in
     --demo) DEMO=1 ;;
     -h | --help)
-      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -157,6 +158,28 @@ detectar_ips() {
   done
 }
 
+# nome DNS aceitável no SAN: rótulos de letras, dígitos e hífen (sem curinga, sem espaço)
+nome_valido() {
+  local rotulo='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+  [[ ${#1} -le 253 && "$1" =~ ^$rotulo(\.$rotulo)*$ ]]
+}
+
+# SENTINELA_NOMES="sentinela.local,monitor.empresa.lan" -> ",DNS:sentinela.local,DNS:..."
+nomes_extras() {
+  local nomes nome saida=""
+  IFS=, read -r -a nomes <<<"${SENTINELA_NOMES:-}"
+  for nome in ${nomes[@]+"${nomes[@]}"}; do
+    nome="${nome// /}"
+    [[ -z "$nome" || "$nome" == "localhost" ]] && continue
+    if nome_valido "$nome"; then
+      saida+=",DNS:$nome"
+    else
+      echo "[!] SENTINELA_NOMES: '$nome' não é um nome DNS válido; ignorado" >&2
+    fi
+  done
+  printf '%s' "$saida"
+}
+
 # lê a saída de detectar_ips num array (sem mapfile: bash 3.2 do macOS)
 ler_ips() {
   IPS=()
@@ -201,7 +224,7 @@ if [[ -f "$SRV_CRT" && -f "$SRV_KEY" ]]; then
   echo "[=] certificado do host já existe: mantido (apague certs/web/ para gerar outro)"
 else
   ler_ips
-  SAN="DNS:localhost,IP:127.0.0.1"
+  SAN="DNS:localhost$(nomes_extras),IP:127.0.0.1"
   for ip in ${IPS[@]+"${IPS[@]}"}; do SAN+=",IP:$ip"; done
   EXT="$(mktemp "$WEB_DIR/.ext.XXXXXX")"
   CSR="$(mktemp "$WEB_DIR/.csr.XXXXXX")"
@@ -297,6 +320,10 @@ if [[ $DEMO -eq 1 ]]; then
     echo "  Login: admin   Senha: $SENHA_DEMO   (mostrada só agora; guarde-a)"
   fi
 else
-  echo "  Crie o primeiro administrador:"
+  echo "  1) Crie o primeiro administrador:"
   echo "    docker compose run --rm core python -m sentinela.cli criar-admin --login <seu-login>"
+  echo "  2) Declare as sub-redes privadas a monitorar (sem elas nada é checado):"
+  echo "    na tela, botão \"Sub-redes\" (administrador), que aplica na hora; ou pela CLI:"
+  echo "    docker compose run --rm core python -m sentinela.cli sub-rede adicionar 10.99.0.0/24"
+  echo "    (pela CLI com o Sentinela no ar, aplique com: docker compose restart core)"
 fi

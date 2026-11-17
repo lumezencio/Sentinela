@@ -4,7 +4,9 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **projeto arquitetônico** — ainda sem código. Veja [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
+> Status: **Fase 1 concluída** (núcleo de monitoramento, lista ao vivo, Docker). A descoberta
+> automática, a teia 3D e os alertas vêm nas próximas fases. Veja
+> [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
 
 ## Como funciona
 
@@ -27,6 +29,44 @@ O instalador gera o `.env` (só se não existir), uma CA local e o certificado d
 `certs/`, sobe os containers e mostra a URL e o caminho da CA para instalar nos dispositivos.
 Em Linux sem root e sem `setfacl`, ele para e pede `sudo ./install.sh`, para não deixar a
 chave TLS legível por todos.
+
+O certificado já cobre `localhost`, `127.0.0.1` e os IPs privados do host. Para acessar
+também por nome, passe os nomes DNS em `SENTINELA_NOMES` (separados por vírgula) e, para IPs
+extras, `SENTINELA_IPS` (separados por espaço):
+
+```bash
+SENTINELA_NOMES="sentinela.local,monitor.empresa.lan" ./install.sh
+```
+
+O certificado só é gerado na primeira vez; para incluir nomes depois, apague `certs/web/` e
+rode o instalador de novo.
+
+### Primeiros passos (instalação real)
+
+1. Crie o administrador:
+
+   ```bash
+   docker compose run --rm core python -m sentinela.cli criar-admin --login <seu-login>
+   ```
+
+2. Declare as sub-redes privadas que o Sentinela pode checar. Sem nenhuma, nada é
+   monitorado e todo cadastro é recusado (a Guarda só deixa sair pacote para dentro delas).
+   - **Pela tela** (recomendado com o Sentinela no ar): entre como administrador e use o botão
+     **Sub-redes** na lista. Vale na hora.
+   - **Pela CLI** (instalação, ou sem acesso à tela):
+
+     ```bash
+     docker compose run --rm core python -m sentinela.cli sub-rede adicionar 10.99.0.0/24
+     docker compose run --rm core python -m sentinela.cli sub-rede listar
+     docker compose run --rm core python -m sentinela.cli sub-rede remover 10.99.0.0/24
+     docker compose restart core   # com o Sentinela no ar, aplica a mudança da CLI
+     ```
+
+   As regras são as mesmas nos dois caminhos: só redes privadas (RFC 1918), de /16 a /30,
+   e a mudança fica na auditoria. Ao remover uma sub-rede, os equipamentos dela ficam pausados;
+   ao adicioná-la de volta, eles voltam sozinhos (os pausados à mão continuam pausados).
+
+3. Cadastre os equipamentos pela tela (**Novo equipamento** ou **Importar CSV**).
 
 > **Docker Desktop (Windows/macOS):** o encaminhamento de portas do Docker Desktop faz
 > todos os clientes chegarem ao nginx com o mesmo IP (o gateway da rede interna). Com isso,
