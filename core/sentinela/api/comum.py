@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from ipaddress import IPv4Address
 from typing import Any, cast
 
 from fastapi import HTTPException, Request, status
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sentinela.api.deps import agora_utc
 from sentinela.db.modelos import Auditoria, Classe, Equipamento, Evento, Usuario
 from sentinela.monitor.agendador import CAUSA_FORA, Agendador, Alvo
+from sentinela.monitor.checagens import GRAVADOR
 from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de
 from sentinela.rede.guarda import DestinoProibido, Guarda, Protocolo
@@ -36,7 +38,17 @@ def nao_encontrado() -> HTTPException:
 
 
 def validar_destino(guarda: Guarda, ip: str, porta: int | None, checagem: str) -> str:
-    """Valida com a Guarda viva; devolve o IP normalizado ou levanta DestinoProibido."""
+    """Valida com a Guarda viva; devolve o IP normalizado ou levanta DestinoProibido.
+
+    Câmera atrás de gravador (``checagem == "gravador"``, R3) não passa pela Guarda: nenhum
+    socket vai até ela (o estado vem do gravador, cujo host é validado); o IP interno só
+    precisa ser um IPv4 bem formado.
+    """
+    if checagem == GRAVADOR:
+        try:
+            return str(IPv4Address(ip.strip()))
+        except ValueError:
+            raise DestinoProibido("Endereço IPv4 inválido.") from None
     destino = guarda.validar(ip, porta, cast(Protocolo, checagem))
     return str(destino.ip)
 
@@ -167,12 +179,19 @@ async def sincronizar(
     - dentro e pausado SÓ por estar fora (última causa de pausa ``fora_das_subredes``):
       ``marcar_retomada`` com causa ``dentro_das_subredes``; pausa manual continua;
     - dentro e ainda não registrado no agendador: vira alvo a adicionar.
+
+    Câmera atrás de gravador (R3) nunca é pausada nem retomada por sub-rede: segue o
+    gravador; só entra como alvo a adicionar se ainda não estiver no agendador.
     """
     r = Sincronizacao()
     linhas = await db.execute(
         select(Equipamento, Classe).join(Classe, Equipamento.classe_id == Classe.id)
     )
     for eq, classe in linhas:
+        if eq.checagem == GRAVADOR:
+            if not eq.pausado and not _registrado(agendador, eq):
+                r.adicionar.append(alvo_de(eq, classe))
+            continue
         try:
             validar_destino(candidata, eq.ip, eq.porta, eq.checagem)
         except DestinoProibido:

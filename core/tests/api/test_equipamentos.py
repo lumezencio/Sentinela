@@ -536,3 +536,76 @@ async def test_remover_apaga_eventos(app: FastAPI, cliente_admin: httpx.AsyncCli
     await cliente_admin.delete(f"{EQUIP}/{eid}")
     async with _sessoes(app)() as db:
         assert (await db.execute(select(Evento))).first() is None
+
+
+# ---- R3: câmera atrás de gravador não passa pela Guarda -------------------------------------
+
+
+async def _camera_de_gravador(
+    app: FastAPI, nvr: str, ip: str = "192.168.254.11", canal: int = 1
+) -> str:
+    from datetime import UTC, datetime
+
+    from sentinela.db.modelos import Classe
+    from sentinela.monitor.montagem import alvo_de
+
+    agora = datetime(2026, 1, 1, tzinfo=UTC)
+    async with _sessoes(app)() as db:
+        classe = await db.scalar(select(Classe).where(Classe.slug == "camera"))
+        assert classe is not None
+        cam = Equipamento(
+            nome=f"Canal {canal}",
+            ip=ip,
+            classe_id=classe.id,
+            checagem="gravador",
+            estado="online",
+            estado_desde=agora,
+            criado_em=agora,
+            pai_id=nvr,
+            canal=canal,
+        )
+        db.add(cam)
+        await db.commit()
+        _agendador(app).adicionar(alvo_de(cam, classe))
+        return cam.id
+
+
+async def test_mudar_subredes_nunca_pausa_camera_de_gravador(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    s = await _subrede(cliente_admin, "10.99.0.0/24")
+    await _subrede(cliente_admin, "10.99.1.0/24")
+    nvr = (await _equip(cliente_admin, nome="Gravador", ip="10.99.0.20")).json()["id"]
+    cam = await _camera_de_gravador(app, nvr)
+    # remover a sub-rede do gravador pausa o gravador, não a câmera (ela segue o gravador)
+    assert (await cliente_admin.delete(f"{SUBREDES}/{s['id']}")).status_code == 204
+    assert _agendador(app).estado_de(nvr) is Estado.PAUSADO
+    assert _agendador(app).estado_de(cam) is Estado.ONLINE
+    corpo = (await cliente_admin.get(f"{EQUIP}/{cam}")).json()
+    assert corpo["pausado"] is False
+    assert (await cliente_admin.get(f"{EQUIP}/{cam}/eventos")).json() == []
+    # e adicionar sub-rede também não a toca
+    await _subrede(cliente_admin, "10.99.2.0/24")
+    assert _agendador(app).estado_de(cam) is Estado.ONLINE
+
+
+async def test_editar_e_retomar_camera_de_gravador_sem_guarda(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    await _subrede(cliente_admin)
+    nvr = (await _equip(cliente_admin, nome="Gravador", ip="10.99.0.20")).json()["id"]
+    cam = await _camera_de_gravador(app, nvr)
+    outra = await _camera_de_gravador(app, nvr, ip="192.168.254.12", canal=2)
+    # IP interno fora das sub-redes e repetido entre câmeras de gravador: permitido
+    r = await cliente_admin.patch(f"{EQUIP}/{outra}", json={"ip": "192.168.254.11"})
+    assert r.status_code == 200, r.text
+    assert r.json()["checagem"] == "gravador"
+    r = await cliente_admin.patch(f"{EQUIP}/{cam}", json={"nome": "Portão"})
+    assert r.status_code == 200, r.text
+    assert (await cliente_admin.post(f"{EQUIP}/{cam}/pausar")).status_code == 200
+    r = await cliente_admin.post(f"{EQUIP}/{cam}/retomar")
+    assert r.status_code == 200, r.text
+    assert _agendador(app).estado_de(cam) is not Estado.PAUSADO
+    # um equipamento comum continua sem poder usar o IP de outro
+    r = await _equip(cliente_admin, nome="x", ip="10.99.0.20")
+    assert r.status_code == 409

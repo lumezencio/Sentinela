@@ -58,6 +58,25 @@ def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
     )
 
 
+async def registrar_no_agendador(
+    agendador: Agendador, db: AsyncSession, eq: Equipamento, classe: Classe, *, novo: bool
+) -> None:
+    """Põe (ou atualiza) o equipamento no agendador vivo, sem reiniciar. Chamar DEPOIS do
+    commit. Se o agendador recusar (Guarda mudou no meio), ele pausa com causa
+    ``fora_das_subredes``; a linha é relida para refletir esse estado gravado.
+
+    Caminho único do cadastro manual (API) e da aprovação de descobertas.
+    """
+    alvo = alvo_de(eq, classe)
+    if novo:
+        agendador.adicionar(alvo)
+    else:
+        agendador.atualizar(alvo)
+    if agendador.estado_de(eq.id) is None and not eq.pausado:
+        await agendador.aguardar_gravacoes()
+        await db.refresh(eq)
+
+
 async def sub_redes_do_banco(db: AsyncSession) -> list[IPv4Network]:
     """Sub-redes válidas gravadas; uma linha inválida (editada à mão) é ignorada."""
     redes: list[IPv4Network] = []

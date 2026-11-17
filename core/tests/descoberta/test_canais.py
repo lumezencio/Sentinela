@@ -16,8 +16,13 @@ from sentinela.db.base import Base
 from sentinela.db.modelos import Classe, Equipamento, Fonte
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
-from sentinela.descoberta.canais import CAUSA_GRAVADOR_MUDO, LeitorCanais
-from sentinela.descoberta.fontes.base import ErroColeta
+from sentinela.descoberta.canais import (
+    CAUSA_CERTIFICADO_MUDOU,
+    CAUSA_CERTIFICADO_NAO_CONFIADO,
+    CAUSA_GRAVADOR_MUDO,
+    LeitorCanais,
+)
+from sentinela.descoberta.fontes.base import CertificadoMudou, CertificadoNaoConfiado, ErroColeta
 from sentinela.monitor.agendador import Agendador, Alvo
 from sentinela.monitor.estados import Estado, ResultadoChecagem, Transicao
 from sentinela.monitor.limitador import Limitador
@@ -326,3 +331,79 @@ async def test_leitor_ritmo_do_intervalo_da_classe_camera(cena: Cena) -> None:
         tarefa.cancel()
         with pytest.raises(asyncio.CancelledError):
             await tarefa
+
+
+# ---- proteção por ciclo e certificado (R7) ---------------------------------------------------
+
+
+async def test_leitor_sobrevive_a_excecao_inesperada_no_ciclo(
+    cena: Cena, caplog: pytest.LogCaptureFixture
+) -> None:
+    leitor = cena.leitor()
+    original = leitor.ciclo
+    falhas = [RuntimeError("detalhe interno")]
+
+    async def ciclo_instavel() -> float:
+        if falhas:
+            raise falhas.pop()
+        return await original()
+
+    leitor.ciclo = ciclo_instavel  # type: ignore[method-assign]
+    tarefa = asyncio.create_task(leitor.executar())
+    try:
+        await _dormindo(cena.relogio)
+        await cena.relogio.avancar(15)
+        await _dormindo(cena.relogio)
+        assert not tarefa.done()  # o laço continuou depois da exceção
+        assert len(cena.fontes[F1].chamadas) == 1
+        assert "detalhe interno" not in caplog.text
+        assert "ciclo da leitura de canais falhou" in caplog.text
+    finally:
+        tarefa.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarefa
+
+
+async def test_leitor_excecao_de_um_gravador_nao_deixa_o_outro_orfao(cena: Cena) -> None:
+    original = cena.agendador.aplicar_externo
+
+    def aplicar(id: str, r: ResultadoChecagem) -> None:
+        if id == "cam1":
+            raise RuntimeError("bug")
+        original(id, r)
+
+    cena.agendador.aplicar_externo = aplicar  # type: ignore[method-assign]
+    await cena.leitor().ciclo()  # não levanta
+    # o outro gravador terminou a leitura no mesmo ciclo
+    assert [id for id, _ in cena.gravador.amostras].count("cam4") == 1
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+@pytest.mark.parametrize(
+    ("erro", "causa"),
+    [
+        (CertificadoMudou("ab" * 32), CAUSA_CERTIFICADO_MUDOU),
+        (CertificadoNaoConfiado("cd" * 32), CAUSA_CERTIFICADO_NAO_CONFIADO),
+    ],
+)
+async def test_leitor_certificado_suspende_leitura_e_registra_erro(
+    cena: Cena, erro: ErroColeta, causa: str
+) -> None:
+    assert causa != CAUSA_GRAVADOR_MUDO
+    cena.fontes[F1] = FonteFalsa(erro, {1: True, 2: True, 3: True})
+    leitor = cena.leitor()
+    await leitor.ciclo()
+    for cam in CAMERAS_F1:
+        assert cena.barramento.estados(cam) == [("desconhecido", causa)]
+    async with cena.sessoes() as db:
+        fonte = await db.get(Fonte, F1)
+        assert fonte is not None and fonte.ultimo_erro == str(erro)
+    # suspenso: não lê mais o gravador até o admin confiar de novo
+    await leitor.ciclo()
+    assert len(cena.fontes[F1].chamadas) == 1
+    assert leitor.suspensa(F1)
+    assert cena.estado("cam1") is Estado.DESCONHECIDO
+    leitor.retomar(F1)
+    await leitor.ciclo()
+    assert len(cena.fontes[F1].chamadas) == 2
+    assert cena.estado("cam1") is Estado.ONLINE
