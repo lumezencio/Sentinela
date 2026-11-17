@@ -57,10 +57,17 @@ def test_senha_errada_mostra_erro_generico(page: Page, alvo: Alvo) -> None:
 
 def test_login_mostra_total_e_contadores(page: Page, alvo: Alvo) -> None:
     entrar(page, alvo)
-    soma = sum(
-        int(page.locator(f"#contador-{nome}").inner_text())
-        for nome in ("online", "instavel", "offline", "pausado", "aguardando")
+    # a demonstração muda estados o tempo todo: lê os 5 contadores de uma vez e repete até fechar
+    leitura = (
+        "() => ['online', 'instavel', 'offline', 'pausado', 'aguardando']"
+        ".reduce((s, n) => s + Number(document.getElementById('contador-' + n).textContent), 0)"
     )
+    soma = 0
+    for _ in range(40):
+        soma = page.evaluate(leitura)
+        if soma == TOTAL_DEMO:
+            break
+        page.wait_for_timeout(100)
     assert soma == TOTAL_DEMO
     expect(linhas(page)).to_have_count(POR_PAGINA)
     # abas habilitadas; a Lista é a primeira tela
@@ -406,6 +413,7 @@ def test_trocar_abas_varias_vezes_um_renderer(page: Page, alvo: Alvo) -> None:
     abrir_teia(page)
     for n in range(10):
         page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
+    page.get_by_role("tab", name="Lista").click()  # o laço termina na Teia: o estado final é a Lista
     expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
     expect(page.locator("#conteudo-lista")).to_be_visible()
     page.get_by_role("tab", name="Teia").click()
@@ -580,12 +588,10 @@ def test_organograma_360_pior_estado_primeiro_sem_rolagem(browser: Browser, alvo
         itens = cameras.locator(".org-item")
         expect(itens).to_have_count(POR_PAGINA)
         expect(cameras.locator(".org-pagina-info")).to_have_text("1 de 3")
-        primeira = set(itens.evaluate_all("is => is.map(i => i.dataset.id)"))
         cameras.get_by_role("button", name=re.compile("^Próxima")).click()
         expect(cameras.locator(".org-pagina-info")).to_have_text("2 de 3")
         expect(itens).to_have_count(POR_PAGINA)
-        segunda = set(itens.evaluate_all("is => is.map(i => i.dataset.id)"))
-        assert len(segunda) == POR_PAGINA and not primeira & segunda
+        # estados mudam e reordenam: só contagem e posição, não a disjunção entre duas leituras
         assert page.evaluate(SEM_ROLAGEM_HORIZONTAL) <= 360
         # filtro "offline": só itens offline e ainda sem rolagem horizontal
         secao.get_by_role("combobox", name="Estado").select_option(label="Offline")
@@ -632,7 +638,8 @@ def test_organograma_filtros_compartilhados_recolher_e_painel(page: Page, alvo: 
     expect(alternar).to_have_attribute("aria-expanded", "false")
     alternar.click()
     # clicar num equipamento abre o painel com o histórico (sem carregar a Teia)
-    item = gravadores.locator(".org-item").first
+    id_item = gravadores.locator(".org-item").first.get_attribute("data-id")
+    item = gravadores.locator(f'.org-item[data-id="{id_item}"]')
     nome = item.locator(".org-nome").inner_text()
     item.click()
     painel = page.get_by_role("dialog", name=nome)

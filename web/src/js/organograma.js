@@ -131,6 +131,7 @@ export function organogramaDoPainel(store) {
   let ultimo = 0;
   let adiado = 0;
   let focoAntesDoDialogo = null;
+  let semFoco = false; // equipamento sumiu: não devolver foco a elemento prestes a sair do DOM
 
   return {
     orgCartoes: [],
@@ -140,16 +141,26 @@ export function organogramaDoPainel(store) {
       window.addEventListener("hashchange", () => {
         if (this.aba !== "organograma") this.fecharNoOrganograma();
       });
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) this.renderizarOrganograma(true);
+      });
     },
 
     /** Chamado pelo renderizar() do app: no máximo 2 vezes por segundo. */
     renderizarOrganograma(imediato = false) {
       if (this.aba !== "organograma") return;
+      // equipamento aberto sumiu do store: fecha o diálogo já, sem esperar o limite de render
+      if (this.equipAberto && !store.itens.has(this.equip.id)) {
+        semFoco = true; // consumido em aoFecharDialogoOrg (o evento "close" é assíncrono)
+        this.fecharNoOrganograma();
+      }
+      if (document.hidden) return; // aba oculta: nada de render (volta no visibilitychange)
       const agora = Date.now();
       if (!imediato && agora - ultimo < INTERVALO_MIN_MS) {
         if (!adiado) {
           adiado = window.setTimeout(() => {
             adiado = 0;
+            if (document.hidden) return;
             this.renderizarOrganograma(true);
           }, INTERVALO_MIN_MS - (agora - ultimo));
         }
@@ -183,7 +194,7 @@ export function organogramaDoPainel(store) {
         };
       });
       const dlg = this.$refs.dlgEquipOrg;
-      if (dlg && dlg.open && !this.equipAberto) dlg.close(); // equipamento sumiu do store
+      if (dlg && dlg.open && !this.equipAberto) dlg.close();
       if (this.equipAberto) {
         const it = store.itens.get(this.equip.id);
         if (it) this.equip = fichaDoEquipamento(it, store);
@@ -239,7 +250,8 @@ export function organogramaDoPainel(store) {
     },
     /** <dialog> fechou (botão, Esc ou troca de aba): fecha o painel e devolve o foco. */
     aoFecharDialogoOrg() {
-      const voltar = focoAntesDoDialogo;
+      const voltar = semFoco ? null : focoAntesDoDialogo;
+      semFoco = false;
       focoAntesDoDialogo = null;
       this.fecharEquipamento(false);
       if (voltar && voltar.isConnected && typeof voltar.focus === "function") voltar.focus();
