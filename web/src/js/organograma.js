@@ -151,7 +151,9 @@ export function organogramaDoPainel(store) {
       if (this.aba !== "organograma") return;
       // equipamento aberto sumiu do store: fecha o diálogo já, sem esperar o limite de render
       if (this.equipAberto && !store.itens.has(this.equip.id)) {
-        semFoco = true; // consumido em aoFecharDialogoOrg (o evento "close" é assíncrono)
+        const dlgAberto = this.$refs.dlgEquipOrg;
+        // só marca se o diálogo está aberto: o evento "close" (assíncrono) é quem consome a marca
+        if (dlgAberto && dlgAberto.open) semFoco = true;
         this.fecharNoOrganograma();
       }
       if (document.hidden) return; // aba oculta: nada de render (volta no visibilitychange)

@@ -124,10 +124,14 @@ No Organograma, Enter abre o equipamento e **Esc** fecha a ficha devolvendo o fo
 
 **Desempenho e degradação automática.** Até 1.000 equipamentos a cena é completa; de 1.000 a
 3.000 some a partícula de fluxo, a resolução cai e o brilho (bloom) é desligado; acima de 3.000, ou
-se o FPS ficar abaixo de 30 por 3 segundos, a Teia agrupa cada classe em um super-nó. O brilho só
+se o FPS ficar abaixo de 24 por 5 segundos, a Teia agrupa cada classe em um super-nó (no máximo
+uma entrada em modo agrupado por minuto; "Ver tudo", trocar de estilo ou voltar à aba liberam o
+modo completo de novo). O brilho só
 liga se o FPS medido nos primeiros 3 segundos for 50 ou mais. Com a aba oculta, o desenho pausa.
-Com `prefers-reduced-motion`, não há partículas, pulso nem rotação automática. Os números medidos
-estão em `web/tests/medir_fps.py` (script de medição, fora do CI).
+Com `prefers-reduced-motion`, não há partículas, pulso nem rotação automática. Para medir o FPS
+da Teia em cada estilo na sua máquina, rode `web/tests/medir_fps.py` (de `core/`: `uv run --with
+playwright --with cryptography python ../web/tests/medir_fps.py --equipamentos 1000 --modo gpu`;
+usa um banco temporário e não entra no CI).
 
 **Sem WebGL.** Se o navegador não oferecer WebGL, a aba Teia mostra um aviso e leva ao Organograma.
 
