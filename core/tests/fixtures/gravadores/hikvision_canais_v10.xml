@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<InputProxyChannelList version="1.0" xmlns="http://www.hikvision.com/ver10/XMLSchema">
+<InputProxyChannel version="1.0">
+<id>1</id>
+<name>Camera 01</name>
+<sourceInputPortDescriptor>
+<adminProtocol>HIKVISION</adminProtocol>
+<addressingFormatType>ipaddress</addressingFormatType>
+<ipAddress>10.99.5.21</ipAddress>
+<managePortNo>8000</managePortNo>
+<srcInputPort>1</srcInputPort>
+<userName>usuario-camera</userName>
+</sourceInputPortDescriptor>
+</InputProxyChannel>
+<InputProxyChannel version="1.0">
+<id>3</id>
+<name>Camera 03</name>
+<sourceInputPortDescriptor>
+<adminProtocol>HIKVISION</adminProtocol>
+<addressingFormatType>hostname</addressingFormatType>
+<hostName>camera-fundos.exemplo.invalid</hostName>
+<managePortNo>8000</managePortNo>
+<srcInputPort>1</srcInputPort>
+<userName>usuario-camera</userName>
+</sourceInputPortDescriptor>
+</InputProxyChannel>
+</InputProxyChannelList>

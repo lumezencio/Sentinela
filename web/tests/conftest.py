@@ -4,6 +4,11 @@ Sem ``SENTINELA_URL_SMOKE``: sobe um uvicorn real em HTTPS (certificado autoassi
 descartável) em 127.0.0.1 com banco SQLite temporário, modo demonstração e um admin; o
 ``web/src`` é servido como estático NA MESMA ORIGEM só aqui, nunca no código de produção.
 
+Fase 3: o modo demonstração já semeia as três fontes simuladas (MikroTik, switch SNMP e
+gravador de 16 canais, todas em 10.99.x) e o orquestrador as coleta ao subir, então a fila de
+Novos chega com ~40 descobertas sem nenhum pacote na rede. ``alvo_fila_grande`` sobe um
+segundo core (sem demonstração) com 2.000 descobertas pendentes semeadas no banco.
+
 Com ``SENTINELA_URL_SMOKE``: usa a URL dada (compose) e as credenciais de
 ``SENTINELA_SMOKE_LOGIN``/``SENTINELA_SMOKE_SENHA``; derrubar/levantar o core vira
 ``docker compose stop/start core`` SÓ se a URL for local (localhost/127.0.0.1) e
@@ -96,10 +101,14 @@ def _certificado(pasta: Path) -> tuple[Path, Path]:
 
 
 async def _preparar_banco(
-    banco_url: str, login: str, senha: str, leitor: tuple[str, str] | None = None
+    banco_url: str,
+    login: str,
+    senha: str,
+    leitor: tuple[str, str] | None = None,
+    descobertas: int = 0,
 ) -> None:
     from sentinela.db.base import Base
-    from sentinela.db.modelos import Usuario
+    from sentinela.db.modelos import Descoberta, Usuario
     from sentinela.db.sessao import criar_motor, fabrica_sessao
     from sentinela.seguranca.senhas import gerar_hash
 
@@ -112,6 +121,24 @@ async def _preparar_banco(
             if leitor:
                 db.add(
                     Usuario(login=leitor[0], hash_senha=gerar_hash(leitor[1]), papel="visualizador")
+                )
+            agora = dt.datetime.now(dt.UTC)
+            for n in range(descobertas):  # fila grande sintética: 10.99.x, MAC 02:00:00:…
+                db.add(
+                    Descoberta(
+                        chave=f"02:00:00:fc:{n // 256:02x}:{n % 256:02x}",
+                        ip=f"10.99.{100 + n // 250}.{n % 250 + 1}",
+                        mac=f"02:00:00:fc:{n // 256:02x}:{n % 256:02x}",
+                        nome_sugerido=f"aparelho-{n:04d}",
+                        classe_sugerida="iot",
+                        confianca=0.6,
+                        sinais={"motivos": [{"descricao": "Nome DHCP", "pontos": {"iot": 60}}]},
+                        origens=[{"origem": "dhcp", "fonte_id": None}],
+                        status="pendente",
+                        fora_das_subredes=True,
+                        primeira_vez=agora - dt.timedelta(seconds=n),
+                        ultima_vez=agora,
+                    )
                 )
             await db.commit()
     finally:
@@ -138,8 +165,11 @@ def _em_thread(funcao: Any) -> None:
 class ServidorLocal:
     """uvicorn numa thread; ``derrubar``/``levantar`` simulam reiniciar o processo do core."""
 
-    def __init__(self, banco_url: str, porta: int, chave: Path, cert: Path) -> None:
+    def __init__(
+        self, banco_url: str, porta: int, chave: Path, cert: Path, demo: bool = True
+    ) -> None:
         self._banco_url = banco_url
+        self._demo = demo
         self.porta = porta
         self._chave = chave
         self._cert = cert
@@ -157,7 +187,8 @@ class ServidorLocal:
             ambiente="desenvolvimento",
             banco_url=self._banco_url,
             chave_sessao="chave-do-smoke-nao-secreta",  # noqa: S106 - só teste
-            demo=True,
+            chave_credenciais=secrets.token_hex(32),
+            demo=self._demo,
         )
         app = criar_app(settings)
 
@@ -267,6 +298,31 @@ def alvo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]:
         )
     finally:
         servidor.derrubar()
+
+
+@pytest.fixture(scope="session")
+def alvo_fila_grande(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]:
+    """Core sem demonstração com 2.000 descobertas pendentes (paginação da aba Novos)."""
+    if os.environ.get("SENTINELA_URL_SMOKE"):
+        pytest.skip("fila de 2.000 só com o core local do smoke (não mexe no compose)")
+    pasta = tmp_path_factory.mktemp("fila")
+    banco_url = f"sqlite+aiosqlite:///{(pasta / 'fila.db').as_posix()}"
+    login, senha = "admin", secrets.token_urlsafe(18)
+    _em_thread(lambda: asyncio.run(_preparar_banco(banco_url, login, senha, descobertas=2000)))
+    chave, cert = _certificado(pasta)
+    servidor = ServidorLocal(banco_url, _porta_livre(), chave, cert, demo=False)
+    servidor.levantar()
+    try:
+        yield Alvo(f"https://127.0.0.1:{servidor.porta}", login, senha, servidor)
+    finally:
+        servidor.derrubar()
+
+
+@pytest.fixture(scope="session")
+def base_url(alvo: Alvo) -> str:
+    """URL do alvo. Substitui o fallback de ``base_url`` do pytest-playwright 0.10, que é um
+    método de instância com escopo de sessão (o pytest 9 avisa com PytestRemovedIn10Warning)."""
+    return alvo.url
 
 
 @pytest.fixture(scope="session")

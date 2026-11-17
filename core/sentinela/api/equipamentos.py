@@ -21,7 +21,8 @@ from sentinela.api.esquemas_equipamentos import (
 )
 from sentinela.db.modelos import Classe, Equipamento, Evento, Usuario
 from sentinela.monitor.agendador import Agendador
-from sentinela.monitor.montagem import alvo_de
+from sentinela.monitor.checagens import GRAVADOR
+from sentinela.monitor.montagem import alvo_de, registrar_no_agendador
 from sentinela.rede.guarda import Guarda
 
 router = APIRouter(prefix="/api/v1/equipamentos", tags=["equipamentos"])
@@ -46,29 +47,20 @@ async def _carregar(db: AsyncSession, id: str) -> tuple[Equipamento, Classe]:
     return eq, await comum.classe_de(db, eq)
 
 
-async def checar_unicos(db: AsyncSession, ip: str, mac: str | None, ignorar: str | None) -> None:
-    mesmo_ip = select(Equipamento.id).where(Equipamento.ip == ip, Equipamento.id != ignorar)
-    if await db.scalar(mesmo_ip) is not None:
+async def checar_unicos(
+    db: AsyncSession, ip: str, mac: str | None, ignorar: str | None, checagem: str = "icmp"
+) -> None:
+    """IP único entre equipamentos com checagem própria (câmeras de gravadores diferentes
+    podem repetir o IP interno: mesmo critério do índice único); MAC único entre todos."""
+    mesmo_ip = select(Equipamento.id).where(
+        Equipamento.ip == ip, Equipamento.id != ignorar, Equipamento.checagem != GRAVADOR
+    )
+    if checagem != GRAVADOR and await db.scalar(mesmo_ip) is not None:
         raise erro(status.HTTP_409_CONFLICT, comum.MSG_IP_DUPLICADO)
     if mac is not None:
         mesmo_mac = select(Equipamento.id).where(Equipamento.mac == mac, Equipamento.id != ignorar)
         if await db.scalar(mesmo_mac) is not None:
             raise erro(status.HTTP_409_CONFLICT, comum.MSG_MAC_DUPLICADO)
-
-
-async def _registrar_no_agendador(
-    agendador: Agendador, db: AsyncSession, eq: Equipamento, classe: Classe, *, novo: bool
-) -> None:
-    """Depois do commit. Se o agendador recusar (Guarda mudou no meio), ele pausa com causa
-    ``fora_das_subredes``; a resposta já sai com esse estado gravado."""
-    alvo = alvo_de(eq, classe)
-    if novo:
-        agendador.adicionar(alvo)
-    else:
-        agendador.atualizar(alvo)
-    if agendador.estado_de(eq.id) is None and not eq.pausado:
-        await agendador.aguardar_gravacoes()
-        await db.refresh(eq)
 
 
 async def _commit(db: AsyncSession) -> None:
@@ -141,7 +133,7 @@ async def criar(
     db.add(eq)
     auditar(db, request, admin, "equipamento.criar", eq.id, depois=retrato(eq, classe.slug))
     await _commit(db)
-    await _registrar_no_agendador(_agendador(request), db, eq, classe, novo=True)
+    await registrar_no_agendador(_agendador(request), db, eq, classe, novo=True)
     return EquipamentoSaida.de(eq, classe.slug)
 
 
@@ -161,13 +153,13 @@ async def editar(
     if {"ip", "porta", "checagem"} & dados.keys():
         # só revalida o destino se ele mudou: renomear um pausado fora das sub-redes é permitido
         ip = comum.validar_destino_http(_guarda(request), ip, porta, checagem)
-    await checar_unicos(db, ip, mac, eq.id)
+    await checar_unicos(db, ip, mac, eq.id, checagem)
     eq.ip, eq.checagem, eq.porta, eq.mac, eq.classe_id = ip, checagem, porta, mac, classe.id
     if dados.get("nome") is not None:
         eq.nome = dados["nome"]
     auditar(db, request, admin, "equipamento.editar", eq.id, antes, retrato(eq, classe.slug))
     await _commit(db)
-    await _registrar_no_agendador(_agendador(request), db, eq, classe, novo=False)
+    await registrar_no_agendador(_agendador(request), db, eq, classe, novo=False)
     return EquipamentoSaida.de(eq, classe.slug)
 
 

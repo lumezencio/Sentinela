@@ -61,11 +61,26 @@ export function montarOrganograma(store, filtros) {
   for (const slug of grupos.keys()) {
     if (!conhecidas.has(slug)) ordenadas.push({ slug, nome: slug, cor: "" });
   }
+  // câmera atrás de gravador (Fase 3): depois das soltas, agrupada sob o gravador (por nome)
+  const nomesPai = new Map();
+  for (const lista of grupos.values()) {
+    for (const it of lista) {
+      if (it.pai_id && !nomesPai.has(it.pai_id)) {
+        const pai = store.itens.get(it.pai_id);
+        nomesPai.set(it.pai_id, pai ? pai.nome : "");
+      }
+    }
+  }
+  const chavePai = (it) => (it.pai_id ? `${nomesPai.get(it.pai_id)}\t${it.pai_id}` : "");
+  const porPai = (a, b) =>
+    (a.pai_id ? 1 : 0) - (b.pai_id ? 1 : 0) ||
+    chavePai(a).localeCompare(chavePai(b), "pt-BR", { numeric: true });
+  const porCanal = (a, b) => (a.canal ?? 0) - (b.canal ?? 0);
   const resultado = [];
   for (const classe of ordenadas) {
     const itens = grupos.get(classe.slug);
     if (!itens || !itens.length) continue;
-    itens.sort((a, b) => pesoDe(a) - pesoDe(b) || porNome(a, b));
+    itens.sort((a, b) => porPai(a, b) || pesoDe(a) - pesoDe(b) || porCanal(a, b) || porNome(a, b));
     const contagem = contagemZerada();
     for (const it of itens) contagem[grupoDe(it.estado)] += 1;
     resultado.push({
@@ -75,6 +90,7 @@ export function montarOrganograma(store, filtros) {
       contagem,
       itens,
       total: itens.length,
+      nomesPai,
     });
   }
   return resultado;
@@ -83,22 +99,34 @@ export function montarOrganograma(store, filtros) {
 /** Página de um cartão já pronta para a tela (objetos planos, sem referência ao store). */
 export function paginaDoCartao(cartao, pagina) {
   const pag = paginar(cartao.itens, pagina);
-  return {
-    pagina: pag.pagina,
-    paginas: pag.paginas,
-    itens: pag.itens.map((it) => {
-      const chave = ESTADOS[it.estado] ? it.estado : "desconhecido";
-      const est = ESTADOS[chave];
-      return {
-        id: it.id,
-        nome: it.nome,
-        peso: pesoDe(it),
-        estadoClasse: `estado st-${chave}`,
-        estadoIcone: `#${est.icone}`,
-        estadoRotulo: est.dica ? `${est.rotulo} (${est.dica})` : est.rotulo,
-      };
-    }),
-  };
+  const itens = pag.itens.map((it) => {
+    const chave = ESTADOS[it.estado] ? it.estado : "desconhecido";
+    const est = ESTADOS[chave];
+    return {
+      id: it.id,
+      nome: it.nome,
+      peso: pesoDe(it),
+      estadoClasse: `estado st-${chave}`,
+      estadoIcone: `#${est.icone}`,
+      estadoRotulo: est.dica ? `${est.rotulo} (${est.dica})` : est.rotulo,
+    };
+  });
+  // grupos da página: as soltas (título vazio) e um por gravador, na ordem já ordenada
+  const grupos = [];
+  pag.itens.forEach((it, i) => {
+    const pai = it.pai_id || "";
+    let g = grupos[grupos.length - 1];
+    if (!g || g.pai !== pai) {
+      const nome = pai ? (cartao.nomesPai && cartao.nomesPai.get(pai)) || "" : "";
+      let titulo = "";
+      if (pai) titulo = nome ? `Atrás de ${nome}` : "Atrás do gravador";
+      g = { chave: pai ? `pai-${pai}` : "soltos", pai, titulo, itens: [] };
+      grupos.push(g);
+    }
+    g.itens.push(itens[i]);
+  });
+  for (const g of grupos) delete g.pai;
+  return { pagina: pag.pagina, paginas: pag.paginas, itens, grupos };
 }
 
 const CONTAGENS = [
@@ -183,6 +211,7 @@ export function organogramaDoPainel(store) {
           total: `${c.total} equipamento${c.total === 1 ? "" : "s"}`,
           contagens: contagensDeTela(c.contagem),
           itens: recolhido ? [] : pag.itens, // recolhido: nada de DOM para a grade
+          grupos: recolhido ? [] : pag.grupos, // câmeras de gravador sob o gravador
           expandido: recolhido ? "false" : "true",
           aberto: !recolhido,
           idGrade: `org-grade-${c.slug}`,

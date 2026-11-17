@@ -13,12 +13,15 @@ const AVISO_SEM_3D = "Seu navegador não tem 3D; mostrando o Organograma.";
 const MSG_HISTORICO = "Não foi possível carregar o histórico.";
 const MSG_CARGA = "Não foi possível abrir a Teia. Tente de novo ou veja o Organograma.";
 const MSG_PAUSA = "Não foi possível pausar/retomar.";
-const TITULOS = { lista: "Lista", teia: "Teia", organograma: "Organograma" };
+const TITULOS = {
+  lista: "Lista", teia: "Teia", organograma: "Organograma", novos: "Novos",
+  configuracoes: "Configurações",
+};
 
 const FICHA_VAZIA = {
   id: "", nome: "", classe: "", corClasse: "", ip: "", checagem: "", estadoClasse: "",
   estadoIcone: "#i-desconhecido", estadoRotulo: "", desde: "", desdeTitulo: "", latencia: "",
-  pausado: false,
+  pausado: false, atras: "",
 };
 
 /** Tira do palco o que uma montagem que falhou no meio deixou (canvas, camadas, atributos). */
@@ -80,7 +83,7 @@ export function visoesDoPainel(store) {
     /** Chamado pelo app.js quando /auth/eu respondeu: a Teia pode montar. */
     liberarTeia() {
       autenticado = true;
-      if (this.aba === "teia") this.entrarNaTeia();
+      this.aplicarRota(); // Teia monta; Novos/Configurações carregam (ou o visualizador sai)
     },
 
     aplicarRota() {
@@ -90,6 +93,10 @@ export function visoesDoPainel(store) {
         window.history.replaceState(null, "", "#organograma");
         nova = "organograma";
       }
+      if (nova === "configuracoes" && autenticado && !this.admin) {
+        window.history.replaceState(null, "", "#lista"); // só admin: o visualizador vai à Lista
+        nova = "lista";
+      }
       this.aba = nova;
       document.documentElement.dataset.aba = nova;
       document.title = `Sentinela · ${TITULOS[nova]}`;
@@ -97,6 +104,8 @@ export function visoesDoPainel(store) {
         if (autenticado) this.entrarNaTeia();
       } else {
         if (controle) controle.pausar();
+        if (autenticado && nova === "novos") this.entrarEmNovos();
+        if (autenticado && nova === "configuracoes") this.entrarEmConfiguracoes();
         this.agendarRender();
       }
     },
@@ -122,6 +131,12 @@ export function visoesDoPainel(store) {
     },
     get abaOrganograma() {
       return this.aba === "organograma";
+    },
+    get abaNovos() {
+      return this.aba === "novos";
+    },
+    get abaConfiguracoes() {
+      return this.aba === "configuracoes";
     },
 
     // ---------- montagem preguiçosa ----------

@@ -1,0 +1,253 @@
+# Regras do classificador (spec §5.2, arquitetura §8).
+#
+# Cada [[regra]]: quando = condições (todas precisam valer) -> pontos por classe.
+# Classes válidas: as sementes (sentinela, roteador, switch, wifi, camera, gravador,
+# controle_acesso, servidor, computador, impressora, iot, desconhecido).
+# Vence a classe com mais pontos, com no mínimo 50 pontos absolutos; senão "desconhecido".
+# Condições: fabricante_contem, porta_aberta, http_titulo_regex, origem, nome_regex,
+# sinal_contem = { chave, valores }. Regex: até 200 caracteres, aplicado a textos de até 120.
+# "descricao" aparece na tela como motivo; aceita {fabricante}, {titulo}, {nome}, {valor}.
+
+# --- câmeras e gravadores -------------------------------------------------------------------
+
+[[regra]]
+id = "fabricante-video"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Hikvision", "Dahua", "Intelbras"] }
+pontos = { camera = 30, gravador = 20 }
+
+[[regra]]
+id = "intelbras-controle-acesso"
+descricao = "Intelbras também fabrica controle de acesso"
+quando = { fabricante_contem = ["Intelbras"] }
+pontos = { controle_acesso = 10 }
+
+[[regra]]
+id = "porta-rtsp"
+descricao = "Porta 554 (vídeo RTSP) aberta"
+quando = { porta_aberta = 554 }
+pontos = { camera = 40, gravador = 25 }
+
+[[regra]]
+id = "porta-dahua"
+descricao = "Porta 37777 (serviço de gravador Dahua/Intelbras) aberta"
+quando = { porta_aberta = 37777 }
+pontos = { gravador = 50, camera = 10 }
+
+[[regra]]
+id = "porta-sdk-hikvision"
+descricao = "Porta 8000 (serviço de vídeo) aberta"
+quando = { porta_aberta = 8000 }
+pontos = { camera = 15, gravador = 15 }
+
+[[regra]]
+id = "origem-canal-gravador"
+descricao = "Aparece como canal de um gravador"
+quando = { origem = "gravador_canal" }
+pontos = { camera = 60 }
+
+[[regra]]
+id = "origem-gravador"
+descricao = "Cadastrado como gravador de vídeo"
+quando = { origem = "gravador" }
+pontos = { gravador = 60 }
+
+[[regra]]
+id = "tipo-gravador"
+descricao = "O gravador informa tipo {valor}"
+quando = { sinal_contem = { chave = "tipo", valores = ["nvr", "dvr", "xvr"] } }
+pontos = { gravador = 40 }
+
+[[regra]]
+id = "titulo-gravador"
+descricao = "Título da página: {titulo}"
+quando = { http_titulo_regex = "(?i)\\b(nvr|dvr|xvr)\\b|network video recorder|digital video recorder" }
+pontos = { gravador = 50 }
+
+[[regra]]
+id = "titulo-camera"
+descricao = "Título da página: {titulo}"
+quando = { http_titulo_regex = "(?i)\\bipc\\b|ip ?camera|network camera|webcam|c[âa]mera" }
+pontos = { camera = 50 }
+
+[[regra]]
+id = "nome-camera"
+descricao = "Nome parece de câmera: {nome}"
+quando = { nome_regex = "(?i)\\b(cam|camera|câmera|ipc)[-_ ]?\\d*\\b" }
+pontos = { camera = 30 }
+
+[[regra]]
+id = "nome-gravador"
+descricao = "Nome parece de gravador: {nome}"
+quando = { nome_regex = "(?i)\\b(nvr|dvr|xvr)" }
+pontos = { gravador = 40 }
+
+# --- controle de acesso ---------------------------------------------------------------------
+
+[[regra]]
+id = "porta-zkteco"
+descricao = "Porta 4370 (terminal de ponto/acesso) aberta"
+quando = { porta_aberta = 4370 }
+pontos = { controle_acesso = 60 }
+
+[[regra]]
+id = "titulo-controle-id"
+descricao = "Título da página: {titulo}"
+quando = { http_titulo_regex = "(?i)control ?id|idface|idaccess|idflex|idblock|idbox" }
+pontos = { controle_acesso = 70 }
+
+[[regra]]
+id = "fabricante-control-id"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Control iD"] }
+pontos = { controle_acesso = 50 }
+
+[[regra]]
+id = "fabricante-zkteco"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["ZKTeco", "ZK Teco"] }
+pontos = { controle_acesso = 50 }
+
+[[regra]]
+id = "titulo-zkteco"
+descricao = "Título da página: {titulo}"
+quando = { http_titulo_regex = "(?i)zkteco|zkbio|zk ?access|zk ?biosecurity" }
+pontos = { controle_acesso = 60 }
+
+[[regra]]
+id = "nome-controle-acesso"
+descricao = "Nome parece de controle de acesso: {nome}"
+quando = { nome_regex = "(?i)catraca|idface|idflex|idblock|biometri|portaria|controle.?acesso" }
+pontos = { controle_acesso = 40 }
+
+# --- rede: roteadores, switches, wi-fi ------------------------------------------------------
+
+[[regra]]
+id = "fabricante-mikrotik"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["MikroTik", "Routerboard"] }
+pontos = { roteador = 40, switch = 10 }
+
+[[regra]]
+id = "porta-winbox"
+descricao = "Porta 8291 (Winbox, gerência MikroTik) aberta"
+quando = { porta_aberta = 8291 }
+pontos = { roteador = 60 }
+
+[[regra]]
+id = "vizinho-mikrotik"
+descricao = "Vizinho anunciou plataforma {valor}"
+quando = { sinal_contem = { chave = "plataforma", valores = ["MikroTik"] } }
+pontos = { roteador = 50 }
+
+[[regra]]
+id = "plataforma-switch"
+descricao = "O vizinho se anuncia como {valor}"
+quando = { sinal_contem = { chave = "plataforma", valores = ["switch", "catalyst"] } }
+pontos = { switch = 60 }
+
+[[regra]]
+id = "plataforma-roteador"
+descricao = "O vizinho se anuncia como {valor}"
+quando = { sinal_contem = { chave = "plataforma", valores = ["router", "roteador"] } }
+pontos = { roteador = 60 }
+
+[[regra]]
+id = "plataforma-wifi"
+descricao = "O vizinho se anuncia como {valor}"
+quando = { sinal_contem = { chave = "plataforma", valores = ["access point", "wireless", "wifi"] } }
+pontos = { wifi = 60 }
+
+[[regra]]
+id = "origem-lldp"
+descricao = "Visto por LLDP (equipamento de rede)"
+quando = { origem = "lldp" }
+pontos = { switch = 15, roteador = 10 }
+
+[[regra]]
+id = "fabricante-ubiquiti"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Ubiquiti"] }
+pontos = { wifi = 30, switch = 10, roteador = 10, camera = 10 }
+
+[[regra]]
+id = "fabricante-tplink"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["TP-Link", "TP LINK"] }
+pontos = { roteador = 25, wifi = 20, switch = 10, camera = 10 }
+
+[[regra]]
+id = "origem-wifi"
+descricao = "Registrado na rede Wi-Fi"
+quando = { origem = "wifi" }
+pontos = { computador = 15, iot = 15 }
+
+[[regra]]
+id = "porta-telnet"
+descricao = "Porta 23 (Telnet) aberta"
+quando = { porta_aberta = 23 }
+pontos = { roteador = 10, switch = 10, iot = 10 }
+
+# --- impressoras ----------------------------------------------------------------------------
+
+[[regra]]
+id = "porta-impressao"
+descricao = "Porta 9100 (impressão) aberta"
+quando = { porta_aberta = 9100 }
+pontos = { impressora = 60 }
+
+[[regra]]
+id = "fabricante-impressora"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Epson", "Brother", "Lexmark", "Xerox", "Kyocera", "Canon", "Ricoh"] }
+pontos = { impressora = 40 }
+
+[[regra]]
+id = "fabricante-hp"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Hewlett", "HP Inc"] }
+pontos = { impressora = 25, computador = 20, servidor = 5 }
+
+[[regra]]
+id = "titulo-impressora"
+descricao = "Título da página: {titulo}"
+quando = { http_titulo_regex = "(?i)laserjet|officejet|deskjet|epson|brother|kyocera|lexmark|xerox|printer|impressora" }
+pontos = { impressora = 50 }
+
+[[regra]]
+id = "nome-impressora"
+descricao = "Nome parece de impressora: {nome}"
+quando = { nome_regex = "(?i)print|impressora|^npi[0-9a-f]{6}|^brn[0-9a-f]{6}|^epson" }
+pontos = { impressora = 40 }
+
+# --- computadores, servidores, IoT ----------------------------------------------------------
+
+[[regra]]
+id = "porta-rdp"
+descricao = "Porta 3389 (área de trabalho remota) aberta"
+quando = { porta_aberta = 3389 }
+pontos = { computador = 50, servidor = 15 }
+
+[[regra]]
+id = "porta-ssh"
+descricao = "Porta 22 (SSH) aberta"
+quando = { porta_aberta = 22 }
+pontos = { servidor = 15, iot = 5 }
+
+[[regra]]
+id = "fabricante-computador"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Dell", "Lenovo", "Apple", "Intel Corporate", "Microsoft", "ASUSTek", "Acer"] }
+pontos = { computador = 20 }
+
+[[regra]]
+id = "nome-computador"
+descricao = "Nome parece de computador: {nome}"
+quando = { nome_regex = "(?i)^(desktop|notebook|laptop|pc|win)[-_]" }
+pontos = { computador = 40 }
+
+[[regra]]
+id = "fabricante-iot"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Espressif", "Tuya", "Shelly", "Sonoff"] }
+pontos = { iot = 50 }

@@ -38,6 +38,8 @@ CAMPOS_EQUIPAMENTO = {
     "latencia_ms",
     "checagem",
     "porta",
+    "pai_id",
+    "canal",
 }
 
 type Asgi = dict[str, Any]
@@ -279,7 +281,8 @@ async def test_snapshot_com_equipamentos_e_classes(
     ws = await _aberto(abrir_ws, cliente_visualizador)
     snap = await ws.json()
     assert snap["tipo"] == "snapshot"
-    assert set(snap) == {"tipo", "classes", "equipamentos"}
+    assert set(snap) == {"tipo", "classes", "equipamentos", "pendentes"}
+    assert snap["pendentes"] == 0
     assert {c["slug"] for c in snap["classes"]} >= {"camera", "roteador"}
     assert set(snap["classes"][0]) == {
         "slug",
@@ -328,6 +331,61 @@ async def test_repassa_estado_e_latencias_do_barramento(
     barramento.publicar(Mensagem("latencias", {"lote": [["eq1", 2.5], ["eq2", None]]}))
     assert await ws.json() == {"tipo": "estado", **estado}
     assert await ws.json() == {"tipo": "latencias", "lote": [["eq1", 2.5], ["eq2", None]]}
+
+
+async def test_snapshot_traz_pendentes(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    from tests.api.apoio_descoberta import criar_descoberta
+
+    await criar_descoberta(app, "10.99.0.30", mac="02:00:00:00:00:30")
+    await criar_descoberta(app, "10.99.0.31", mac="02:00:00:00:00:31")
+    await criar_descoberta(app, "10.99.0.32", mac="02:00:00:00:00:32", status="ignorada")
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    assert (await ws.json())["pendentes"] == 2
+
+
+async def test_repassa_descoberta_varredura_e_pendentes(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    await ws.json()  # snapshot
+    barramento: Barramento = app.state.barramento
+    nova = {"acao": "nova", "id": "d1", "classe_sugerida": "camera", "confianca": 0.9}
+    barramento.publicar(Mensagem("descoberta", nova))
+    varredura = {"cidr": "10.99.0.0/24", "feitos": 3, "total": 256, "achados": 1}
+    barramento.publicar(Mensagem("varredura", {**varredura, "estado": "rodando"}))
+    barramento.publicar(Mensagem("pendentes", {"total": 7}))
+    fonte = {"acao": "coletada", "id": "f1", "ok": True, "ultima_coleta": DESDE.isoformat()}
+    barramento.publicar(Mensagem("fonte", fonte))
+    assert await ws.json() == {"tipo": "descoberta", **nova}
+    assert await ws.json() == {"tipo": "varredura", **varredura, "estado": "rodando"}
+    assert await ws.json() == {"tipo": "pendentes", "total": 7}
+    assert await ws.json() == {"tipo": "fonte", **fonte}
+
+
+async def test_repassa_equipamento_com_os_campos_do_snapshot(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    (eq,) = await _criar_equipamentos(app, 1)
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    item = (await ws.json())["equipamentos"][0]
+    barramento: Barramento = app.state.barramento
+    # mensagem interna (IP mudou / checagem trocada): o cliente recebe a linha inteira
+    barramento.publicar(Mensagem("equipamento", {"acao": "atualizado", "id": eq, "ip": "x"}))
+    msg = await ws.json()
+    assert msg == {"tipo": "equipamento", "acao": "atualizado", "equipamento": item}
+    barramento.publicar(
+        Mensagem(
+            "equipamento", {"acao": "atualizado", "id": "00000000-0000-4000-8000-000000000000"}
+        )
+    )
+    msg = await ws.json()
+    assert msg == {
+        "tipo": "equipamento",
+        "acao": "removido",
+        "id": "00000000-0000-4000-8000-000000000000",
+    }
 
 
 async def test_reconectar_recebe_snapshot_novo(
@@ -450,6 +508,8 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
         assert [t.get_name() for t in vistas] == [
             "sentinela-limpeza",
             "sentinela-descarga",
+            "sentinela-descoberta",
+            "sentinela-canais",
             "sentinela-agendador",
         ]
         assert not any(t.done() for t in vistas)

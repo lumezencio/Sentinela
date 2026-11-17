@@ -6,5 +6,5 @@ useDefault = true
 [[rules]]
 id = "sentinela-chave-sessao"
 description = "SENTINELA_CHAVE_SESSAO com valor real (hex de 32+ caracteres)"
-regex = '''SENTINELA_CHAVE_SESSAO\s*[=:]\s*['"]?[0-9a-fA-F]{32,}'''
+regex = '''SENTINELA_CHAVE_(SESSAO|CREDENCIAIS)\s*[=:]\s*['"]?[0-9a-fA-F]{32,}'''
 tags = ["segredo", "sentinela"]

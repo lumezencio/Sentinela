@@ -1,0 +1,129 @@
+# Prova de zero broadcast (spec da Fase 3, §6 e §9.1). Rode com ./rodar.sh (nunca em produção).
+#
+# Rede bridge ISOLADA (internal: true, sem saída) 10.99.250.0/24:
+#   .5  cena          dirige o núcleo pela API (só no `run`, profile "cena")
+#   .10 captura       tcpdump; DONO do namespace de rede em que o núcleo roda (network_mode),
+#                     então a captura começa antes de o núcleo subir e vê cada quadro dele
+#   .11 sim-routeros  API RouterOS por TLS (8729)
+#   .12 sim-snmp      agente SNMP v2c (161/udp)
+#   .35 sim-gravador  gravador Hikvision (ISAPI, Digest, 80/tcp), dentro do /28 varrido
+# Projeto próprio (-p sentinela-captura), imagens com tag própria: nada da instalação real
+# (projeto "sentinela", volumes sentinela_*) é tocado.
+name: sentinela-captura
+
+x-simulador: &simulador
+  image: sentinela-captura/simuladores:local
+  build:
+    context: ./simuladores
+    additional_contexts:
+      nucleo: service:core
+      testes: ../core/tests
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: [/tmp]
+  depends_on:
+    captura: { condition: service_healthy }
+
+services:
+  captura:
+    image: sentinela-captura/tcpdump:local
+    build:
+      dockerfile_inline: |
+        FROM alpine:3.22
+        RUN apk add --no-cache tcpdump
+    # -i eth0 (não "any"): o enlace Ethernet traz o MAC de destino, que o analisador confere
+    command: ["tcpdump", "-i", "eth0", "-n", "-U", "-w", "/saida/captura.pcap"]
+    cap_drop: [ALL]
+    # captura (NET_RAW/NET_ADMIN) e troca para o usuário sem privilégio "tcpdump" (SETUID/SETGID)
+    cap_add: [NET_RAW, NET_ADMIN, SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["./saida:/saida"]
+    sysctls:
+      # ICMP sem privilégio para o núcleo (como no compose de produção)
+      net.ipv4.ping_group_range: "0 2147483647"
+      # a rede de teste é só IPv4: sem isso o kernel do container emite RS/MLD (33:33:*)
+      # ao subir a interface, quadros do sistema operacional e não do Sentinela
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
+    networks:
+      captura:
+        ipv4_address: 10.99.250.10
+        mac_address: "02:00:00:fa:00:10"
+    healthcheck:
+      test: ["CMD", "test", "-s", "/saida/captura.pcap"]
+      interval: 2s
+      retries: 15
+
+  core:
+    image: sentinela-captura/core:local
+    build: ../core
+    network_mode: "service:captura"
+    depends_on:
+      captura: { condition: service_healthy }
+    environment:
+      SENTINELA_CHAVE_SESSAO: ${SENTINELA_CHAVE_SESSAO:?gerada pelo rodar.sh}
+      SENTINELA_CHAVE_CREDENCIAIS: ${SENTINELA_CHAVE_CREDENCIAIS:?gerada pelo rodar.sh}
+      SENTINELA_AMBIENTE: producao
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "10001:10001"
+    # banco em memória: a captura não deixa volume para trás
+    tmpfs: [/tmp, "/dados:uid=10001,gid=10001,mode=0700"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude',timeout=3).status==200 else 1)"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  sim-routeros:
+    <<: *simulador
+    command: ["rodar.py", "routeros"]
+    networks:
+      captura:
+        ipv4_address: 10.99.250.11
+        mac_address: "02:00:00:fa:00:11"
+
+  sim-snmp:
+    <<: *simulador
+    command: ["rodar.py", "snmp"]
+    networks:
+      captura:
+        ipv4_address: 10.99.250.12
+        mac_address: "02:00:00:fa:00:12"
+
+  sim-gravador:
+    <<: *simulador
+    command: ["rodar.py", "gravador"]
+    networks:
+      captura:
+        ipv4_address: 10.99.250.35
+        mac_address: "02:00:00:fa:00:35"
+
+  cena:
+    <<: *simulador
+    profiles: [cena]
+    command: ["cena.py"]
+    environment:
+      SENTINELA_CENA_SENHA: ${SENTINELA_CENA_SENHA:-}
+    volumes: ["./saida:/saida"]
+    depends_on:
+      core: { condition: service_healthy }
+    networks:
+      captura:
+        ipv4_address: 10.99.250.5
+        mac_address: "02:00:00:fa:00:05"
+
+networks:
+  captura:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: sntl-captura
+      # o Docker (28+) anuncia o IP de cada container com ARP gratuito ao conectá-lo: quadro
+      # do daemon, não do Sentinela; desligado para a captura medir só o que o núcleo emite
+      com.docker.network.advertise_addr_nmsgs: "0"
+    ipam:
+      config:
+        - subnet: 10.99.250.0/24
+          gateway: 10.99.250.1

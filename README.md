@@ -4,14 +4,14 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fases 1 e 2 concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D e
-> Organograma). A descoberta automática e os alertas vêm nas próximas fases. Veja
+> Status: **Fases 1, 2 e 3 concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D,
+> Organograma e descoberta automática com classificador). Os alertas vêm na próxima fase. Veja
 > [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
 
 ## Como funciona
 
 - **Descobre perguntando a quem já sabe:** lê as tabelas ARP, DHCP e Wi‑Fi do roteador (MikroTik ou SNMP), a tabela de MAC dos switches e a lista de câmeras dos gravadores. Nenhum broadcast, nenhum multicast.
-- **Classifica sozinho:** fabricante pelo MAC, portas conhecidas, SNMP, página web e ONVIF do aparelho. Você aprova e corrige.
+- **Classifica sozinho:** fabricante pelo MAC, nome DHCP, dados SNMP/LLDP e do gravador; portas conhecidas e página web só quando você autoriza. Você aprova e corrige.
 - **Monitora com educação:** checagens unicast com teto global de pacotes por segundo; câmeras e controles de acesso checados com mais frequência.
 - **Mostra bonito e leve:** Teia 3D, Organograma por classe, lista, modo telão para TV, alertas por Telegram.
 
@@ -98,6 +98,89 @@ Para parar a demonstração **sem apagar os dados** (não use `-v`):
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.demo.yml down
 ```
+
+## Descoberta automática
+
+O Sentinela descobre os equipamentos **perguntando a quem já sabe**, sem broadcast nem
+multicast: ele lê as tabelas do roteador, dos switches e dos gravadores e põe cada aparelho
+novo na aba **Novos**, com uma classe sugerida e o **porquê** (por exemplo, "Fabricante
+Hikvision +30 câmera"). Nada é monitorado antes de você aprovar.
+
+### Fontes suportadas
+
+Cadastre em **Configurações → Fontes** (só administrador). A senha vai cifrada no banco (chave
+`SENTINELA_CHAVE_CREDENCIAIS` do `.env`, gerada pelo instalador) e nunca volta para a tela.
+
+| Fonte | Conexão | O que lê |
+|---|---|---|
+| **MikroTik** (RouterOS v6 e v7) | API por TLS, porta 8729 (`api-ssl`) | ARP, leases DHCP, vizinhos (`/ip/neighbor`), clientes Wi‑Fi |
+| **SNMP** (roteador ou switch de qualquer marca) | v2c ou v3 (authPriv), porta 161 | tabela ARP, tabela de MAC (FDB), LLDP, nome e descrição |
+| **Gravador Hikvision** | ISAPI por HTTP/HTTPS, Digest | dados do gravador e câmeras de cada canal, com o estado |
+| **Gravador Dahua/Intelbras** | CGI por HTTP/HTTPS, Digest | idem |
+
+Cada fonte tem **Testar** (conecta e mostra identidade, versão e avisos), **Coletar agora**
+(no máximo uma vez a cada 30 s) e coleta automática a cada 10 minutos (5 a 60). A falha de uma
+fonte não afeta as outras. Câmeras atrás de um gravador aparecem como **filhas** dele, com o
+estado lido do próprio gravador: o Sentinela nunca fala direto com elas.
+
+**MikroTik: use um usuário somente leitura.** Crie um grupo só com as políticas `read` e `api`
+(sem `write`, `policy` nem `full`) e um usuário nesse grupo:
+
+```
+/user group add name=sentinela policy=read,api
+/user add name=sentinela group=sentinela password=<senha-forte>
+```
+
+O teste avisa se o usuário puder escrever. Para gravadores, use também um usuário só de
+visualização.
+
+**MikroTik: certificado da `api-ssl`.** O Sentinela fala com o RouterOS só por TLS (8729) e
+recusa a `api-ssl` sem certificado. Se o roteador ainda não tiver um, crie e associe:
+
+```
+/certificate add name=sentinela common-name=sentinela days-valid=3650
+/certificate sign sentinela
+/ip service set api-ssl certificate=sentinela disabled=no
+```
+
+No primeiro **Testar**, a tela mostra a impressão SHA-256 do certificado; confira-a no
+roteador (`/certificate print detail`, campo `fingerprint`) e clique **Confiar neste
+certificado**. Se o certificado mudar depois, a coleta para com "certificado do aparelho
+mudou" até você confirmar a nova impressão. Gravadores por HTTPS seguem o mesmo fluxo. A API
+sem TLS (8728) existe só para RouterOS antigo e mostra um aviso: usuário e senha trafegam em
+texto claro.
+
+### Aprovação, sondagem e o aviso de ARP
+
+- **Aprovar** (um a um ou em lote) cria o equipamento com a classe e o nome escolhidos; ele
+  aparece na Lista, na Teia e no Organograma na hora. **Ignorar** tira da fila (dá para
+  reabrir). Aprovar uma câmera de gravador aprova o gravador junto.
+- **Aprovação automática** (Configurações) fica **desligada por padrão**. Ligada, aprova
+  sozinha as descobertas com confiança a partir do limiar escolhido (padrão 80%); tudo fica na
+  auditoria.
+- A classificação dos pendentes é **passiva**: usa só o que as fontes contaram (fabricante pelo
+  MAC, nome DHCP, identidade do vizinho, dados SNMP/LLDP, dados do gravador). Nenhum pacote vai
+  ao aparelho descoberto.
+- **Aviso de ARP.** Falar pela primeira vez com um IP da mesma sub-rede faz o sistema
+  operacional enviar um **pedido ARP**, que é um broadcast visível em toda a sub-rede. Por isso
+  a sondagem de portas (lista fixa de 12 portas, uma conexão por vez) e o título da página web
+  só acontecem: na **varredura lenta** de uma sub-rede em que você ligou a chave "permite
+  varredura" (2 IPs por segundo, cancelável, desligada por padrão); quando você clica
+  **Sondar** numa descoberta; ou depois da aprovação (o monitoramento falaria com o IP de
+  qualquer jeito). Além deles, só os **hosts das fontes** que você cadastrou (roteador, switch,
+  gravador) recebem contato e, portanto, um ARP no primeiro pacote. Fora desses casos, nenhum
+  ARP é provocado. Desligar "permite varredura" (ou remover a sub-rede) cancela na hora a
+  varredura em curso nela.
+- Um aparelho fora das sub-redes declaradas aparece com o selo "fora das sub-redes
+  monitoradas" e o botão para declarar o /24; aprovar fica bloqueado até lá.
+
+A garantia é testada: no CI, o job `captura` sobe o núcleo e simuladores de MikroTik, switch
+SNMP e gravador numa rede isolada, grava todo quadro com `tcpdump`, faz coleta, aprovação,
+sondagem e uma varredura, e reprova qualquer broadcast ou multicast do Sentinela além do ARP
+desses casos (detalhes em [`testes-rede/README.md`](testes-rede/README.md)).
+
+A demonstração (`./install.sh --demo`) traz um MikroTik, um switch SNMP e um gravador de 16
+canais **simulados**, com cerca de 40 descobertas pendentes; nada sai para a rede.
 
 ## Teia 3D e Organograma
 

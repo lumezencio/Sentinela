@@ -2,9 +2,19 @@
 
 Protocolo (servidor → cliente, JSON):
 
-- ``{"tipo": "snapshot", "classes": [...], "equipamentos": [...]}`` logo após conectar;
+- ``{"tipo": "snapshot", "classes": [...], "equipamentos": [...], "pendentes": n}`` logo
+  após conectar (``pendentes``: descobertas na fila);
 - ``{"tipo": "estado", "id", "estado", "desde"}`` a cada transição;
 - ``{"tipo": "latencias", "lote": [[id, ms | null], ...]}`` em lote a cada 5 s;
+- ``{"tipo": "descoberta", "acao": "nova"|"atualizada"|"removida", "id", "classe_sugerida",
+  "confianca"}``, ``{"tipo": "pendentes", "total"}`` e ``{"tipo": "varredura", "cidr",
+  "feitos", "total", "achados", "estado"}`` (descoberta, Fase 3);
+- ``{"tipo": "fonte", "acao": "coletada", "id", "ok", "ultima_coleta"}`` ao fim de cada
+  coleta de fonte (sem texto de erro: o admin lê ``ultimo_erro`` em ``GET /fontes``);
+- ``{"tipo": "equipamento", "acao": "criado"|"atualizado", "equipamento": {...}}`` com a
+  linha no MESMO formato de ``snapshot.equipamentos`` (aprovação, IP mudado pela descoberta,
+  checagem trocada depois da aprovação), ou ``{"tipo": "equipamento", "acao": "removido",
+  "id"}`` se ele já não existe;
 - ``{"tipo": "ping"}`` a cada 25 s (mantém proxies e detecta conexão morta).
 
 Fechamentos: ``4403`` origem diferente do host, ``4401`` sem sessão válida (no handshake ou
@@ -21,13 +31,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.api.deps import usuario_do_cookie
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.config import Settings
-from sentinela.db.modelos import Classe, Equipamento, Usuario
+from sentinela.db.modelos import Classe, Descoberta, Equipamento, Usuario
 from sentinela.monitor.agendador import Agendador
 from sentinela.relogio import Relogio
 
@@ -39,7 +49,10 @@ FECHA_NAO_AUTENTICADO = 4401
 FECHA_ORIGEM_PROIBIDA = 4403
 FECHA_CLIENTE_LENTO = 1013  # "try again later"
 FECHA_ERRO_INTERNO = 1011
-TIPOS_REPASSADOS = frozenset({"estado", "latencias"})  # ``alvo_recusado`` é interno
+# ``alvo_recusado`` é interno; ``equipamento`` é enriquecido com a linha do banco
+TIPOS_REPASSADOS = frozenset(
+    {"estado", "latencias", "descoberta", "pendentes", "varredura", "fonte"}
+)
 PING = {"tipo": "ping"}
 
 
@@ -101,8 +114,41 @@ async def ws_autenticado(websocket: WebSocket) -> Usuario | None:
     return usuario
 
 
+def item_equipamento(eq: Equipamento, slug: str) -> dict[str, Any]:
+    """Linha de equipamento do snapshot (sem MAC nem fabricante); ``pai_id``/``canal`` para
+    câmera atrás de gravador."""
+    return {
+        "id": eq.id,
+        "nome": eq.nome,
+        "ip": eq.ip,
+        "classe": slug,
+        "estado": eq.estado,
+        "desde": eq.estado_desde.isoformat(),
+        "latencia_ms": eq.latencia_ms,
+        "checagem": eq.checagem,
+        "porta": eq.porta,
+        "pai_id": eq.pai_id,
+        "canal": eq.canal,
+    }
+
+
+async def mensagem_equipamento(db: AsyncSession, acao: str, id: str) -> dict[str, Any]:
+    linha = (
+        await db.execute(
+            select(Equipamento, Classe.slug)
+            .join(Classe, Equipamento.classe_id == Classe.id)
+            .where(Equipamento.id == id)
+        )
+    ).first()
+    if linha is None:
+        return {"tipo": "equipamento", "acao": "removido", "id": id}
+    eq, slug = linha
+    return {"tipo": "equipamento", "acao": acao, "equipamento": item_equipamento(eq, slug)}
+
+
 async def montar_snapshot(db: AsyncSession) -> dict[str, Any]:
-    """Classes e equipamentos com os campos que a tela usa (sem MAC nem fabricante)."""
+    """Classes, equipamentos com os campos que a tela usa (sem MAC nem fabricante) e o total
+    de descobertas pendentes."""
     classes = (await db.execute(select(Classe).order_by(Classe.ordem, Classe.id))).scalars()
     linhas = await db.execute(
         select(Equipamento, Classe.slug)
@@ -123,20 +169,13 @@ async def montar_snapshot(db: AsyncSession) -> dict[str, Any]:
             }
             for c in classes
         ],
-        "equipamentos": [
-            {
-                "id": eq.id,
-                "nome": eq.nome,
-                "ip": eq.ip,
-                "classe": slug,
-                "estado": eq.estado,
-                "desde": eq.estado_desde.isoformat(),
-                "latencia_ms": eq.latencia_ms,
-                "checagem": eq.checagem,
-                "porta": eq.porta,
-            }
-            for eq, slug in linhas
-        ],
+        "equipamentos": [item_equipamento(eq, slug) for eq, slug in linhas],
+        "pendentes": int(
+            await db.scalar(
+                select(func.count()).select_from(Descoberta).where(Descoberta.status == "pendente")
+            )
+            or 0
+        ),
     }
 
 
@@ -196,6 +235,10 @@ class _Conexao:
         async for m in fluxo:
             if m.tipo in TIPOS_REPASSADOS:
                 self.enfileirar({**m.dados, "tipo": m.tipo})
+            elif m.tipo == "equipamento" and isinstance(m.dados.get("id"), str):
+                acao = "criado" if m.dados.get("acao") == "criado" else "atualizado"
+                async with self._sessoes() as db:
+                    self.enfileirar(await mensagem_equipamento(db, acao, m.dados["id"]))
 
     async def pingar(self) -> None:
         while True:

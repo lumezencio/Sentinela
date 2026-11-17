@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     ambiente: Literal["desenvolvimento", "producao", "teste"] = "producao"
     banco_url: str = "sqlite+aiosqlite:////dados/sentinela.db"
     chave_sessao: SecretStr
+    # 32 bytes em hex (64 caracteres): cifra as credenciais das fontes de descoberta
+    chave_credenciais: SecretStr
     demo: bool = False
     teto_pps: int = Field(default=20, ge=1, le=100)
     latencia_instavel_ms: float = Field(default=200.0, gt=0)

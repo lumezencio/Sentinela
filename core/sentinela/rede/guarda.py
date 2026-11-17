@@ -10,10 +10,12 @@ from dataclasses import InitVar, dataclass
 from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from typing import Literal, get_args
 
-Protocolo = Literal["icmp", "tcp", "http"]
+# udp (SNMP) e https (gravador, MikroTik api-ssl) entram com a descoberta da Fase 3; todos
+# menos icmp exigem porta, e broadcast/multicast continuam recusados para qualquer protocolo.
+Protocolo = Literal["icmp", "tcp", "http", "https", "udp"]
 
 _PROTOCOLOS: tuple[str, ...] = get_args(Protocolo)
-_PROTOCOLOS_COM_PORTA: frozenset[str] = frozenset({"tcp", "http"})
+_PROTOCOLOS_COM_PORTA: frozenset[str] = frozenset({"tcp", "http", "https", "udp"})
 _RFC1918 = (
     IPv4Network("10.0.0.0/8"),
     IPv4Network("172.16.0.0/12"),

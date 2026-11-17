@@ -10,18 +10,47 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from sentinela.api import auth, classes, equipamentos, importacao, saude, subredes, ws
+from sentinela.api import (
+    auth,
+    classes,
+    config_descoberta,
+    descobertas,
+    equipamentos,
+    fontes,
+    importacao,
+    saude,
+    subredes,
+    varredura,
+    ws,
+)
 from sentinela.api.deps import verificar_csrf
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
-from sentinela.demo.simulador import ChecagemSimulada, banco_e_demo, semear_demo, tem_equipamentos
+from sentinela.demo.simulador import (
+    ChecagemSimulada,
+    banco_e_demo,
+    semear_demo,
+    semear_fontes_demo,
+    tem_equipamentos,
+)
+from sentinela.descoberta.canais import LeitorCanais
+from sentinela.descoberta.classificador.sondagem import sondar
+from sentinela.descoberta.fontes.simulada import fabricar_simulado, ping_simulado, sondar_simulado
+from sentinela.descoberta.orquestrador import (
+    FabricaColetor,
+    FuncaoSondar,
+    Orquestrador,
+    fabricar_coletor,
+)
+from sentinela.descoberta.varredura import Ping, Varredura, ping_icmp
 from sentinela.monitor.gravador import GravadorAmostras
 from sentinela.monitor.limpeza import limpar_periodicamente
-from sentinela.monitor.montagem import montar_monitor
+from sentinela.monitor.montagem import Monitor, montar_monitor
 from sentinela.registro import configurar_logs
 from sentinela.relogio import Relogio, RelogioReal
 from sentinela.seguranca.bloqueio import BloqueioFantasma, LimitadorIP
+from sentinela.seguranca.cofre import Cofre
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +95,7 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
             )
         log.warning("modo demonstração: as checagens são simuladas, nenhum pacote é enviado")
         await semear_demo(app.state.sessoes)
+        await semear_fontes_demo(app.state.sessoes)
         simulada = ChecagemSimulada(relogio=app.state.relogio)  # uma por app, para todo tipo
         monitor = await montar_monitor(
             app.state.sessoes, settings, lambda _tipo: simulada, app.state.relogio
@@ -79,11 +109,54 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     app.state.limitador = monitor.limitador
     app.state.gravador = monitor.gravador
     app.state.agendador = monitor.agendador
+    _montar_descoberta(app, settings, monitor)
+
+
+def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
+    """Orquestrador, leitura de canais e varredura (laços não iniciados). No modo
+    demonstração toda fonte, sondagem e ping são simulados: nenhum pacote sai."""
+    cofre = Cofre(settings.chave_credenciais)
+    fabrica: FabricaColetor = fabricar_simulado if settings.demo else fabricar_coletor
+    sondador: FuncaoSondar = sondar_simulado if settings.demo else sondar
+    ping: Ping = ping_simulado if settings.demo else ping_icmp
+    orquestrador = Orquestrador(
+        app.state.sessoes,
+        monitor.guarda,
+        monitor.limitador,
+        monitor.barramento,
+        monitor.agendador,
+        cofre,
+        app.state.relogio,
+        fabrica,
+        sondar=sondador,
+        ping=ping,
+    )
+    leitor = LeitorCanais(
+        app.state.sessoes,
+        monitor.agendador,
+        orquestrador.gravadores,
+        monitor.limitador,
+        app.state.relogio,
+    )
+    orquestrador.leitor_canais = leitor
+    app.state.cofre = cofre
+    app.state.orquestrador = orquestrador
+    app.state.leitor_canais = leitor
+    app.state.varredura = Varredura(
+        app.state.sessoes,
+        monitor.guarda,
+        monitor.limitador,
+        monitor.barramento,
+        app.state.relogio,
+        ping=ping,
+        entregar=orquestrador.processar_achados,
+    )
 
 
 @asynccontextmanager
 async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
-    """Inicia a limpeza diária, a descarga periódica e ``agendador.executar``; no shutdown,
+    """Inicia a limpeza diária, a descarga periódica, a descoberta (orquestrador e leitura de
+    canais) e ``agendador.executar``; no shutdown, cancela a varredura e
     encerra e espera, nessa ordem (o agendador cancelado drena as transições e descarrega).
     """
     tarefas: list[asyncio.Task[None]] = []
@@ -104,6 +177,13 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
             )
         )
         tarefas.append(
+            asyncio.create_task(app.state.orquestrador.executar(), name="sentinela-descoberta")
+        )
+        tarefas.append(
+            asyncio.create_task(app.state.leitor_canais.executar(), name="sentinela-canais")
+        )
+        # o agendador por último: os laços da descoberta o usam e param antes dele
+        tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
         )
         for tarefa in tarefas:
@@ -111,7 +191,11 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, agendador
+        await app.state.varredura.encerrar()
+        # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
+        await app.state.orquestrador.encerrar()
+        for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, descoberta,
+            # leitura de canais e agendador
             tarefa.cancel()
             # falha já registrada por ``_laco_terminou``; aqui só espera o fim
             await asyncio.gather(tarefa, return_exceptions=True)
@@ -188,11 +272,18 @@ def criar_app(
     app.state.config_ws = ws.ConfigWs()
     app.state.falhas_ip = LimitadorIP(relogio)
     app.state.falhas_fantasma = BloqueioFantasma(relogio)
+    # testar/coletar/sondar/varredura: 10 por minuto por usuário (mesma janela do login)
+    app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
+    app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
     app.include_router(subredes.router)
     app.include_router(classes.router)
     app.include_router(importacao.router)  # antes de /equipamentos/{id}
     app.include_router(equipamentos.router)
+    app.include_router(fontes.router)
+    app.include_router(descobertas.router)
+    app.include_router(varredura.router)
+    app.include_router(config_descoberta.router)
     app.include_router(ws.router)
     return app

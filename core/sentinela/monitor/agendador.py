@@ -15,6 +15,12 @@ por equipamento); o encerramento drena esse escritor antes de ``descarregar``.
 Destino recusado pela Guarda (no cadastro, numa atualização ou na revalidação feita antes de
 cada sonda) não fica registrado: o equipamento passa a ``pausado`` com causa
 ``fora_das_subredes`` (publicado e gravado), em vez de ficar "aguardando" para sempre.
+
+Alvo passivo (``checagem == "gravador"``: câmera atrás de um gravador) é registrado, mas
+nunca agendado nem checado: não abre socket (por isso não passa pela Guarda) e não entra no
+orçamento. O estado vem de fora, pela leitura de canais do gravador: ``aplicar_externo``
+(mesma histerese, amostra e transição que uma checagem própria) e ``forcar_desconhecido``
+(gravador sem resposta).
 """
 
 import asyncio
@@ -30,7 +36,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from sentinela.barramento import Barramento, Mensagem
-from sentinela.monitor.checagens import Checagem, checagem_para
+from sentinela.monitor.checagens import GRAVADOR, Checagem, checagem_para
 from sentinela.monitor.estados import Estado, MaquinaEstados, ResultadoChecagem, Transicao
 from sentinela.monitor.gravador import GravadorAmostras, GravadorSql
 from sentinela.monitor.limitador import Limitador
@@ -65,8 +71,8 @@ class Alvo:
 @dataclass
 class _Registro:
     alvo: Alvo
-    destino: DestinoAutorizado
-    checagem: Checagem
+    destino: DestinoAutorizado | None  # None: alvo passivo
+    checagem: Checagem | None  # None: alvo passivo
     maquina: MaquinaEstados
     versao: int = 0
     em_voo: bool = False
@@ -77,7 +83,18 @@ class _Registro:
         return self.maquina.estado is not Estado.PAUSADO
 
     @property
+    def passivo(self) -> bool:
+        return self.checagem is None
+
+    @property
+    def checado(self) -> bool:
+        """Ativo e com checagem própria: entra no orçamento e no agendamento."""
+        return self.ativo and not self.passivo
+
+    @property
     def demanda(self) -> float:
+        if self.checagem is None:
+            return 0.0
         return self.checagem.custo / self.alvo.intervalo_s
 
 
@@ -229,9 +246,36 @@ class Agendador:
         reg = self._registros.get(id)
         return None if reg is None else reg.maquina.estado
 
+    # ---- alvos passivos (gravador) --------------------------------------------------------
+
+    def aplicar_externo(self, id: str, r: ResultadoChecagem) -> None:
+        """Resultado vindo de fora (leitura de canais do gravador) para um alvo passivo.
+
+        Mesma histerese, amostra, lote de latências e transição de uma checagem própria.
+        Ignorado (sem efeito) para id desconhecido, alvo pausado ou alvo com checagem própria:
+        este não pode ter o estado decidido por duas fontes.
+        """
+        reg = self._registros.get(id)
+        if reg is None or not reg.passivo or not reg.ativo:
+            return
+        self._registrar(reg, r)
+
+    def forcar_desconhecido(self, ids: Iterable[str], causa: str) -> None:
+        """Leva os alvos a ``desconhecido`` com ``causa`` (ex.: "gravador sem resposta").
+
+        Publica e grava cada transição; ids desconhecidos, pausados e já desconhecidos não
+        geram nada. Os contadores da histerese recomeçam.
+        """
+        for id in ids:
+            reg = self._registros.get(id)
+            if reg is not None:
+                self._transicao(id, reg.maquina.forcar_desconhecido(causa), causa=causa)
+
     def _autorizar(
         self, alvo: Alvo, estado_atual: Estado
-    ) -> tuple[DestinoAutorizado, Checagem] | None:
+    ) -> tuple[DestinoAutorizado | None, Checagem | None] | None:
+        if alvo.checagem == GRAVADOR:
+            return None, None  # passivo: nenhum socket, nada a validar na Guarda
         try:
             destino = self._guarda.validar(alvo.ip, alvo.porta, cast(Protocolo, alvo.checagem))
         except DestinoProibido as e:
@@ -263,7 +307,7 @@ class Agendador:
     def recalcular(self) -> None:
         """Recalcula o esticamento (chamar também depois de ``limitador.definir_taxa``)."""
         taxa = self._limitador.taxa
-        ativos = [r for r in self._registros.values() if r.ativo]
+        ativos = [r for r in self._registros.values() if r.checado]
         criticos = math.fsum(r.demanda for r in ativos if r.alvo.critico)
         demais = math.fsum(r.demanda for r in ativos if not r.alvo.critico)
         if criticos + demais <= taxa:
@@ -288,7 +332,7 @@ class Agendador:
         return reg.alvo.intervalo_s * fator
 
     def tempo_max_deteccao_s(self) -> float:
-        ativos = [r for r in self._registros.values() if r.ativo]
+        ativos = [r for r in self._registros.values() if r.checado]
         base = [r for r in ativos if r.alvo.critico] or ativos
         if not base:
             return 0.0
@@ -297,6 +341,9 @@ class Agendador:
     # ---- heap -------------------------------------------------------------------------------
 
     def _agendar(self, reg: _Registro, quando: float) -> None:
+        if reg.passivo:  # nunca agendado; descarta uma entrada antiga (virou passivo)
+            self._vigente.pop(reg.alvo.id, None)
+            return
         seq = next(self._seq)
         self._vigente[reg.alvo.id] = seq
         heapq.heappush(self._heap, (quando, seq, reg.alvo.id))
@@ -350,7 +397,11 @@ class Agendador:
                 heapq.heappop(self._heap)
                 id = topo[2]
                 del self._vigente[id]
-                self._lancar(self._registros[id])
+                reg = self._registros[id]
+                if reg.passivo:  # defesa: passivo nunca é checado
+                    self._em_voo.release()
+                    continue
+                self._lancar(reg)
         finally:
             self._rodando = False
             await self._encerrar_blindado(lote)
@@ -412,13 +463,16 @@ class Agendador:
 
     async def _rodar(self, reg: _Registro, versao: int, prioritario: bool) -> None:
         try:
-            await self._limitador.adquirir(reg.checagem.custo, prioritario=prioritario)
+            checagem = reg.checagem
+            if checagem is None:  # virou passivo antes de começar
+                return
+            await self._limitador.adquirir(checagem.custo, prioritario=prioritario)
             if reg.versao != versao:  # pausado/alterado enquanto esperava token
                 return
             destino = self._revalidar(reg)
             if destino is None:
                 return
-            r = await self._checar(reg, destino)
+            r = await self._checar(checagem, reg.alvo.id, destino)
             if reg.versao == versao and self._registros.get(reg.alvo.id) is reg:
                 self._registrar(reg, r)
         except Exception:
@@ -436,6 +490,8 @@ class Agendador:
         nenhuma sonda, o registro sai do agendador e o equipamento é pausado.
         """
         d = reg.destino
+        if d is None:  # passivo: nunca sonda
+            return None
         try:
             destino = self._guarda.validar(d.ip, d.porta, d.protocolo)
         except DestinoProibido as e:
@@ -450,11 +506,13 @@ class Agendador:
         reg.destino = destino
         return destino
 
-    async def _checar(self, reg: _Registro, destino: DestinoAutorizado) -> ResultadoChecagem:
+    async def _checar(
+        self, checagem: Checagem, id: str, destino: DestinoAutorizado
+    ) -> ResultadoChecagem:
         try:
-            return await reg.checagem.executar(destino)
+            return await checagem.executar(destino)
         except Exception:
-            log.exception("checagem falhou de forma inesperada (equipamento %s)", reg.alvo.id)
+            log.exception("checagem falhou de forma inesperada (equipamento %s)", id)
             return ResultadoChecagem(ok=False, latencia_ms=None, erro="erro interno")
 
     def _registrar(self, reg: _Registro, r: ResultadoChecagem) -> None:
@@ -481,6 +539,8 @@ class Agendador:
         if em is None:
             em = self._agora_parede()
         dados = {"id": id, "estado": t.para.value, "desde": em.isoformat()}
+        if causa is not None:
+            dados["causa"] = causa
         self._barramento.publicar(Mensagem("estado", dados))
         self._transicoes.append((id, t, em, causa))
         if self._escritor is None or self._escritor.done():

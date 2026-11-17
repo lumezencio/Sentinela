@@ -22,6 +22,7 @@ services:
     environment:
       # falha ao subir se a chave estiver vazia (rode ./install.sh)
       SENTINELA_CHAVE_SESSAO: ${SENTINELA_CHAVE_SESSAO:?defina SENTINELA_CHAVE_SESSAO no .env (rode ./install.sh)}
+      SENTINELA_CHAVE_CREDENCIAIS: ${SENTINELA_CHAVE_CREDENCIAIS:?defina SENTINELA_CHAVE_CREDENCIAIS no .env (rode ./install.sh)}
     volumes: ["sentinela_dados:/dados"]
     # ICMP sem privilégio (socket datagrama), sem precisar de NET_RAW
     sysctls: { net.ipv4.ping_group_range: "0 2147483647" }

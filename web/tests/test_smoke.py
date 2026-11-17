@@ -568,25 +568,49 @@ def test_snapshot_novo_nao_duplica_esferas(page: Page, alvo: Alvo) -> None:
     try:
         expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=30_000)
         expect(palco).to_have_attribute("data-equipamentos", str(TOTAL_DEMO + 1))
-        if palco.get_attribute("data-nivel") != "agrupado":
-            expect(palco).to_have_attribute("data-nos", str(TOTAL_DEMO + 1))
+        # o headless pode cair para o nível agrupado (FPS baixo) a qualquer momento, inclusive
+        # entre ler o nível e conferir os nós: espera o grafo assentar OU o agrupamento e só
+        # então confere (a checagem de duplicata continua exata no nível completo)
+        total = str(TOTAL_DEMO + 1)
+        # leitura atômica (um só instante) de nível e contagens: devolve quando assentou
+        foto = page.wait_for_function(
+            """([el, n]) => {
+                const d = el.dataset;
+                const pronto = d.nivel === "agrupado" || (d.nos === n && d.nosGrafo === n);
+                return pronto && {nivel: d.nivel, nos: d.nos, grafo: d.nosGrafo};
+            }""",
+            arg=[palco.element_handle(), total],
+            timeout=15_000,
+        ).json_value()
+        if foto["nivel"] != "agrupado":
+            assert foto["nos"] == total, foto
             # nenhum nó duplicado entregue ao grafo (não só no mapa interno da cena)
-            expect(palco).to_have_attribute("data-nos-grafo", str(TOTAL_DEMO + 1))
+            assert foto["grafo"] == total, foto
         assert canvases_da_teia(page) == 1
-        # 10 trocas de aba não acumulam geometrias/texturas na GPU (um renderer, objetos reusados)
-        page.wait_for_timeout(600)
-        nivel = palco.get_attribute("data-nivel")
-        geo = int(palco.get_attribute("data-geometrias") or "0")
-        tex = int(palco.get_attribute("data-texturas") or "0")
+
+        # trocas de aba não acumulam geometrias/texturas na GPU (um renderer, objetos reusados).
+        # A demo segue mudando estados: um nó que entra num estado ainda não desenhado aloca uma
+        # geometria nova, então "nunca cresce" numa janela seria medir a demo, não as trocas.
+        # Mede o que escala com as trocas: 10 trocas de aquecimento, linha de base, mais 10; o
+        # crescimento entre as duas medições fica em no máximo 2 (vazamento por troca daria ≥ 5).
+        def trocar_10_vezes() -> tuple[str | None, int, int]:
+            for n in range(10):
+                page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
+            expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
+            page.wait_for_timeout(600)
+            assert canvases_da_teia(page) == 1
+            return (
+                palco.get_attribute("data-nivel"),
+                int(palco.get_attribute("data-geometrias") or "0"),
+                int(palco.get_attribute("data-texturas") or "0"),
+            )
+
+        nivel, geo, tex = trocar_10_vezes()
         assert geo > 0, geo
-        for n in range(10):
-            page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
-        expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
-        page.wait_for_timeout(600)
-        assert canvases_da_teia(page) == 1
-        if palco.get_attribute("data-nivel") == nivel:  # trocar de nível recria os objetos
-            assert int(palco.get_attribute("data-geometrias") or "0") <= geo
-            assert int(palco.get_attribute("data-texturas") or "0") <= tex
+        nivel_depois, geo_depois, tex_depois = trocar_10_vezes()
+        if nivel_depois == nivel:  # trocar de nível recria os objetos
+            assert geo_depois - geo <= 2, (geo, geo_depois)
+            assert tex_depois - tex <= 2, (tex, tex_depois)
     finally:
         assert page.evaluate(APAGAR_VIA_API, criado["corpo"]["id"]) == 204
 
@@ -937,3 +961,512 @@ def test_organograma_filtros_compartilhados_recolher_e_painel(page: Page, alvo: 
     expect(item).to_be_focused()
     assert canvases_da_teia(page) == 0
     assert erros == [], erros
+
+
+# ---- Fase 3: Novos, Configurações e câmeras do gravador ---------------------------------------
+
+API_JSON = """async ([metodo, caminho, corpo]) => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('sentinela_csrf='));
+    const r = await fetch('/api/v1' + caminho, {
+        method: metodo,
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF': csrf ? decodeURIComponent(csrf.split('=')[1]) : '',
+        },
+        body: corpo === null ? undefined : JSON.stringify(corpo),
+    });
+    let dados = null;
+    try { dados = await r.json(); } catch (e) { dados = null; }
+    return {status: r.status, dados};
+}"""
+SENHA_SMOKE = "s3nha-do-smoke-NAO-pode-voltar"
+
+
+def api_json(page: Page, metodo: str, caminho: str, corpo: Any = None) -> Any:
+    return page.evaluate(API_JSON, [metodo, caminho, corpo])
+
+
+def abrir_novos(page: Page) -> Any:
+    page.get_by_role("tab", name="Novos").click()
+    expect(page.get_by_role("tab", name="Novos")).to_have_attribute("aria-selected", "true")
+    assert page.url.endswith("#novos"), page.url
+    secao = page.locator("#conteudo-novos")
+    expect(secao.locator(".nv-cartao").first).to_be_visible(timeout=20_000)
+    return secao
+
+
+def cartao_novo(secao: Any, titulo: str) -> Any:
+    exato = re.compile(f"^{re.escape(titulo)}$")
+    return secao.locator(".nv-cartao").filter(has=secao.page.locator(".nv-titulo", has_text=exato))
+
+
+def apagar_equipamentos(page: Page, ids: list[str]) -> None:
+    for id_ in ids:
+        assert page.evaluate(APAGAR_VIA_API, id_) in (204, 404)
+
+
+def ids_por_busca(page: Page, termo: str) -> list[str]:
+    r = api_json(page, "GET", f"/equipamentos?q={termo}&limit=100")
+    assert r["status"] == 200, r
+    return [e["id"] for e in r["dados"]["itens"]]
+
+
+def demo_de_volta(page: Page) -> None:
+    """O DELETE de equipamento não vai ao WebSocket: recarrega e confere a demo intacta."""
+    page.reload()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+
+
+def test_novos_mostra_pendentes_com_contador(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    selo = page.locator("#contador-pendentes")
+    expect(selo).to_be_visible(timeout=20_000)  # as fontes simuladas já foram coletadas
+    secao = abrir_novos(page)
+    total = api_json(page, "GET", "/descobertas?status=pendente&limit=1")["dados"]["total"]
+    assert total >= 30, total
+    expect(selo).to_have_text(f"{total} pendentes")
+    expect(secao.locator("#novos-info")).to_have_text(f"Mostrando {total} de {total} pendentes")
+    expect(secao.locator(".nv-cartao")).to_have_count(total)
+    # confiança com texto (nunca só cor) e "por que" com sinais e pontos em linguagem simples
+    for texto in secao.locator(".nv-pct").all_inner_texts():
+        assert re.fullmatch(r"\d{1,3}%", texto), texto
+    camera = cartao_novo(secao, "ipc-garagem")
+    camera.locator("summary").click()
+    expect(camera.locator(".nv-sinais li").first).to_contain_text("Hikvision")
+    expect(camera.locator(".nv-pontos").first).to_have_text(re.compile(r"^\+\d+ "))
+    # canais do gravador agrupados sob ele, recolhíveis
+    grupo = secao.get_by_role("button", name=re.compile(r"^Câmeras d"))
+    expect(grupo).to_have_attribute("aria-expanded", "true")
+    # o gravador da demo já é monitorado: o título usa o nome dele (vem do snapshot)
+    expect(grupo).to_contain_text("(já monitorado)")
+    filhos = secao.locator(".nv-linha-filho")
+    expect(filhos).to_have_count(16)
+    expect(filhos.first.locator(".selo-canal")).to_have_text("Canal 1")
+    grupo.click()
+    expect(grupo).to_have_attribute("aria-expanded", "false")
+    expect(filhos).to_have_count(0)
+    grupo.click()
+    expect(filhos).to_have_count(16)
+    assert erros == [], erros
+
+
+def test_novos_aprovar_vai_para_lista_ao_vivo(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_novos(page)
+    antes = int(page.locator("#contador-pendentes").inner_text().split()[0])
+    cartao = cartao_novo(secao, "desktop-rh")
+    cartao.get_by_label("Classe").select_option(label="Computadores")
+    cartao.get_by_label("Nome (opcional)").fill("Desktop RH Smoke")
+    ids: list[str] = []
+    try:
+        with page.expect_response("**/descobertas/*/aprovar") as resposta:
+            cartao.get_by_role("button", name="Aprovar desktop-rh").click()
+        assert resposta.value.status == 200
+        ids.append(resposta.value.json()["id"])
+        expect(cartao).to_have_count(0)
+        expect(secao.locator("#novos-aviso")).to_contain_text("aprovado")
+        expect(page.locator("#contador-pendentes")).to_have_text(f"{antes - 1} pendentes")
+        # ao vivo na Lista, sem recarregar
+        page.get_by_role("tab", name="Lista").click()
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=15_000)
+        page.get_by_label("Buscar").first.fill("Desktop RH Smoke")
+        linha = linhas(page).filter(has_text="Desktop RH Smoke")
+        expect(linha).to_have_count(1)
+        expect(linha.locator(".col-classe")).to_have_text("Computadores")
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, ids)
+    demo_de_volta(page)
+
+
+def test_novos_ignorar_e_reabrir(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_novos(page)
+    cartao = cartao_novo(secao, "desktop-recepcao")
+    cartao.get_by_role("button", name="Ignorar desktop-recepcao").focus()
+    page.keyboard.press("Enter")  # teclado: o foco não se perde quando o cartão sai
+    expect(cartao).to_have_count(0)
+    page.wait_for_function("() => !!document.activeElement.closest('#conteudo-novos .nv-cartao')")
+    filtro = secao.get_by_role("group", name="Fila de descobertas")
+    filtro.get_by_role("button", name="Ignoradas").click()
+    expect(filtro.get_by_role("button", name="Ignoradas")).to_have_attribute("aria-pressed", "true")
+    expect(cartao).to_have_count(1)
+    # na fila de ignoradas só existe "Reabrir"
+    expect(cartao.get_by_role("button", name=re.compile("^Aprovar"))).to_have_count(0)
+    cartao.get_by_role("button", name="Reabrir desktop-recepcao").click()
+    expect(cartao).to_have_count(0)
+    filtro.get_by_role("button", name="Pendentes").click()
+    expect(cartao).to_have_count(1)
+    assert erros == [], erros
+
+
+def test_novos_lote(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_novos(page)
+    nomes = ("pc-almoxarifado", "notebook-diretoria")
+    for nome in nomes:
+        cartao_novo(secao, nome).get_by_role("checkbox", name=f"Selecionar {nome}").check()
+    lote = secao.locator(".nv-lote")
+    expect(lote).to_contain_text("2 selecionadas")
+    try:
+        lote.get_by_role("button", name="Aprovar selecionadas").click()
+        expect(secao.locator("#novos-aviso")).to_have_text("2 aprovadas.")
+        for nome in nomes:
+            expect(cartao_novo(secao, nome)).to_have_count(0)
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 2), timeout=15_000)
+        assert erros == [], erros
+    finally:
+        for nome in nomes:
+            apagar_equipamentos(page, ids_por_busca(page, nome))
+    demo_de_volta(page)
+
+
+def test_novos_lote_respeita_classe_editada(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_novos(page)
+    editada, padrao = "desktop-financeiro", "brn3c2b1a"
+    sugerida = api_json(page, "GET", "/descobertas?status=pendente&limit=100")["dados"]["itens"]
+    classe_padrao = next(d["classe_sugerida"] for d in sugerida if d["nome_sugerido"] == padrao)
+    cartao = cartao_novo(secao, editada)
+    cartao.get_by_label("Classe").select_option(label="Servidores")
+    for nome in (editada, padrao):
+        cartao_novo(secao, nome).get_by_role("checkbox", name=f"Selecionar {nome}").check()
+    try:
+        secao.locator(".nv-lote").get_by_role("button", name="Aprovar selecionadas").click()
+        expect(secao.locator("#novos-aviso")).to_have_text("2 aprovadas.")
+        for nome in (editada, padrao):
+            expect(cartao_novo(secao, nome)).to_have_count(0)
+        classes = {}
+        for nome in (editada, padrao):
+            itens = api_json(page, "GET", f"/equipamentos?q={nome}&limit=10")["dados"]["itens"]
+            assert len(itens) == 1, itens
+            classes[nome] = itens[0]["classe"]
+        # a classe escolhida na linha vale no lote; a outra fica com a sugerida
+        assert classes[editada] == "servidor", classes
+        assert classes[padrao] == (classe_padrao or "desconhecido"), classes
+        assert erros == [], erros
+    finally:
+        for nome in (editada, padrao):
+            apagar_equipamentos(page, ids_por_busca(page, nome))
+    demo_de_volta(page)
+
+
+def test_novos_visualizador_so_leitura(page: Page, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    erros = vigiar_console(page)
+    entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    expect(page.get_by_role("tab", name="Configurações")).to_have_count(0)
+    secao = abrir_novos(page)
+    expect(secao.locator(".nv-cartao").first.locator(".nv-classe")).to_be_visible()
+    for papel in ("button", "checkbox", "combobox"):
+        acoes = secao.locator(".nv-lista").get_by_role(
+            papel, name=re.compile("^(Aprovar|Ignorar|Sondar|Declarar|Selecionar|Classe)")
+        )
+        expect(acoes).to_have_count(0)
+    expect(secao.locator(".nv-lote")).to_be_hidden()
+    # link direto para Configurações: o visualizador volta para a Lista
+    page.goto("/index.html#configuracoes")
+    page.reload()
+    expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
+    assert page.url.endswith("#lista"), page.url
+    expect(page.locator("#conteudo-configuracoes")).to_be_hidden()
+    assert erros == [], erros
+
+
+def test_novos_fora_das_subredes_desabilita_aprovar(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_novos(page)
+    cartao = cartao_novo(secao, "tv-sala-reuniao")
+    expect(cartao.get_by_text("fora das sub-redes monitoradas")).to_be_visible()
+    aprovar = cartao.get_by_role("button", name="Aprovar tv-sala-reuniao")
+    expect(aprovar).to_be_disabled()
+    expect(cartao.get_by_role("checkbox")).to_be_disabled()
+    declarar = cartao.get_by_role("button", name="Declarar sub-rede 10.99.70.0/24")
+    expect(declarar).to_be_visible()
+    try:
+        declarar.click()
+        expect(secao.locator("#novos-aviso")).to_contain_text("Sub-rede 10.99.70.0/24 declarada")
+        expect(cartao.get_by_text("fora das sub-redes monitoradas")).to_be_hidden()
+        expect(cartao.get_by_role("button", name="Aprovar tv-sala-reuniao")).to_be_enabled()
+        assert erros == [], erros
+    finally:
+        subredes = api_json(page, "GET", "/subredes")["dados"]
+        for s in subredes:
+            if s["cidr"] == "10.99.70.0/24":
+                assert api_json(page, "DELETE", f"/subredes/{s['id']}")["status"] == 204
+
+
+def test_configuracoes_cria_fonte_testa_e_coleta(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    expect(secao.locator(".cfg-fonte").first).to_be_visible(timeout=15_000)
+    secao.get_by_role("button", name="Nova fonte").click()
+    dialogo = page.get_by_role("dialog", name="Nova fonte")
+    expect(dialogo).to_be_visible()
+    expect(dialogo.get_by_label("Tipo")).to_be_focused()  # foco entra no diálogo
+    dialogo.get_by_role("button", name="Criar fonte").click()  # vazio: erros por campo
+    expect(dialogo.get_by_text("Informe um nome.")).to_be_visible()
+    expect(dialogo.get_by_label("Nome")).to_have_attribute("aria-invalid", "true")
+    dialogo.get_by_label("Tipo").select_option("mikrotik")
+    dialogo.get_by_label("Nome").fill("Roteador Smoke")
+    dialogo.get_by_label("Endereço IP").fill("10.99.40.21")
+    dialogo.get_by_label("Usuário").fill("api-smoke")
+    dialogo.get_by_label("Senha", exact=True).fill(SENHA_SMOKE)
+    dialogo.get_by_role("button", name="Criar fonte").click()
+    expect(dialogo).to_be_hidden()
+    cartao = secao.locator(".cfg-fonte").filter(has_text="Roteador Smoke")
+    expect(cartao).to_have_count(1)
+    try:
+        expect(cartao.locator(".cfg-ficha").first).to_contain_text("10.99.40.21:8729")
+        expect(cartao).to_contain_text("TLS")
+        expect(cartao).to_contain_text("nunca")
+        cartao.get_by_role("button", name="Testar Roteador Smoke").click()
+        teste = cartao.locator(".cfg-teste")
+        expect(teste).to_contain_text("Conexão funcionando", timeout=15_000)
+        expect(teste).to_contain_text("Roteador Smoke")
+        expect(teste).to_contain_text("simulada")
+        expect(teste).to_contain_text("nenhum pacote sai para a rede")
+        expect(teste).to_be_focused()
+        cartao.get_by_role("button", name="Coletar agora Roteador Smoke").click()
+        expect(secao.locator("#cfg-aviso")).to_contain_text("Coleta pedida")
+        # o fim chega pelo WebSocket ("fonte"/"coletada") e o cartão relê GET /fontes
+        expect(cartao.locator(".cfg-ficha").first).to_contain_text("agora", timeout=20_000)
+        assert SENHA_SMOKE not in page.content()
+        assert erros == [], erros
+    finally:
+        cartao.get_by_role("button", name="Remover Roteador Smoke").click()
+        confirmar = page.get_by_role("dialog", name="Remover Roteador Smoke?")
+        expect(confirmar).to_be_visible()
+        confirmar.get_by_role("button", name="Remover").click()
+        expect(cartao).to_have_count(0)
+
+
+def test_configuracoes_confiar_certificado_e_orientacao_r5(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    impressao = "ab" * 32
+    page.route(
+        "**/api/v1/fontes/*/testar",
+        lambda r: r.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"ok": false, "identidade": null, "versao": null, "avisos": [],'
+                f' "impressao_tls": "{impressao}",'
+                ' "erro": "o RouterOS não apresentou certificado TLS"}'
+            ),
+        ),
+    )
+    confiados: list[str] = []
+
+    def confiar(route: Route) -> None:
+        confiados.append(route.request.post_data or "")
+        route.fulfill(
+            status=409,
+            content_type="application/json",
+            body='{"detail": "A impressão não confere com a do último teste; teste de novo."}',
+        )
+
+    page.route("**/api/v1/fontes/*/confiar", confiar)
+    criada = api_json(
+        page,
+        "POST",
+        "/fontes",
+        {
+            "tipo": "mikrotik",
+            "nome": "RouterOS Smoke TLS",
+            "host": "10.99.40.22",
+            "credencial": {"usuario": "api", "senha": SENHA_SMOKE},
+        },
+    )
+    assert criada["status"] == 201, criada
+    try:
+        page.get_by_role("tab", name="Configurações").click()
+        cartao = page.locator("#conteudo-configuracoes .cfg-fonte").filter(
+            has_text="RouterOS Smoke TLS"
+        )
+        expect(cartao).to_be_visible(timeout=15_000)
+        cartao.get_by_role("button", name="Testar RouterOS Smoke TLS").click()
+        teste = cartao.locator(".cfg-teste")
+        expect(teste).to_contain_text("O teste falhou")
+        expect(teste).to_contain_text("/certificate")  # R5: instalar o certificado no RouterOS
+        expect(teste).to_contain_text("api-ssl")
+        expect(teste.locator("code")).to_have_text(":".join(["AB"] * 32))
+        teste.get_by_role("button", name="Confiar neste certificado").click()
+        expect(cartao.get_by_role("alert")).to_contain_text("teste de novo")
+        assert confiados and impressao in confiados[0]
+        # o 409 simulado aparece como "Failed to load resource": é o próprio cenário
+        assert [e for e in erros if "status of 409" not in e] == [], erros
+    finally:
+        assert api_json(page, "DELETE", f"/fontes/{criada['dados']['id']}")["status"] == 204
+
+
+def test_senha_nao_volta_no_formulario(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    criada = api_json(
+        page,
+        "POST",
+        "/fontes",
+        {
+            "tipo": "hikvision",
+            "nome": "NVR Smoke Senha",
+            "host": "10.99.50.21",
+            "tls": False,
+            "credencial": {"usuario": "admin-smoke", "senha": SENHA_SMOKE},
+        },
+    )
+    assert criada["status"] == 201, criada
+    try:
+        page.get_by_role("tab", name="Configurações").click()
+        cartao = page.locator("#conteudo-configuracoes .cfg-fonte").filter(
+            has_text="NVR Smoke Senha"
+        )
+        cartao.get_by_role("button", name="Editar NVR Smoke Senha").click()
+        dialogo = page.get_by_role("dialog", name="Editar fonte")
+        expect(dialogo).to_be_visible()
+        expect(dialogo.get_by_label("Nome")).to_have_value("NVR Smoke Senha")
+        expect(dialogo.get_by_label("Tipo")).to_be_disabled()
+        senha = dialogo.get_by_label("Senha", exact=True)
+        expect(senha).to_have_value("")
+        expect(senha).to_have_attribute("type", "password")
+        expect(dialogo.get_by_label("Usuário")).to_have_value("")
+        expect(dialogo).to_contain_text("deixe em branco para manter")
+        assert SENHA_SMOKE not in page.content()
+        # salvar sem senha mantém a credencial (a API diz só "definida")
+        dialogo.get_by_label("Nome").fill("NVR Smoke Senha 2")
+        dialogo.get_by_role("button", name="Salvar").click()
+        expect(dialogo).to_be_hidden()
+        fontes = api_json(page, "GET", "/fontes")["dados"]
+        fonte = next(f for f in fontes if f["id"] == criada["dados"]["id"])
+        assert fonte["nome"] == "NVR Smoke Senha 2" and fonte["credencial_definida"] is True
+        assert SENHA_SMOKE not in str(fontes)
+        assert erros == [], erros
+    finally:
+        assert api_json(page, "DELETE", f"/fontes/{criada['dados']['id']}")["status"] == 204
+
+
+def test_faixa_de_varredura_e_cancelar(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    expect(secao).to_contain_text("pedido ARP")
+    chave = secao.get_by_role("switch", name="Permitir varredura em 10.99.10.0/24")
+    expect(chave).to_have_attribute("aria-checked", "false")
+    faixa = page.locator("#faixa-varredura")
+    try:
+        chave.click()
+        expect(chave).to_have_attribute("aria-checked", "true")
+        secao.get_by_role("button", name="Iniciar varredura em 10.99.10.0/24").click()
+        expect(faixa).to_be_visible(timeout=10_000)
+        expect(faixa).to_contain_text(
+            re.compile(r"Varredura lenta em 10\.99\.10\.0/24: \d{1,3}%\.")
+        )
+        # a faixa vale em todas as abas
+        page.get_by_role("tab", name="Lista").click()
+        expect(faixa).to_be_visible()
+        faixa.get_by_role("button", name="Cancelar").click()
+        expect(faixa).to_be_hidden(timeout=10_000)
+        assert api_json(page, "GET", "/varredura")["dados"]["rodando"] is False
+        assert erros == [], erros
+    finally:
+        api_json(page, "DELETE", "/varredura")
+        for s in api_json(page, "GET", "/subredes")["dados"]:
+            if s["cidr"] == "10.99.10.0/24" and s["permite_varredura"]:
+                api_json(page, "PATCH", f"/subredes/{s['id']}", {"permite_varredura": False})
+
+
+def test_organograma_camera_sob_gravador(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    gravador_antes = ids_por_busca(page, "10.99.50.10")
+    secao = abrir_novos(page)
+    canal = secao.locator(".nv-linha-filho").first
+    nome = "Canal Smoke Portão"
+    canal.get_by_label("Nome (opcional)").fill(nome)
+    ids: list[str] = []
+    try:
+        canal.get_by_role("button", name=re.compile("^Aprovar")).click()
+        expect(secao.locator("#novos-aviso")).to_contain_text("aprovado", timeout=10_000)
+        ids = ids_por_busca(page, nome)
+        assert len(ids) == 1, ids
+        org = abrir_organograma(page)
+        org.get_by_label("Buscar").fill(nome)
+        cameras = org.locator('.org-cartao[data-slug="camera"]')
+        grupo = cameras.locator(".org-grupo-filhos")
+        expect(grupo).to_have_count(1, timeout=10_000)
+        expect(grupo.locator(".org-grupo-titulo")).to_contain_text("Atrás de")
+        item = grupo.locator(".org-item")
+        expect(item).to_have_text(re.compile(nome))
+        item.click()
+        dialogo = page.get_by_role("dialog", name=nome)
+        expect(dialogo).to_be_visible()
+        expect(dialogo.locator(".equip-atras")).to_have_text(
+            re.compile(r"^Atrás do gravador .+, canal \d+$")
+        )
+        page.keyboard.press("Escape")
+        org.get_by_label("Buscar").fill("")
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, ids)
+        # o gravador aprovado junto (se não existia antes) também sai: a demo volta a 300
+        for id_ in ids_por_busca(page, "10.99.50.10"):
+            if id_ not in gravador_antes:
+                apagar_equipamentos(page, [id_])
+    demo_de_volta(page)
+
+
+@pytest.mark.parametrize("aba", ["novos", "configuracoes"])
+def test_link_direto_novos_e_config_sem_piscar_a_lista(page: Page, alvo: Alvo, aba: str) -> None:
+    entrar(page, alvo)
+    page.route("**/vendor/alpine-csp.min.js", lambda r: r.abort())
+    page.goto(f"/index.html#{aba}")
+    page.reload()
+    assert page.evaluate("document.documentElement.dataset.aba") == aba
+    expect(page.locator("#conteudo-lista")).to_be_hidden()
+    expect(page.locator(".aviso-sem-alpine")).to_be_visible(timeout=10_000)
+    page.unroute("**/vendor/alpine-csp.min.js")
+    erros = vigiar_console(page)
+    page.reload()
+    painel = page.locator(f"#conteudo-{aba}")
+    expect(painel).to_be_visible(timeout=15_000)
+    expect(page.locator("#conteudo-lista")).to_be_hidden()
+    expect(page.get_by_role("tabpanel")).to_have_count(1)
+    page.wait_for_timeout(1000)
+    assert erros == [], erros
+
+
+def test_novos_2000_pendentes_pagina(browser: Browser, alvo_fila_grande: Alvo) -> None:
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo_fila_grande.url)
+    try:
+        page = contexto.new_page()
+        erros = vigiar_console(page)
+        page.goto("/login.html")
+        page.get_by_label("Login").fill(alvo_fila_grande.login)
+        page.get_by_label("Senha").fill(alvo_fila_grande.senha)
+        page.get_by_role("button", name="Entrar").click()
+        page.wait_for_url("**/index.html")
+        expect(page.locator("#contador-pendentes")).to_have_text("2000 pendentes", timeout=15_000)
+        pedidos: list[str] = []
+        page.on("request", lambda r: pedidos.append(r.url) if "/descobertas" in r.url else None)
+        secao = abrir_novos(page)
+        expect(secao.locator(".nv-cartao")).to_have_count(100)
+        expect(secao.locator("#novos-info")).to_have_text("Mostrando 100 de 2000 pendentes")
+        assert all("limit=100" in u for u in pedidos), pedidos
+        secao.get_by_role("button", name="Carregar mais").click()
+        expect(secao.locator(".nv-cartao")).to_have_count(200)
+        expect(secao.locator("#novos-info")).to_have_text("Mostrando 200 de 2000 pendentes")
+        expect(page.locator("#contador-pendentes")).to_have_text("2000 pendentes")
+        assert erros == [], erros
+    finally:
+        contexto.close()

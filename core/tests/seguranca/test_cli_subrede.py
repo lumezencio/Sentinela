@@ -1,5 +1,6 @@
 """CLI ``sub-rede adicionar|remover|listar`` (instalação real: a Guarda nasce vazia)."""
 
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,6 +23,7 @@ async def settings(tmp_path: Path) -> Settings:
         ambiente="teste",
         banco_url=f"sqlite+aiosqlite:///{tmp_path / 'cli.db'}",
         chave_sessao="x",
+        chave_credenciais=secrets.token_hex(32),
     )
     await criar_esquema(s.banco_url)
     return s

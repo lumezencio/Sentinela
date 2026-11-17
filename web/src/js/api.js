@@ -21,6 +21,7 @@ function mensagemDe(dados, status) {
   if (dados && typeof dados.detail === "string") return dados.detail;
   if (status === 422) return "Verifique os campos e tente de novo.";
   if (status === 403) return "Sem permissão para esta ação.";
+  if (status === 429) return "Muitas tentativas seguidas. Aguarde um pouco e tente de novo.";
   return MSG_GENERICA;
 }
 
@@ -84,6 +85,39 @@ export const api = {
   listarSubredes: () => requisitar("GET", "/subredes"),
   criarSubrede: (cidr) => requisitar("POST", "/subredes", { json: { cidr } }),
   removerSubrede: (id) => requisitar("DELETE", `/subredes/${encodeURIComponent(id)}`),
+  // ---- descoberta (Fase 3) ----
+  listarDescobertas: (status, offset, limit) =>
+    requisitar(
+      "GET",
+      `/descobertas?status=${encodeURIComponent(status)}&limit=${limit}&offset=${offset}`,
+    ),
+  aprovarDescoberta: (id, dados) =>
+    requisitar("POST", `/descobertas/${encodeURIComponent(id)}/aprovar`, { json: dados }),
+  aprovarLote: (ids) => requisitar("POST", "/descobertas/aprovar-lote", { json: { ids } }),
+  ignorarDescoberta: (id) => requisitar("POST", `/descobertas/${encodeURIComponent(id)}/ignorar`),
+  reabrirDescoberta: (id) => requisitar("POST", `/descobertas/${encodeURIComponent(id)}/reabrir`),
+  sondarDescoberta: (id) => requisitar("POST", `/descobertas/${encodeURIComponent(id)}/sondar`),
+  declararSubrede: (id) =>
+    requisitar("POST", `/descobertas/${encodeURIComponent(id)}/declarar-subrede`),
+  listarFontes: () => requisitar("GET", "/fontes"),
+  criarFonte: (dados) => requisitar("POST", "/fontes", { json: dados }),
+  editarFonte: (id, dados) =>
+    requisitar("PATCH", `/fontes/${encodeURIComponent(id)}`, { json: dados }),
+  removerFonte: (id) => requisitar("DELETE", `/fontes/${encodeURIComponent(id)}`),
+  testarFonte: (id) => requisitar("POST", `/fontes/${encodeURIComponent(id)}/testar`),
+  confiarFonte: (id, impressao) =>
+    requisitar("POST", `/fontes/${encodeURIComponent(id)}/confiar`, { json: { impressao } }),
+  coletarFonte: (id) => requisitar("POST", `/fontes/${encodeURIComponent(id)}/coletar`),
+  editarSubrede: (id, permite) =>
+    requisitar("PATCH", `/subredes/${encodeURIComponent(id)}`, {
+      json: { permite_varredura: permite },
+    }),
+  verVarredura: () => requisitar("GET", "/varredura"),
+  iniciarVarredura: (subRedeId) =>
+    requisitar("POST", "/varredura", { json: { sub_rede_id: subRedeId } }),
+  cancelarVarredura: () => requisitar("DELETE", "/varredura"),
+  verAjustes: () => requisitar("GET", "/config/descoberta"),
+  editarAjustes: (dados) => requisitar("PATCH", "/config/descoberta", { json: dados }),
   importarCsv: (arquivo) => {
     const form = new FormData();
     form.append("arquivo", arquivo);

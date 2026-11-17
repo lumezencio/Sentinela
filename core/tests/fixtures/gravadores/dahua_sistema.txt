@@ -1,0 +1,5 @@
+deviceType=DHI-NVR4108-TESTE
+hardwareVersion=1.00
+processor=ST7108
+serialNumber=TESTE0000000000CCCC
+updateSerial=NVR4108-TESTE

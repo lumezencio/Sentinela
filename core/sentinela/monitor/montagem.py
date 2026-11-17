@@ -42,7 +42,11 @@ def estado_inicial(eq: Equipamento) -> Estado:
 
 
 def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
-    """Alvo do agendador: intervalo e criticidade vêm da classe (R16)."""
+    """Alvo do agendador: intervalo e criticidade vêm da classe (R16).
+
+    Câmera atrás de gravador (``checagem == "gravador"``) vira alvo passivo: o agendador a
+    registra sem passar pela Guarda e nunca a checa; o estado vem da leitura de canais.
+    """
     return Alvo(
         id=eq.id,
         ip=eq.ip,
@@ -52,6 +56,25 @@ def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
         critico=classe.critica,
         estado=estado_inicial(eq),
     )
+
+
+async def registrar_no_agendador(
+    agendador: Agendador, db: AsyncSession, eq: Equipamento, classe: Classe, *, novo: bool
+) -> None:
+    """Põe (ou atualiza) o equipamento no agendador vivo, sem reiniciar. Chamar DEPOIS do
+    commit. Se o agendador recusar (Guarda mudou no meio), ele pausa com causa
+    ``fora_das_subredes``; a linha é relida para refletir esse estado gravado.
+
+    Caminho único do cadastro manual (API) e da aprovação de descobertas.
+    """
+    alvo = alvo_de(eq, classe)
+    if novo:
+        agendador.adicionar(alvo)
+    else:
+        agendador.atualizar(alvo)
+    if agendador.estado_de(eq.id) is None and not eq.pausado:
+        await agendador.aguardar_gravacoes()
+        await db.refresh(eq)
 
 
 async def sub_redes_do_banco(db: AsyncSession) -> list[IPv4Network]:

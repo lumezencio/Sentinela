@@ -1,0 +1,12 @@
+table.RemoteDevice[0].Address=10.99.6.31
+table.RemoteDevice[0].DeviceType=IPC-TESTE
+table.RemoteDevice[0].Enable=true
+table.RemoteDevice[0].Name=Corredor
+table.RemoteDevice[0].Password=senha-camera-ficticia
+table.RemoteDevice[0].UserName=usuario-camera
+table.RemoteDevice[0].Vendor=Dahua
+table.RemoteDevice[1].Address=0.0.0.0
+table.RemoteDevice[1].Enable=false
+table.RemoteDevice[2].Address=10.99.6.33
+table.RemoteDevice[2].Name=Deposito
+table.RemoteDevice[2].Vendor=General

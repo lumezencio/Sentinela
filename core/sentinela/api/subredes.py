@@ -1,4 +1,10 @@
-"""Sub-redes privadas declaradas pelo administrador (fonte da Guarda viva)."""
+"""Sub-redes privadas declaradas pelo administrador (fonte da Guarda viva).
+
+``permite_varredura`` (padrão falso) libera a varredura lenta e a sondagem automática da
+descoberta naquela sub-rede (spec §9.1 a); só muda pelo PATCH, auditado. Desligar a permissão
+ou remover a sub-rede cancela na hora a varredura dela, se estiver rodando (nenhum pedido
+ARP a mais naquela sub-rede); as sondagens em fundo reconferem a permissão antes de sair.
+"""
 
 from ipaddress import IPv4Network
 from typing import Annotated
@@ -6,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinela.api.comum import (
     CAUSA_DENTRO,
@@ -16,7 +23,9 @@ from sentinela.api.comum import (
     sincronizar,
 )
 from sentinela.api.deps import SessaoDB, exigir_admin
-from sentinela.db.modelos import SubRede, Usuario
+from sentinela.db.modelos import Descoberta, SubRede, Usuario
+from sentinela.descoberta.mescla import dentro_das_subredes
+from sentinela.descoberta.varredura import Varredura
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.montagem import sub_redes_do_banco
 from sentinela.rede.guarda import DestinoProibido, Guarda
@@ -48,15 +57,45 @@ class SubRedeEntrada(BaseModel):
     cidr: str = Field(min_length=1, max_length=43)
 
 
+class SubRedeEdicao(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    permite_varredura: bool
+
+
 class SubRedeSaida(BaseModel):
     id: int
     cidr: str
+    permite_varredura: bool
+
+    @classmethod
+    def de(cls, s: SubRede) -> "SubRedeSaida":
+        return cls(id=s.id, cidr=s.cidr, permite_varredura=bool(s.permite_varredura))
+
+
+def _varredura(request: Request) -> Varredura:
+    v: Varredura = request.app.state.varredura
+    return v
 
 
 @router.get("", response_model=list[SubRedeSaida])
 async def listar(db: SessaoDB, _admin: Admin) -> list[SubRedeSaida]:
     linhas = (await db.execute(select(SubRede).order_by(SubRede.id))).scalars()
-    return [SubRedeSaida(id=s.id, cidr=s.cidr) for s in linhas]
+    return [SubRedeSaida.de(s) for s in linhas]
+
+
+async def marcar_fora_das_subredes(db: AsyncSession, guarda: Guarda) -> None:
+    """Selo "fora das sub-redes" das descobertas não aprovadas conforme ``guarda`` (só
+    exibição: a aprovação consulta a Guarda viva). Câmeras de gravador não têm o selo."""
+    linhas = await db.execute(
+        select(Descoberta).where(
+            Descoberta.status != "aprovada", Descoberta.chave.not_like("nvr:%")
+        )
+    )
+    for d in linhas.scalars():
+        fora = not dentro_das_subredes(guarda, d.ip)
+        if d.fora_das_subredes != fora:
+            d.fora_das_subredes = fora
 
 
 async def _aplicar(request: Request, db: SessaoDB) -> None:
@@ -64,7 +103,9 @@ async def _aplicar(request: Request, db: SessaoDB) -> None:
     agendador: Agendador = request.app.state.agendador
     guarda: Guarda = request.app.state.guarda
     redes = await sub_redes_do_banco(db)
-    mudancas = await sincronizar(db, agendador, Guarda(redes))
+    candidata = Guarda(redes)
+    mudancas = await sincronizar(db, agendador, candidata)
+    await marcar_fora_das_subredes(db, candidata)
     await db.commit()
     guarda.atualizar(redes)
     agendador.pausar_lote(mudancas.pausar, causa=CAUSA_FORA)
@@ -74,24 +115,49 @@ async def _aplicar(request: Request, db: SessaoDB) -> None:
     await agendador.aguardar_gravacoes()
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=SubRedeSaida)
-async def criar(
-    entrada: SubRedeEntrada, request: Request, db: SessaoDB, admin: Admin
-) -> SubRedeSaida:
+async def criar_subrede(request: Request, db: AsyncSession, admin: Usuario, texto: str) -> SubRede:
+    """Valida, grava, audita e aplica (Guarda + agendador). Usada também por
+    ``POST /descobertas/{id}/declarar-subrede``. Quem chama pode ter auditado antes (mesmo
+    commit)."""
     try:
-        cidr = normalizar_cidr(entrada.cidr)
+        cidr = normalizar_cidr(texto)
     except DestinoProibido as e:
         raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, e.motivo) from None
     if await db.scalar(select(SubRede.id).where(SubRede.cidr == cidr)) is not None:
         raise erro(status.HTTP_409_CONFLICT, MSG_DUPLICADA)
     if (await db.scalar(select(func.count()).select_from(SubRede)) or 0) >= MAX_SUB_REDES:
         raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_LIMITE)
-    sub = SubRede(cidr=cidr)
+    sub = SubRede(cidr=cidr, permite_varredura=False)
     db.add(sub)
     await db.flush()
     auditar(db, request, admin, "subrede.criar", cidr, depois={"cidr": cidr})
     await _aplicar(request, db)
-    return SubRedeSaida(id=sub.id, cidr=sub.cidr)
+    return sub
+
+
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=SubRedeSaida)
+async def criar(
+    entrada: SubRedeEntrada, request: Request, db: SessaoDB, admin: Admin
+) -> SubRedeSaida:
+    return SubRedeSaida.de(await criar_subrede(request, db, admin, entrada.cidr))
+
+
+@router.patch("/{sub_id}", response_model=SubRedeSaida)
+async def editar(
+    sub_id: int, edicao: SubRedeEdicao, request: Request, db: SessaoDB, admin: Admin
+) -> SubRedeSaida:
+    """Liga/desliga ``permite_varredura`` (o CIDR não muda: remova e crie outra)."""
+    sub = await db.get(SubRede, sub_id)
+    if sub is None:
+        raise nao_encontrado()
+    antes = {"permite_varredura": bool(sub.permite_varredura)}
+    sub.permite_varredura = edicao.permite_varredura
+    depois = {"permite_varredura": edicao.permite_varredura}
+    auditar(db, request, admin, "subrede.editar", sub.cidr, antes, depois)
+    await db.commit()
+    if not edicao.permite_varredura:
+        await _varredura(request).revogar(sub_id)
+    return SubRedeSaida.de(sub)
 
 
 @router.delete("/{sub_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -99,6 +165,7 @@ async def remover(sub_id: int, request: Request, db: SessaoDB, admin: Admin) -> 
     sub = await db.get(SubRede, sub_id)
     if sub is None:
         raise nao_encontrado()
+    await _varredura(request).revogar(sub_id)  # antes de a sub-rede sumir
     auditar(db, request, admin, "subrede.remover", sub.cidr, antes={"cidr": sub.cidr})
     await db.delete(sub)
     await db.flush()

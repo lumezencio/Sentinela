@@ -13,7 +13,8 @@ from ipaddress import IPv4Address
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.db.modelos import Classe, Equipamento, SubRede
+from sentinela.db.modelos import Classe, Equipamento, Fonte, SubRede
+from sentinela.descoberta.fontes.simulada import PORTA_MIKROTIK, PORTA_SNMP
 from sentinela.monitor.estados import ResultadoChecagem
 from sentinela.rede.guarda import DestinoAutorizado
 from sentinela.relogio import Relogio, RelogioReal
@@ -214,6 +215,41 @@ async def semear_demo(sessoes: async_sessionmaker[AsyncSession], seed: int = 366
                     estado="desconhecido",
                     estado_desde=agora,
                     criado_em=agora,
+                )
+            )
+        await db.commit()
+    return True
+
+
+# (nome, host, porta): o host é um equipamento já semeado (a fonte o representa); a porta
+# escolhe o perfil da fonte simulada (8729 MikroTik, 161 SNMP, outra = gravador)
+FONTES_DEMO: tuple[tuple[str, str, int], ...] = (
+    ("MikroTik (simulado)", "10.99.40.20", PORTA_MIKROTIK),
+    ("Switch SNMP (simulado)", "10.99.40.10", PORTA_SNMP),
+    ("Gravador 16 canais (simulado)", "10.99.50.10", 80),
+)
+
+
+async def semear_fontes_demo(sessoes: async_sessionmaker[AsyncSession]) -> bool:
+    """Três fontes ``simulada`` (idempotente: só se não houver nenhuma). Nenhum socket."""
+    async with sessoes() as db:
+        if await db.scalar(select(func.count()).select_from(Fonte).where(Fonte.tipo == "simulada")):
+            return False
+        for nome, host, porta in FONTES_DEMO:
+            equipamento_id = await db.scalar(
+                select(Equipamento.id).where(Equipamento.ip == host).limit(1)
+            )
+            db.add(
+                Fonte(
+                    tipo="simulada",
+                    nome=nome,
+                    host=host,
+                    porta=porta,
+                    tls=False,
+                    credencial_cifrada=b"",
+                    ativa=True,
+                    intervalo_s=600,
+                    equipamento_id=equipamento_id,
                 )
             )
         await db.commit()

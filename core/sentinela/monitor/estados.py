@@ -28,6 +28,7 @@ class ResultadoChecagem:
 class Transicao:
     de: Estado
     para: Estado
+    causa: str | None = None  # só nas transições forçadas (ex.: "gravador sem resposta")
 
 
 class MaquinaEstados:
@@ -103,6 +104,21 @@ class MaquinaEstados:
     def pausar(self) -> Transicao | None:
         self._zerar()
         return self._ir_para(Estado.PAUSADO)
+
+    def forcar_desconhecido(self, causa: str) -> Transicao | None:
+        """Leva a ``desconhecido`` sem passar pela histerese (ex.: gravador sem resposta).
+
+        Zera os contadores: a próxima amostra segue a histerese normal a partir de
+        ``desconhecido``. Pausado continua pausado e quem já é desconhecido não transita.
+        """
+        if self._estado is Estado.PAUSADO:
+            return None
+        self._zerar()
+        if self._estado is Estado.DESCONHECIDO:
+            return None
+        antigo = self._estado
+        self._estado = Estado.DESCONHECIDO
+        return Transicao(antigo, Estado.DESCONHECIDO, causa=causa)
 
     def retomar(self) -> Transicao | None:
         if self._estado is not Estado.PAUSADO:

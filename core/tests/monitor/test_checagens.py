@@ -203,6 +203,11 @@ def test_checagem_para_e_custos() -> None:
         checagem_para("ftp")
 
 
+def test_checagem_para_gravador_nao_tem_checagem_ativa() -> None:
+    with pytest.raises(ValueError, match="passiv"):
+        checagem_para("gravador")
+
+
 async def test_http_prazo_total_contra_gotejamento() -> None:
     async def gotejar(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
         await r.readuntil(b"\r\n\r\n")

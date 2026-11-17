@@ -31,6 +31,25 @@ def test_aceita_http_com_porta(guarda: Guarda) -> None:
     assert guarda.validar("10.99.0.10", 80, "http").protocolo == "http"
 
 
+def test_aceita_https_com_porta(guarda: Guarda) -> None:
+    d = guarda.validar("10.99.0.10", 443, "https")
+    assert (d.porta, d.protocolo) == (443, "https")
+
+
+def test_aceita_udp_com_porta(guarda: Guarda) -> None:
+    d = guarda.validar("10.99.0.10", 161, "udp")
+    assert (d.porta, d.protocolo) == (161, "udp")
+
+
+@pytest.mark.parametrize(
+    "ip", ["255.255.255.255", "10.99.0.255", "10.99.0.0", "224.0.0.251", "239.255.255.250"]
+)
+@pytest.mark.parametrize("protocolo", ["udp", "https"])
+def test_udp_e_https_recusam_broadcast_e_multicast(guarda: Guarda, ip: str, protocolo: Any) -> None:
+    with pytest.raises(DestinoProibido):
+        guarda.validar(ip, 161, protocolo)
+
+
 @pytest.mark.parametrize(
     "ip",
     [
@@ -62,7 +81,7 @@ def test_recusa_porta_invalida(guarda: Guarda, porta: int) -> None:
     assert exc.value.motivo
 
 
-@pytest.mark.parametrize("protocolo", ["tcp", "http"])
+@pytest.mark.parametrize("protocolo", ["tcp", "http", "https", "udp"])
 def test_recusa_sem_porta(guarda: Guarda, protocolo: Any) -> None:
     with pytest.raises(DestinoProibido):
         guarda.validar("10.99.0.10", None, protocolo)
@@ -70,7 +89,7 @@ def test_recusa_sem_porta(guarda: Guarda, protocolo: Any) -> None:
 
 def test_recusa_protocolo_desconhecido(guarda: Guarda) -> None:
     with pytest.raises(DestinoProibido):
-        guarda.validar("10.99.0.10", None, "udp")  # type: ignore[arg-type]
+        guarda.validar("10.99.0.10", None, "smtp")  # type: ignore[arg-type]
 
 
 def test_loopback_so_quando_permitido() -> None:

