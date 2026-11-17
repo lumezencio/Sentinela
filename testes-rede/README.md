@@ -96,8 +96,8 @@ unicast dão prova inválida.
 Docker Desktop 29.6.2 (Windows 11), 2026-11-17, rodada final da Fase 3:
 
 ```
-quadros na captura: 582
-quadros emitidos pelo Sentinela: 372
+quadros na captura: 584
+quadros emitidos pelo Sentinela: 373
 broadcast/multicast emitidos pelo Sentinela: 132
 ARP request permitidos: 132 para 18 IP(s)
   fontes: .11 2, .12 2, .35 2 | aprovado .20: 30 | sondado .21: 18 | varredura .33-.46: 6 cada
