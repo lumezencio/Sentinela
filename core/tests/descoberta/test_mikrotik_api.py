@@ -8,7 +8,10 @@ from ipaddress import IPv4Network
 import pytest
 
 from sentinela.descoberta.fontes.mikrotik_api import (
+    LIMITE_COMANDO,
     LIMITE_SENTENCA,
+    MAX_ATRIBUTOS,
+    MAX_VALOR,
     ClienteRouterOS,
     ErroRouterOS,
     codificar_sentenca,
@@ -174,6 +177,65 @@ async def test_excesso_de_sentencas_e_recusado() -> None:
         with pytest.raises(ErroRouterOS):
             await cliente.comando(["/ip/arp/print"])
         await cliente.fechar()
+
+
+async def test_comando_somando_mais_que_o_teto_e_recusado() -> None:
+    # cada sentença fica abaixo de 1 MB, mas juntas passam do teto do comando
+    linha = codificar_sentenca(["!re", "=a=" + "x" * (LIMITE_SENTENCA - 64)])
+    quantas = LIMITE_COMANDO // LIMITE_SENTENCA + 2
+    resposta = linha * quantas + codificar_sentenca(["!done"])
+    async with _servidor(_roteiro(resposta)) as porta:
+        cliente = await _cliente(porta)
+        with pytest.raises(ErroRouterOS) as exc:
+            await cliente.comando(["/ip/arp/print"])
+        assert cliente.conectado is False
+        await cliente.fechar()
+    assert str(exc.value) == "resposta do RouterOS grande demais"
+
+
+async def test_teto_do_comando_vale_por_comando() -> None:
+    linha = codificar_sentenca(["!re", "=a=" + "x" * 1000])
+    resposta = linha * 3 + codificar_sentenca(["!done"])
+    async with _servidor(_roteiro(resposta, resposta)) as porta:
+        cliente = await _cliente(porta)
+        cliente.limite_comando = 4000
+        try:
+            assert len(await cliente.comando(["/ip/arp/print"])) == 3
+            assert len(await cliente.comando(["/ip/arp/print"])) == 3
+        finally:
+            await cliente.fechar()
+
+
+async def test_atributos_demais_na_sentenca_sao_recusados() -> None:
+    muitos = [f"=k{i}=v" for i in range(MAX_ATRIBUTOS + 1)]
+    resposta = codificar_sentenca(["!re", *muitos]) + codificar_sentenca(["!done"])
+    async with _servidor(_roteiro(resposta)) as porta:
+        cliente = await _cliente(porta)
+        try:
+            with pytest.raises(ErroRouterOS):
+                await cliente.comando(["/ip/arp/print"])
+            assert cliente.conectado is False
+        finally:
+            await cliente.fechar()
+
+
+async def test_palavras_demais_na_sentenca_sao_recusadas() -> None:
+    muitas = [f".x{i}" for i in range(MAX_ATRIBUTOS + 10)]
+    with pytest.raises(ErroRouterOS):
+        await ler_sentenca(_leitor(codificar_sentenca(["!re", *muitas])))
+
+
+async def test_atributos_no_limite_e_valor_longo_truncado() -> None:
+    atributos = [f"=k{i}=v" for i in range(MAX_ATRIBUTOS - 1)] + ["=longo=" + "y" * 5000]
+    resposta = codificar_sentenca(["!re", *atributos, ".tag=1"]) + codificar_sentenca(["!done"])
+    async with _servidor(_roteiro(resposta)) as porta:
+        cliente = await _cliente(porta)
+        try:
+            (linha,) = await cliente.comando(["/ip/arp/print"])
+        finally:
+            await cliente.fechar()
+    assert len(linha) == MAX_ATRIBUTOS
+    assert linha["longo"] == "y" * MAX_VALOR
 
 
 async def test_tempo_esgotado_vira_erro_generico() -> None:

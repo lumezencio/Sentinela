@@ -260,3 +260,19 @@ async def test_cada_comando_custa_ficha_baixa(cofre: Cofre, certificado: Certifi
     assert len(sim.recebidos) >= 6
     assert len(espiao.pedidos) == 1 + len(sim.recebidos)
     assert set(espiao.pedidos) == {(1, "baixa")}
+
+
+async def test_resposta_hostil_com_colunas_demais_e_recusada(
+    cofre: Cofre, certificado: CertificadoTeste
+) -> None:
+    hostil = {f"coluna-{i}": "z" * 10 for i in range(200)}
+    hostil |= {"address": "10.99.0.66", "mac-address": "02:00:00:aa:00:66"}
+    sim = SimuladorRouterOS(
+        tabelas={"/ip/arp/print": [hostil]}, ignorar_proplist=True, certificado=certificado
+    )
+    async with sim.rodando() as porta:
+        coletor = _coletor(_fonte(cofre, porta, impressao=certificado.impressao), cofre)
+        with pytest.raises(ErroColeta) as exc:
+            await coletor.coletar()
+    assert str(exc.value) == "resposta do RouterOS grande demais"
+    assert "coluna" not in repr(exc.value)

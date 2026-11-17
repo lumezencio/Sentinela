@@ -20,8 +20,12 @@ import ssl
 from sentinela.descoberta.fontes.base import ErroColeta
 from sentinela.rede.guarda import DestinoAutorizado
 
-LIMITE_SENTENCA = 1024 * 1024  # bytes por sentença (soma das palavras)
+LIMITE_SENTENCA = 1024 * 1024  # bytes por sentença (soma das palavras e cabeçalhos)
+LIMITE_COMANDO = 8 * 1024 * 1024  # bytes somados de todas as sentenças de um comando
 MAX_SENTENCAS = 20_000  # sentenças por comando
+MAX_ATRIBUTOS = 64  # atributos =k=v por sentença; mais que isso a resposta é recusada
+MAX_PALAVRAS = MAX_ATRIBUTOS + 4  # teto bruto do leitor: atributos + tipo, .tag e folga
+MAX_VALOR = 1024  # caracteres guardados por valor de atributo (o excesso é truncado)
 TIMEOUT_COMANDO_S = 60.0  # teto total de um comando, além do timeout por leitura
 
 MSG_FALHA = "falha na comunicação com o RouterOS"
@@ -117,14 +121,25 @@ def codificar_sentenca(palavras: list[str]) -> bytes:
 
 async def ler_sentenca(leitor: asyncio.StreamReader, limite: int = LIMITE_SENTENCA) -> list[str]:
     """Lê palavras até a vazia. Recusa (sem ler o corpo) o que passar de ``limite`` bytes."""
+    palavras, _ = await ler_sentenca_medida(leitor, limite)
+    return palavras
+
+
+async def ler_sentenca_medida(
+    leitor: asyncio.StreamReader, limite: int = LIMITE_SENTENCA
+) -> tuple[list[str], int]:
+    """Como ``ler_sentenca``, devolvendo também os bytes consumidos (para o teto do comando).
+
+    Recusa sentenças com mais de ``MAX_PALAVRAS`` palavras."""
     palavras: list[str] = []
     total = 0
     while True:
         n = await ler_tamanho(leitor)
+        total += 1
         if n == 0:
-            return palavras
-        total += n + 1
-        if total > limite:
+            return palavras, total
+        total += n
+        if total > limite or len(palavras) >= MAX_PALAVRAS:
             raise ErroRouterOS(MSG_GRANDE)
         palavras.append((await _ler(leitor, n)).decode("utf-8", errors="replace"))
 
@@ -132,11 +147,13 @@ async def ler_sentenca(leitor: asyncio.StreamReader, limite: int = LIMITE_SENTEN
 def _atributos(palavras: list[str]) -> dict[str, str]:
     """``=chave=valor`` → ``{chave: valor}`` (o valor pode conter ``=``); o resto é ignorado."""
     saida: dict[str, str] = {}
+    if sum(p.startswith("=") for p in palavras) > MAX_ATRIBUTOS:
+        raise ErroRouterOS(MSG_GRANDE)
     for palavra in palavras:
         if palavra.startswith("="):
             chave, _, valor = palavra[1:].partition("=")
             if chave:
-                saida[chave] = valor
+                saida[chave[:MAX_VALOR]] = valor[:MAX_VALOR]
     return saida
 
 
@@ -167,6 +184,7 @@ class ClienteRouterOS:
         self._confiada = impressao_confiada.lower() if impressao_confiada else None
         self._timeout = timeout_s
         self.max_sentencas = MAX_SENTENCAS
+        self.limite_comando = LIMITE_COMANDO
         self.timeout_comando_s = TIMEOUT_COMANDO_S
         self.impressao: str | None = None  # SHA-256 hex do certificado apresentado
         self._leitor: asyncio.StreamReader | None = None
@@ -250,9 +268,11 @@ class ClienteRouterOS:
             await escritor.drain()
         linhas: list[dict[str, str]] = []
         recusado = False
+        restante = self.limite_comando
         for _ in range(self.max_sentencas):
             async with asyncio.timeout(self._timeout):
-                sentenca = await ler_sentenca(leitor)
+                sentenca, lidos = await ler_sentenca_medida(leitor, min(LIMITE_SENTENCA, restante))
+            restante -= lidos
             tipo = sentenca[0] if sentenca else ""
             if tipo == "!re":
                 if not recusado:

@@ -117,6 +117,7 @@ class SimuladorRouterOS:
     )
     tabelas: dict[str, list[dict[str, str]]] = field(default_factory=lambda: dict(TABELAS_V7))
     login_antigo: bool = False
+    ignorar_proplist: bool = False  # aparelho hostil: devolve todas as colunas
     certificado: CertificadoTeste | None = None
     recebidos: list[list[str]] = field(default_factory=list)
 
@@ -151,7 +152,7 @@ class SimuladorRouterOS:
         filtros = [p[1:].split("=", 1) for p in resto if p.startswith("?")]
         proplist: list[str] | None = None
         for p in resto:
-            if p.startswith("=.proplist="):
+            if p.startswith("=.proplist=") and not self.ignorar_proplist:
                 proplist = p.split("=", 2)[2].split(",")
         saida = b""
         for linha in linhas:
