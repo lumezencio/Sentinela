@@ -11,6 +11,7 @@ import {
   paginar,
   prepararItem,
 } from "./lista.js";
+import { organogramaDoPainel } from "./organograma.js";
 import { visoesDoPainel } from "./teia-pagina.js";
 import { criarConexao } from "./ws.js";
 
@@ -73,6 +74,7 @@ function painel() {
 
     async init() {
       this.iniciarVisoes(); // aba pelo hash já na abertura (a Teia monta sob demanda)
+      this.iniciarOrganograma(); // depois: o hashchange das visões já trocou a aba
       // core fora do ar ao abrir a página: tenta de novo com recuo (1 s → 30 s)
       let eu = await api.eu();
       let recuo = RECUO_INICIAL_MS;
@@ -138,6 +140,7 @@ function painel() {
     renderizar() {
       this.contadores = contar(store);
       this.renderizarTeia();
+      this.renderizarOrganograma(); // só na aba dele; no máximo 2 vezes por segundo
       if (this.aba !== "lista") return; // a lista só é montada na aba dela
       const filtrada = filtrar(
         store,
@@ -154,7 +157,9 @@ function painel() {
 
     // ---------- filtros, ordenação, paginação ----------
     aoFiltrar() {
+      // filtros compartilhados entre Lista e Organograma: as duas voltam à 1ª página
       this.pagina = 1;
+      this.zerarPaginasOrganograma();
       this.renderizar();
     },
     filtrarEstado(grupo) {
@@ -404,7 +409,8 @@ function painel() {
     },
   };
   // abas e Teia (teia-pagina.js): mesmas propriedades no mesmo objeto, getters preservados
-  return Object.defineProperties(dados, Object.getOwnPropertyDescriptors(visoesDoPainel(store)));
+  Object.defineProperties(dados, Object.getOwnPropertyDescriptors(visoesDoPainel(store)));
+  return Object.defineProperties(dados, Object.getOwnPropertyDescriptors(organogramaDoPainel(store)));
 }
 
 document.addEventListener("alpine:init", () => {

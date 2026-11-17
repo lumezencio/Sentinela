@@ -515,3 +515,135 @@ def test_historico_atrasado_de_outro_equipamento_nao_sobrescreve(page: Page, alv
     expect(painel.get_by_role("heading", level=2)).to_have_text(nome_b)
     assert "2001" not in painel.locator(".teia-historico").inner_text()
     assert painel.locator(".teia-historico").inner_text() == antes
+
+
+# ---- Fase 2: Organograma --------------------------------------------------------------------
+
+PESOS_ESTADO = {
+    "offline": 0,
+    "instavel": 1,
+    "suspeito": 2,
+    "aguardando": 3,
+    "pausado": 4,
+    "online": 5,
+}
+SEM_ROLAGEM_HORIZONTAL = "() => document.documentElement.scrollWidth"
+
+
+def abrir_organograma(page: Page) -> Any:
+    page.get_by_role("tab", name="Organograma").click()
+    expect(page.get_by_role("tab", name="Organograma")).to_have_attribute("aria-selected", "true")
+    assert page.url.endswith("#organograma"), page.url
+    secao = page.locator("#conteudo-organograma")
+    expect(secao.locator(".org-cartao").first).to_be_visible(timeout=15_000)
+    return secao
+
+
+def esperar_estados_variados(page: Page) -> None:
+    """Demonstração rodando há algum tempo: já há equipamento fora do online."""
+    for _ in range(60):
+        ruins = sum(
+            int(page.locator(f"#contador-{n}").inner_text()) for n in ("offline", "instavel")
+        )
+        if ruins:
+            return
+        page.wait_for_timeout(500)
+    pytest.fail("a demonstração não produziu nenhum equipamento offline/instável em 30 s")
+
+
+def pesos_por_cartao(secao: Any) -> list[list[int]]:
+    resultado: list[list[int]] = secao.locator(".org-cartao").evaluate_all(
+        "cs => cs.map(c => [...c.querySelectorAll('.org-item')].map(i => Number(i.dataset.peso)))"
+    )
+    return resultado
+
+
+def test_organograma_360_pior_estado_primeiro_sem_rolagem(browser: Browser, alvo: Alvo) -> None:
+    contexto = browser.new_context(
+        viewport={"width": 360, "height": 740}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        erros = vigiar_console(page)
+        entrar(page, alvo)
+        esperar_estados_variados(page)
+        secao = abrir_organograma(page)
+        secao.get_by_role("combobox", name="Estado").select_option(label="Todos")
+        assert page.evaluate(SEM_ROLAGEM_HORIZONTAL) <= 360
+        pesos = pesos_por_cartao(secao)
+        assert pesos and all(p for p in pesos), pesos
+        for lista in pesos:
+            assert lista[0] == min(lista), lista  # pior estado primeiro
+            assert lista == sorted(lista), lista
+        # Câmeras: 120 na demonstração → 50 por página, "Próxima" leva aos próximos 50
+        cameras = secao.locator('.org-cartao[data-slug="camera"]')
+        itens = cameras.locator(".org-item")
+        expect(itens).to_have_count(POR_PAGINA)
+        expect(cameras.locator(".org-pagina-info")).to_have_text("1 de 3")
+        primeira = set(itens.evaluate_all("is => is.map(i => i.dataset.id)"))
+        cameras.get_by_role("button", name=re.compile("^Próxima")).click()
+        expect(cameras.locator(".org-pagina-info")).to_have_text("2 de 3")
+        expect(itens).to_have_count(POR_PAGINA)
+        segunda = set(itens.evaluate_all("is => is.map(i => i.dataset.id)"))
+        assert len(segunda) == POR_PAGINA and not primeira & segunda
+        assert page.evaluate(SEM_ROLAGEM_HORIZONTAL) <= 360
+        # filtro "offline": só itens offline e ainda sem rolagem horizontal
+        secao.get_by_role("combobox", name="Estado").select_option(label="Offline")
+        expect(secao.locator(".org-item").first).to_be_visible()
+        for lista in pesos_por_cartao(secao):
+            assert set(lista) == {PESOS_ESTADO["offline"]}, lista
+        assert page.evaluate(SEM_ROLAGEM_HORIZONTAL) <= 360
+        assert erros == [], erros
+    finally:
+        contexto.close()
+
+
+def test_organograma_filtros_compartilhados_recolher_e_painel(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    # filtro escolhido na Lista vale no Organograma (e vice-versa)
+    page.get_by_role("combobox", name="Classe").select_option(label="Gravadores")
+    secao = abrir_organograma(page)
+    expect(secao.locator(".org-cartao")).to_have_count(1)
+    expect(secao.locator('.org-cartao[data-slug="gravador"] .org-item')).to_have_count(8)
+    expect(secao.get_by_role("combobox", name="Classe")).to_have_value("gravador")
+    secao.get_by_role("combobox", name="Classe").select_option(label="Todas")
+    page.get_by_role("tab", name="Lista").click()
+    expect(page.locator("#total-filtrado")).to_have_text(str(TOTAL_DEMO))
+    secao = abrir_organograma(page)
+    cartoes = secao.locator(".org-cartao")
+    expect(cartoes).to_have_count(10)  # 10 classes na demonstração, sem a do servidor
+    # recolher um cartão, depois tudo, depois expandir tudo
+    gravadores = secao.locator('.org-cartao[data-slug="gravador"]')
+    alternar = gravadores.locator(".org-alternar")
+    expect(alternar).to_have_attribute("aria-expanded", "true")
+    alternar.click()
+    expect(alternar).to_have_attribute("aria-expanded", "false")
+    expect(gravadores.locator(".org-grade")).to_be_hidden()
+    secao.get_by_role("button", name="Recolher tudo").click()
+    expect(secao.locator('.org-alternar[aria-expanded="true"]')).to_have_count(0)
+    expect(secao.locator(".org-item:visible")).to_have_count(0)
+    secao.get_by_role("button", name="Expandir tudo").click()
+    expect(secao.locator('.org-alternar[aria-expanded="false"]')).to_have_count(0)
+    # recolhimento só na memória: sobrevive à troca de aba
+    alternar.click()
+    page.get_by_role("tab", name="Lista").click()
+    abrir_organograma(page)
+    expect(alternar).to_have_attribute("aria-expanded", "false")
+    alternar.click()
+    # clicar num equipamento abre o painel com o histórico (sem carregar a Teia)
+    item = gravadores.locator(".org-item").first
+    nome = item.locator(".org-nome").inner_text()
+    item.click()
+    painel = page.get_by_role("dialog", name=nome)
+    expect(painel).to_be_visible()
+    expect(painel.get_by_role("heading", name="Últimas quedas")).to_be_visible()
+    visivel = painel.locator(".teia-historico li:visible, .teia-historico-vazio:visible")
+    expect(visivel.first).to_be_visible(timeout=10_000)
+    expect(painel.get_by_text("TCP 554")).to_be_visible()
+    expect(painel.get_by_role("button", name=re.compile("^(Pausar|Retomar)$"))).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(painel).to_be_hidden()
+    expect(item).to_be_focused()
+    assert canvases_da_teia(page) == 0
+    assert erros == [], erros

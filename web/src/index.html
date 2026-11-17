@@ -312,10 +312,122 @@
   </section>
 
   <section class="casca" id="conteudo-organograma" role="tabpanel" aria-labelledby="aba-organograma" hidden :hidden="!abaOrganograma">
-    <h1 class="so-leitor">Organograma</h1>
+    <h1 class="so-leitor">Organograma por classe</h1>
     <p class="alerta teia-aviso-org" role="status" x-show="avisoVisao" x-text="avisoVisao"></p>
-    <p class="vazio">O Organograma por classe chega na próxima etapa. Enquanto isso, use a Lista.</p>
+    <div class="banner" role="status" aria-live="polite" x-show="bannerVisivel" x-cloak :class="bannerErro ? 'banner-erro' : ''">
+      <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span><span x-text="textoBanner"></span>
+    </div>
+
+    <!-- mesmos filtros da Lista (mesmas propriedades do componente): valem nas duas abas -->
+    <section class="ferramentas org-ferramentas" aria-label="Filtros do Organograma">
+      <div class="campo-form busca">
+        <label for="org-busca">Buscar</label>
+        <input id="org-busca" type="search" placeholder="Nome ou IP" autocomplete="off" x-model="busca" @input.debounce.150ms="aoFiltrar">
+      </div>
+      <div class="campo-form">
+        <label for="org-filtro-classe">Classe</label>
+        <select id="org-filtro-classe" x-model="filtroClasse" @change="aoFiltrar">
+          <option value="">Todas</option>
+          <template x-for="c in classes" :key="c.slug">
+            <option :value="c.slug" x-text="c.nome"></option>
+          </template>
+        </select>
+      </div>
+      <div class="campo-form">
+        <label for="org-filtro-estado">Estado</label>
+        <select id="org-filtro-estado" x-model="filtroEstado" @change="aoFiltrar">
+          <option value="">Todos</option>
+          <option value="online">Online</option>
+          <option value="instavel">Instável</option>
+          <option value="offline">Offline</option>
+          <option value="pausado">Pausado</option>
+          <option value="aguardando">Aguardando</option>
+        </select>
+      </div>
+      <div class="org-acoes">
+        <button class="botao" type="button" @click="recolherTudo">Recolher tudo</button>
+        <button class="botao" type="button" @click="expandirTudo">Expandir tudo</button>
+      </div>
+    </section>
+
+    <div class="org-cartoes">
+      <template x-for="c in orgCartoes" :key="c.slug">
+        <section class="org-cartao vidro" :data-slug="c.slug" :style="c.estilo" :aria-label="c.nome">
+          <h2 class="org-cabeca">
+            <button class="org-alternar" type="button" @click="alternarClasse(c.slug)" :aria-expanded="c.expandido" :aria-controls="c.idGrade" :title="c.rotuloAlternar">
+              <svg class="icone org-seta" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              <span class="pino" aria-hidden="true"></span>
+              <span class="org-classe-nome" x-text="c.nome"></span>
+              <span class="org-total suave" x-text="c.total"></span>
+            </button>
+          </h2>
+          <ul class="org-contagens" aria-label="Contagem por estado">
+            <template x-for="k in c.contagens" :key="k.grupo">
+              <li :class="k.classe"><svg class="icone-status" aria-hidden="true"><use :href="k.icone"/></svg><span x-text="k.texto"></span></li>
+            </template>
+          </ul>
+          <ul class="org-grade" :id="c.idGrade" x-show="c.aberto" aria-label="Equipamentos, piores estados primeiro">
+            <template x-for="q in c.itens" :key="q.id">
+              <li>
+                <button class="org-item" type="button" :data-id="q.id" :data-peso="q.peso" :title="q.estadoRotulo" @click="abrirNoOrganograma(q.id)">
+                  <span :class="q.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="q.estadoIcone"/></svg></span>
+                  <span class="org-nome" x-text="q.nome"></span>
+                  <span class="so-leitor" x-text="q.estadoRotulo"></span>
+                </button>
+              </li>
+            </template>
+          </ul>
+          <nav class="org-paginas" aria-label="Páginas da classe" x-show="c.variasPaginas">
+            <button class="botao botao-icone botao-fantasma" type="button" @click="orgPaginaAnterior(c.slug)" :disabled="c.semAnterior" :aria-label="c.rotuloAnterior">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+            </button>
+            <span class="org-pagina-info" x-text="c.infoPagina"></span>
+            <button class="botao botao-icone botao-fantasma" type="button" @click="orgPaginaProxima(c.slug)" :disabled="c.semProxima" :aria-label="c.rotuloProxima">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+            </button>
+          </nav>
+        </section>
+      </template>
+    </div>
+    <p class="vazio" x-show="carregando">Conectando ao Sentinela…</p>
+    <p class="vazio" x-show="orgVazio" x-cloak>Nenhum equipamento com esses filtros.</p>
   </section>
+
+  <!-- painel do equipamento no Organograma: mesma ficha, histórico e pausa da Teia (sem o 3D) -->
+  <dialog class="dialogo org-dialogo" x-ref="dlgEquipOrg" aria-labelledby="titulo-equip-org" @close="aoFecharDialogoOrg">
+    <div class="teia-equip-cabeca">
+      <div>
+        <span class="classe teia-sub"><span class="pino" aria-hidden="true" :style="{ '--cor-classe': equip.corClasse }"></span><span x-text="equip.classe"></span></span>
+        <h2 id="titulo-equip-org" class="teia-titulo" tabindex="-1" x-ref="tituloEquipOrg" x-text="equip.nome"></h2>
+      </div>
+      <button class="botao botao-fantasma botao-icone" type="button" @click="fecharNoOrganograma" aria-label="Fechar" title="Fechar (Esc)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <dl class="teia-ficha">
+      <div><dt>Estado</dt><dd><span :class="equip.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="equip.estadoIcone"/></svg><span x-text="equip.estadoRotulo"></span></span> <span class="suave" :title="equip.desdeTitulo" x-text="equip.desde"></span></dd></div>
+      <div><dt>IP</dt><dd class="mono" x-text="equip.ip"></dd></div>
+      <div><dt>Checagem</dt><dd class="mono" x-text="equip.checagem"></dd></div>
+      <div><dt>Latência</dt><dd class="mono" x-text="equip.latencia"></dd></div>
+    </dl>
+    <div class="teia-equip-acoes" x-show="admin">
+      <button class="botao" type="button" @click="alternarPausa" :disabled="pausando" x-text="rotuloPausa">Pausar</button>
+    </div>
+    <p class="alerta" role="alert" x-show="acaoErro" x-text="acaoErro"></p>
+    <h3 class="teia-subtitulo">Últimas quedas</h3>
+    <p class="teia-sub" role="status" x-show="historicoCarregando">Carregando…</p>
+    <p class="teia-historico-vazio teia-sub" x-show="historicoVazio">Nenhuma queda registrada.</p>
+    <p class="alerta" role="alert" x-show="historicoErro" x-text="historicoErro"></p>
+    <ol class="teia-historico">
+      <template x-for="q in historico" :key="q.id">
+        <li>
+          <span class="st-offline"><svg class="icone-status" aria-hidden="true"><use href="#i-offline"/></svg></span>
+          <time :datetime="q.dataIso" x-text="q.data"></time>
+          <span class="teia-hist-volta" x-show="q.volta" x-text="q.volta"></span>
+        </li>
+      </template>
+    </ol>
+  </dialog>
 
   <dialog class="dialogo" x-ref="dlgNovo" aria-labelledby="titulo-novo">
     <form @submit.prevent="criar" novalidate>

@@ -1189,10 +1189,220 @@ html[data-aba="teia"] .campo {
   height: 12px;
 }
 
-/* ---------- Organograma (a Task 5 preenche) ---------- */
+/* ======================= Organograma (aba #organograma) ======================= */
 .teia-aviso-org {
   margin-top: 20px;
   border-left-color: var(--instavel);
+}
+
+.org-ferramentas {
+  margin-top: 20px;
+}
+
+.org-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.org-cartoes {
+  display: grid;
+  gap: 14px;
+}
+
+/* um cartão por classe: a cor da classe (já validada #rrggbb no JS) na borda esquerda */
+.org-cartao {
+  min-width: 0;
+  padding: 10px 14px 14px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--cor-classe, var(--borda));
+  border-radius: var(--raio);
+  box-shadow: var(--sombra);
+}
+
+.org-cabeca {
+  margin: 0;
+  font-size: inherit;
+}
+
+.org-alternar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 4px;
+  border: 0;
+  border-radius: var(--raio-p);
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.org-alternar:hover {
+  background: var(--superficie-2);
+}
+
+.org-seta {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: var(--texto-suave);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease;
+}
+
+.org-alternar[aria-expanded="true"] .org-seta {
+  transform: rotate(90deg);
+}
+
+.org-alternar .pino {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--cor-classe, var(--texto-suave));
+}
+
+.org-classe-nome {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.org-total {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.org-contagens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 2px 0 0;
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.org-conta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cor-status);
+}
+
+.org-conta .icone-status {
+  width: 13px;
+  height: 13px;
+}
+
+.org-grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 168px), 1fr));
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.org-grade li {
+  min-width: 0;
+}
+
+.org-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--superficie);
+  color: var(--texto);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.org-item:hover {
+  border-color: var(--texto-suave);
+  background: var(--superficie-2);
+}
+
+.org-item .estado {
+  flex: none;
+}
+
+.org-nome {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.org-paginas {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--texto-suave);
+  font-size: 14px;
+}
+
+.org-dialogo {
+  max-height: calc(100dvh - 32px);
+  padding: 20px 22px 22px;
+  overflow-y: auto;
+}
+
+.org-dialogo .teia-titulo {
+  margin: 4px 0 0;
+}
+
+@media (max-width: 1024px) {
+  .org-ferramentas .org-acoes {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 767px) {
+  .org-acoes .botao {
+    flex: 1;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+  .org-cartao {
+    padding: 8px 10px 12px;
+  }
+  .org-grade {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .org-item {
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  .org-paginas {
+    justify-content: space-between;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .org-seta,
+  .org-item {
+    transition: none;
+  }
 }
 
 /* ---------- até 1100 px: painéis mais estreitos; estilos à direita, em cima ---------- */
