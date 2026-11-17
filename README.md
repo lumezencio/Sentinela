@@ -4,11 +4,9 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fase 1 concluída; Fase 2 concluída com pendência** (núcleo de monitoramento, lista ao
-> vivo, Docker, Teia 3D e Organograma). Pendência: no Lighthouse, "boas práticas" fica em 81 por um
-> aviso de depreciação vindo do Alpine CSP de terceiros (desempenho, acessibilidade e SEO em 100).
-> A descoberta automática e os alertas vêm nas próximas fases. Veja
-> [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md) (§18).
+> Status: **Fases 1 e 2 concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D e
+> Organograma). A descoberta automática e os alertas vêm nas próximas fases. Veja
+> [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
 
 ## Como funciona
 
