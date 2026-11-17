@@ -1,6 +1,5 @@
 """Peças comuns da API de cadastro: auditoria, validação de destino e MAC, pausa/retomada."""
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
@@ -15,16 +14,16 @@ from sentinela.monitor.agendador import CAUSA_FORA, Agendador, Alvo
 from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de
 from sentinela.rede.guarda import DestinoProibido, Guarda, Protocolo
+from sentinela.rede.mac import MSG_MAC, normalizar_mac
 
-__all__ = ["CAUSA_FORA"]  # reexportada: a mesma causa do agendador
+# reexportados: a mesma causa do agendador; MAC vive em rede/mac.py (usado pela descoberta)
+__all__ = ["CAUSA_FORA", "MSG_MAC", "normalizar_mac"]
 
 CAUSA_MANUAL = "manual"
 CAUSA_DENTRO = "dentro_das_subredes"  # retomada automática: a sub-rede voltou
-MSG_MAC = "MAC inválido."
 MSG_CLASSE = "Classe inexistente."
 MSG_IP_DUPLICADO = "Já existe um equipamento com este IP."
 MSG_MAC_DUPLICADO = "Já existe um equipamento com este MAC."
-_MAC = re.compile(r"^[0-9a-f]{2}([:-])[0-9a-f]{2}(\1[0-9a-f]{2}){4}$")
 
 
 def erro(codigo: int, motivo: str) -> HTTPException:
@@ -34,15 +33,6 @@ def erro(codigo: int, motivo: str) -> HTTPException:
 
 def nao_encontrado() -> HTTPException:
     return erro(status.HTTP_404_NOT_FOUND, "Não encontrado.")
-
-
-def normalizar_mac(mac: str) -> str:
-    """``02-00-00-0A-0B-0C`` ou ``02:00:00:0a:0b:0c`` → ``02:00:00:0a:0b:0c``; ValueError
-    se inválido."""
-    valor = mac.strip().lower()
-    if not _MAC.fullmatch(valor):
-        raise ValueError(MSG_MAC)
-    return valor.replace("-", ":")
 
 
 def validar_destino(guarda: Guarda, ip: str, porta: int | None, checagem: str) -> str:
