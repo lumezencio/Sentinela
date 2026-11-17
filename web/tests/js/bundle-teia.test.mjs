@@ -32,3 +32,7 @@ test("bundle: sem sourcemap, sem <style> injetado, sem WebGPU, sem eval", () => 
   assert.doesNotMatch(texto, /\beval\(/);
   assert.ok(fileURLToPath(URL_BUNDLE).endsWith("teia-3d.bundle.js"));
 });
+
+test("bundle: sem o atalho window.scene do three-render-objects (cena não exposta no console)", () => {
+  assert.doesNotMatch(texto, /window\.scene\s*=/);
+});

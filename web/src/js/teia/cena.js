@@ -30,6 +30,7 @@ const LINKS_INTERNOS = { a: true, b: true, c: false, d: false, e: true };
 const TRANSICAO_MS = 900;
 const CAMERA_MS = 1200;
 const AVALIAR_BLOOM_MS = 3000;
+const LEITURAS_MS = 250;
 
 const estiloValido = (e) => (ESTILOS.includes(e) ? e : "a");
 const suave = (t) => t * t * (3 - 2 * t);
@@ -42,7 +43,10 @@ function rgba(hex, alfa) {
 /**
  * Monta a Teia dentro de `container` e devolve o controle da cena.
  * O container recebe data-nos (nós de equipamento na cena), data-equipamentos (equipamentos
- * conhecidos pela cena, em qualquer nível), data-nivel e data-movimento.
+ * conhecidos pela cena, em qualquer nível), data-nivel e data-movimento; e, só para leitura
+ * (testes e diagnóstico): data-nos-grafo (nós de equipamento entregues ao grafo),
+ * data-girando e data-particulas (sim|nao), e, a cada 250 ms com a cena desenhando,
+ * data-camera ("x,y,z" arredondado), data-geometrias e data-texturas (renderer.info.memory).
  */
 export function montarTeia(container, opcoes = {}) {
   const aoClicarEquipamento = opcoes.aoClicarEquipamento || null;
@@ -67,6 +71,7 @@ export function montarTeia(container, opcoes = {}) {
     bloom: null, // null = ainda não avaliado; false = negado; {passe, saida} = ligado
     inicioRender: null,
     ultimoCheque: 0,
+    ultimaLeitura: -Infinity,
     transicao: null,
   };
   const acervo = criarAcervo();
@@ -113,7 +118,8 @@ export function montarTeia(container, opcoes = {}) {
     Object.assign(caixaDica.style, {
       position: "absolute", pointerEvents: "none", padding: "4px 8px", borderRadius: "8px",
       font: "12px system-ui, sans-serif", color: "#E8EBF2", background: "rgba(27,31,40,.85)",
-      whiteSpace: "nowrap",
+      // nome longo não estoura a cena: uma linha cortada com reticências
+      whiteSpace: "nowrap", maxWidth: "min(360px, 80vw)", overflow: "hidden", textOverflow: "ellipsis",
     });
   }
   const info = container.querySelector(".graph-info-msg");
@@ -219,6 +225,7 @@ export function montarTeia(container, opcoes = {}) {
   function aplicarAcessoriosDeLink() {
     const internos = LINKS_INTERNOS[est.estilo];
     const particulas = !reduzido && est.nivel === "completo";
+    container.dataset.particulas = particulas ? "sim" : "nao";
     // funções novas a cada chamada: força o three-forcegraph a reaplicar
     G.linkColor((l) => corLink(l))
       .linkOpacity(OPACIDADE_LINK[est.estilo])
@@ -398,6 +405,9 @@ export function montarTeia(container, opcoes = {}) {
     }
     for (const chave of [...ligacoes.keys()]) if (!usadas.has(chave)) ligacoes.delete(chave);
     G.graphData({ nodes, links });
+    let doGrafo = 0;
+    for (const n of nodes) if (n.tipo === "equip") doGrafo += 1;
+    container.dataset.nosGrafo = String(doGrafo);
     if (selecionado) selecionado = nos.get(selecionado.id) || null;
     sincronizarRotulos();
   }
@@ -479,6 +489,18 @@ export function montarTeia(container, opcoes = {}) {
     container.dataset.equipamentos = String(est.total);
     container.dataset.nivel = est.nivel;
     container.dataset.movimento = reduzido ? "reduzido" : "normal";
+    container.dataset.girando = est.girando ? "sim" : "nao";
+  }
+
+  /** Leituras baratas para testes/diagnóstico: câmera e memória da GPU (sem tocar no DOM à toa). */
+  function atualizarLeituras() {
+    const p = G.camera().position;
+    const camera = `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`;
+    if (container.dataset.camera !== camera) container.dataset.camera = camera;
+    const mem = G.renderer().info.memory;
+    const geo = String(mem.geometries), tex = String(mem.textures);
+    if (container.dataset.geometrias !== geo) container.dataset.geometrias = geo;
+    if (container.dataset.texturas !== tex) container.dataset.texturas = tex;
   }
 
   function trocarNivel(novo) {
@@ -573,6 +595,7 @@ export function montarTeia(container, opcoes = {}) {
   function girar(ligado) {
     est.girando = ligado && !reduzido;
     controles.autoRotate = est.girando;
+    container.dataset.girando = est.girando ? "sim" : "nao";
   }
 
   function clicar(no) {
@@ -764,6 +787,11 @@ export function montarTeia(container, opcoes = {}) {
       }
     }
 
+    if (agora - est.ultimaLeitura >= LEITURAS_MS) {
+      est.ultimaLeitura = agora;
+      atualizarLeituras();
+    }
+
     const t = agora / 1000;
     atualizarAnel(t);
     atualizarRotulos();
@@ -872,8 +900,7 @@ export function montarTeia(container, opcoes = {}) {
     scene.clear();
     scene.fog = null;
     renderer.dispose();
-    renderer.forceContextLoss();
-    if (window.scene === scene) delete window.scene; // three-render-objects expõe a cena em window
+    renderer.forceContextLoss(); // (o window.scene do three-render-objects sai no build)
     animados.clear();
     rotulos.clear();
     selecionado = null;
@@ -885,6 +912,9 @@ export function montarTeia(container, opcoes = {}) {
     delete container.dataset.equipamentos;
     delete container.dataset.nivel;
     delete container.dataset.movimento;
+    for (const chave of ["nosGrafo", "girando", "particulas", "camera", "geometrias", "texturas"]) {
+      delete container.dataset[chave];
+    }
   }
 
   atualizarAtributos();

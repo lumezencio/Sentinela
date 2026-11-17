@@ -5,6 +5,8 @@
 //     com <style> ao carregar, o que a CSP (style-src 'self') barra e reporta como erro.
 //     A chamada styleInject(css_248z) é removida; o pouco CSS necessário a cena aplica por
 //     CSSOM. Se a forma do código mudar numa versão nova, o build falha (não passa calado).
+//     No three-render-objects também sai a linha `window.scene = state.scene` (atalho de
+//     depuração que deixaria a cena exposta no console), com a mesma trava.
 //  2. sem-webgpu: three-render-objects importa WebGPURenderer (three/webgpu) só para a opção
 //     useWebGPU, que a Teia não usa; o stub tira o renderizador WebGPU inteiro do bundle.
 // Depois do build, as licenças completas de cada pacote empacotado são acrescentadas ao
@@ -16,15 +18,23 @@ import { build } from "esbuild";
 const SAIDA = "src/vendor/teia-3d.bundle.js";
 const COM_ESTILO = /[\\/]node_modules[\\/](3d-force-graph|three-render-objects|float-tooltip)[\\/]dist[\\/][^\\/]+\.mjs$/;
 const CHAMADA = "styleInject(css_248z);";
+const SCENE_GLOBAL = "window.scene = state.scene;";
 
 const semEstiloInjetado = {
   name: "sem-estilo-injetado",
   setup(b) {
     b.onLoad({ filter: COM_ESTILO }, async (args) => {
-      const fonte = await readFile(args.path, "utf8");
+      let fonte = await readFile(args.path, "utf8");
       const vezes = fonte.split(CHAMADA).length - 1;
       if (vezes !== 1) throw new Error(`${args.path}: esperava 1 ${CHAMADA}, achei ${vezes}`);
-      return { contents: fonte.replace(CHAMADA, "/* CSS injetado removido (CSP) */"), loader: "js" };
+      fonte = fonte.replace(CHAMADA, "/* CSS injetado removido (CSP) */");
+      if (/three-render-objects/.test(args.path)) {
+        // atalho de depuração da lib: não deixa a cena exposta em window.scene
+        const n = fonte.split(SCENE_GLOBAL).length - 1;
+        if (n !== 1) throw new Error(`${args.path}: esperava 1 ${SCENE_GLOBAL}, achei ${n}`);
+        fonte = fonte.replace(SCENE_GLOBAL, "/* window.scene removido (depuração) */");
+      }
+      return { contents: fonte, loader: "js" };
     });
   },
 };
