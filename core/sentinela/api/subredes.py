@@ -1,7 +1,9 @@
 """Sub-redes privadas declaradas pelo administrador (fonte da Guarda viva).
 
-``permite_varredura`` (padrão falso) libera a varredura lenta e a sondagem passiva da
-descoberta naquela sub-rede (spec §9.1 a); só muda pelo PATCH, auditado.
+``permite_varredura`` (padrão falso) libera a varredura lenta e a sondagem automática da
+descoberta naquela sub-rede (spec §9.1 a); só muda pelo PATCH, auditado. Desligar a permissão
+ou remover a sub-rede cancela na hora a varredura dela, se estiver rodando (nenhum pedido
+ARP a mais naquela sub-rede); as sondagens em fundo reconferem a permissão antes de sair.
 """
 
 from ipaddress import IPv4Network
@@ -23,6 +25,7 @@ from sentinela.api.comum import (
 from sentinela.api.deps import SessaoDB, exigir_admin
 from sentinela.db.modelos import Descoberta, SubRede, Usuario
 from sentinela.descoberta.mescla import dentro_das_subredes
+from sentinela.descoberta.varredura import Varredura
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.montagem import sub_redes_do_banco
 from sentinela.rede.guarda import DestinoProibido, Guarda
@@ -68,6 +71,11 @@ class SubRedeSaida(BaseModel):
     @classmethod
     def de(cls, s: SubRede) -> "SubRedeSaida":
         return cls(id=s.id, cidr=s.cidr, permite_varredura=bool(s.permite_varredura))
+
+
+def _varredura(request: Request) -> Varredura:
+    v: Varredura = request.app.state.varredura
+    return v
 
 
 @router.get("", response_model=list[SubRedeSaida])
@@ -147,6 +155,8 @@ async def editar(
     depois = {"permite_varredura": edicao.permite_varredura}
     auditar(db, request, admin, "subrede.editar", sub.cidr, antes, depois)
     await db.commit()
+    if not edicao.permite_varredura:
+        await _varredura(request).revogar(sub_id)
     return SubRedeSaida.de(sub)
 
 
@@ -155,6 +165,7 @@ async def remover(sub_id: int, request: Request, db: SessaoDB, admin: Admin) -> 
     sub = await db.get(SubRede, sub_id)
     if sub is None:
         raise nao_encontrado()
+    await _varredura(request).revogar(sub_id)  # antes de a sub-rede sumir
     auditar(db, request, admin, "subrede.remover", sub.cidr, antes={"cidr": sub.cidr})
     await db.delete(sub)
     await db.flush()

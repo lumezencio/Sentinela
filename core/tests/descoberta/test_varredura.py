@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from sentinela.db.modelos import SubRede
+from sentinela.descoberta import varredura
 from sentinela.descoberta.ajustes import INTERVALO_VARREDURA, gravar_ajuste
 from sentinela.descoberta.fontes.base import Achado
 from sentinela.descoberta.varredura import (
@@ -232,3 +233,45 @@ async def test_atraso_nao_vira_rajada(cena: Cena) -> None:
     assert all(b - a >= 0.5 - 1e-9 for a, b in zip(envios, envios[1:], strict=False))
     # em qualquer janela de 1 s, no máximo 2 envios (2 IPs/s)
     assert all(sum(t <= e < t + 1.0 for e in envios) <= 2 for t in envios)
+
+
+async def test_permissao_revogada_no_banco_para_a_varredura(cena: Cena) -> None:
+    """Sem ``permite_varredura`` no meio da varredura: no máximo mais alguns IPs e para."""
+    ping = PingEspiao(cena)
+    v = _varredura(cena, ping)
+    sub = await _sub_rede(cena, SUB_VARREDURA)
+    await v.iniciar(sub)
+    await cena.relogio.avancar(0)
+    await cena.relogio.avancar(2)
+    assert v.progresso() is not None
+    async with cena.sessoes() as db:
+        s = await db.get(SubRede, sub)
+        assert s is not None
+        s.permite_varredura = False
+        await db.commit()
+    antes = len(ping.chamadas)
+    for _ in range(200):  # a releitura roda em paralelo, com E/S real do banco
+        if v.progresso() is None:
+            break
+        await cena.relogio.avancar(0.5)
+        await asyncio.sleep(0.01)
+    assert v.progresso() is None
+    assert len(ping.chamadas) - antes <= varredura.VERIFICAR_A_CADA_IPS + 2
+    assert cena.barramento.do_tipo("varredura")[-1]["estado"] == "cancelada"
+
+
+async def test_revogar_cancela_so_a_varredura_da_sub_rede(cena: Cena) -> None:
+    ping = PingEspiao(cena)
+    v = _varredura(cena, ping)
+    sub = await _sub_rede(cena, SUB_VARREDURA)
+    outra = await _sub_rede(cena, PEQUENA)
+    await v.iniciar(sub)
+    await cena.relogio.avancar(1)
+    assert await v.revogar(outra) is False  # outra sub-rede: segue rodando
+    assert v.progresso() is not None
+    assert await v.revogar(sub) is True
+    assert v.progresso() is None
+    feitos = len(ping.chamadas)
+    await cena.relogio.avancar(10)
+    assert len(ping.chamadas) == feitos
+    assert cena.barramento.do_tipo("varredura")[-1]["estado"] == "cancelada"

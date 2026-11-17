@@ -288,3 +288,23 @@ async def test_sondar_fora_das_subredes_409_e_audita(
 
 async def test_sondar_inexistente_404(cliente_admin: httpx.AsyncClient, falsos: Falsos) -> None:
     assert (await cliente_admin.post(f"{DESCOBERTAS}/{ID}/sondar")).status_code == 404
+
+
+async def test_aprovar_publica_criado_uma_vez_so(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, falsos: Falsos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """O ``criado`` sai do ``Orquestrador.aprovar``; a rota não publica de novo."""
+    publicadas: list[Any] = []
+    barramento = app.state.barramento
+    original = barramento.publicar
+
+    def espia(msg: Any) -> None:
+        publicadas.append(msg)
+        original(msg)
+
+    monkeypatch.setattr(barramento, "publicar", espia)
+    id = await criar_descoberta(app, portas=[554])
+    r = await cliente_admin.post(f"{DESCOBERTAS}/{id}/aprovar", json={})
+    assert r.status_code == 200, r.text
+    criados = [m.dados for m in publicadas if m.tipo == "equipamento"]
+    assert criados == [{"acao": "criado", "id": r.json()["id"]}]

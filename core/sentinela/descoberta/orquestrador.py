@@ -17,7 +17,14 @@
   conflito de IP, com classe conhecida e confiança ≥ limiar.
 - **Barramento**: ``descoberta`` (``acao`` nova/atualizada/removida, ``id``,
   ``classe_sugerida``, ``confianca``), ``pendentes`` (``total``) e ``equipamento``
-  (IP mudado automaticamente).
+  (``criado`` por toda aprovação, manual ou automática, inclusive o gravador aprovado junto;
+  ``atualizado`` quando o IP muda automaticamente).
+- **Tetos**: no máximo ``MAX_ACHADOS_COLETA`` achados por coleta e ``mescla.MAX_PENDENTES``
+  descobertas pendentes; acima disso o excesso é descartado e a fonte recebe o aviso genérico
+  ``MSG_TRUNCADA`` em ``ultimo_erro``.
+- **Sondagem em fundo** (§9.1 a): só se o IP ainda estiver numa sub-rede com
+  ``permite_varredura`` quando ela vai rodar; o resultado só é gravado se a descoberta ainda
+  estiver pendente e com o mesmo IP sondado.
 
 Nenhum socket é aberto aqui: só os coletores (e a sondagem) falam com a rede, sempre por um
 ``DestinoAutorizado`` da Guarda.
@@ -70,7 +77,9 @@ from sentinela.descoberta.mescla import (
     dentro_das_subredes,
     equipamento_por_ip,
     mesclar,
+    na_rede,
     reclassificar,
+    redes_com_varredura,
 )
 from sentinela.descoberta.varredura import Ping, ping_icmp
 from sentinela.monitor.agendador import Agendador
@@ -88,6 +97,7 @@ COLETA_MIN_S = 30.0  # "coletar agora": no máximo 1 vez a cada 30 s por fonte
 TIMEOUT_COLETA_S = 300.0  # teto de uma coleta inteira (cada pedido já tem o seu)
 LIMITE_ERRO = 200
 LIMITE_NOME = 80
+MAX_ACHADOS_COLETA = 5_000  # teto por coleta: uma fonte hostil não enche o banco
 TIPOS_GRAVADOR = ("hikvision", "dahua")
 
 MSG_COLETA_INESPERADA = "falha inesperada na coleta"
@@ -95,6 +105,7 @@ MSG_GRAVAR = "falha ao gravar o resultado da coleta"
 MSG_TESTE_INESPERADO = "falha inesperada ao testar a fonte"
 MSG_TEMPO = "a fonte não respondeu a tempo"
 MSG_FABRICA = "configuração da fonte inválida"
+MSG_TRUNCADA = "coleta truncada: limite de aparelhos por coleta ou de pendentes atingido"
 MSG_FORA = "IP fora das sub-redes monitoradas: declare a sub-rede antes de aprovar."
 MSG_NAO_PENDENTE = "A descoberta não está pendente."
 MSG_IP_EM_USO = "Já existe um equipamento com este IP."
@@ -453,7 +464,11 @@ class Orquestrador:
             log.warning("coleta da fonte %s sem sucesso", fonte_id)
             await self._registrar_erro(fonte_id, erro)
             return
-        await self.processar_achados(achados, fonte_id=fonte_id)
+        truncado = len(achados) > MAX_ACHADOS_COLETA
+        if truncado:
+            log.warning("coleta da fonte %s truncada em %d achados", fonte_id, MAX_ACHADOS_COLETA)
+            achados = achados[:MAX_ACHADOS_COLETA]
+        await self.processar_achados(achados, fonte_id=fonte_id, truncado=truncado)
 
     def _mascarar(self, fonte: Fonte, texto: str) -> str:
         segredos = self._cofre.segredos(fonte.credencial_cifrada)
@@ -470,7 +485,7 @@ class Orquestrador:
             log.error("falha ao registrar erro da fonte %s: %s", fonte_id, type(e).__name__)
 
     async def processar_achados(
-        self, achados: list[Achado], *, fonte_id: str | None = None
+        self, achados: list[Achado], *, fonte_id: str | None = None, truncado: bool = False
     ) -> None:
         """Mescla, grava, reagenda equipamentos com IP novo, publica e aprova automaticamente.
         Usado pela coleta das fontes e pela varredura lenta (``fonte_id`` None)."""
@@ -481,10 +496,13 @@ class Orquestrador:
             # só banco dentro da trava; a sondagem (lenta) roda depois, em fundo
             async with self._trava_mescla, self._sessoes() as db:
                 r = await mesclar(db, achados, self._guarda, agora, oui=self._oui)
+                aviso = MSG_TRUNCADA if truncado or r.truncado else None
                 if fonte_id is not None:
                     fonte = await db.get(Fonte, fonte_id)
                     if fonte is not None:
-                        fonte.ultima_coleta, fonte.ultimo_erro = agora, None
+                        fonte.ultima_coleta, fonte.ultimo_erro = agora, aviso
+                elif aviso is not None:
+                    log.warning("achados da varredura descartados: fila de pendentes cheia")
                 await db.commit()
         except Exception as e:  # noqa: BLE001
             log.error("falha ao gravar achados: %s", type(e).__name__)
@@ -506,10 +524,15 @@ class Orquestrador:
         try:
             async with self._sessoes() as db:
                 d = await db.get(Descoberta, descoberta_id)
+                # a permissão pode ter caído entre a mescla e agora (PATCH/remoção da sub-rede)
+                redes = await redes_com_varredura(db)
             if d is None or d.status != PENDENTE or not dentro_das_subredes(self._guarda, d.ip):
                 return
-            portas, titulo = await self._sondar(d.ip, self._guarda, self._limitador)
-            atual = await self._gravar_sonda(descoberta_id, portas, titulo)
+            if not na_rede(d.ip, redes):
+                return
+            ip = d.ip
+            portas, titulo = await self._sondar(ip, self._guarda, self._limitador)
+            atual = await self._gravar_sonda(descoberta_id, ip, portas, titulo, so_pendente=True)
             if atual is not None:
                 self._publicar_descoberta(
                     "atualizada", atual.id, atual.classe_sugerida, atual.confianca
@@ -521,11 +544,21 @@ class Orquestrador:
             self._sondando.discard(descoberta_id)
 
     async def _gravar_sonda(
-        self, descoberta_id: str, portas: set[int], titulo: str | None
+        self,
+        descoberta_id: str,
+        ip: str,
+        portas: set[int],
+        titulo: str | None,
+        *,
+        so_pendente: bool = False,
     ) -> Descoberta | None:
+        """Grava o resultado só se a descoberta ainda tem o IP sondado (e, para a sondagem
+        automática, ainda está pendente); senão o resultado é de outro aparelho/momento."""
         async with self._trava_mescla, self._sessoes() as db:
             atual = await db.get(Descoberta, descoberta_id)
-            if atual is None:
+            if atual is None or atual.ip != ip:
+                return None
+            if so_pendente and atual.status != PENDENTE:
                 return None
             atual.sinais = {**(atual.sinais or {}), "portas": sorted(portas), "titulo": titulo}
             atual.sondada_em = self._agora_parede()
@@ -710,16 +743,20 @@ class Orquestrador:
             raise SondagemRecusada(MSG_SONDAR_CANAL)
         if not dentro_das_subredes(self._guarda, d.ip):
             raise SondagemRecusada(MSG_FORA)
+        ip = d.ip
         try:
-            portas, titulo = await self._sondar(d.ip, self._guarda, self._limitador)
+            portas, titulo = await self._sondar(ip, self._guarda, self._limitador)
         except DestinoProibido:
             raise SondagemRecusada(MSG_FORA) from None
         except Exception as e:  # noqa: BLE001
             log.warning("sondagem pedida falhou: %s", type(e).__name__)
             raise SondagemRecusada(MSG_SONDAR_FALHOU) from None
-        atual = await self._gravar_sonda(descoberta_id, portas, titulo)
+        atual = await self._gravar_sonda(descoberta_id, ip, portas, titulo)
         if atual is None:
-            raise DescobertaInexistente
+            async with self._sessoes() as db:
+                if await db.get(Descoberta, descoberta_id) is None:
+                    raise DescobertaInexistente
+            raise SondagemRecusada(MSG_SONDAR_FALHOU)  # o IP mudou durante a sondagem
         self._publicar_descoberta("atualizada", atual.id, atual.classe_sugerida, atual.confianca)
         return atual
 
@@ -753,6 +790,10 @@ class Orquestrador:
             raise
         for equipamento, classe in feito.equipamentos:
             await registrar_no_agendador(self._agendador, db, equipamento, classe, novo=True)
+        for equipamento, _classe in feito.equipamentos:
+            # toda aprovação (manual, lote ou automática) aparece ao vivo, gravador junto
+            dados = {"acao": "criado", "id": equipamento.id}
+            self._barramento.publicar(Mensagem("equipamento", dados))
         for id in feito.descobertas:
             self._publicar_descoberta("removida", id, None, 0.0)
         await self.publicar_pendentes()
@@ -776,7 +817,7 @@ class Orquestrador:
             respondeu = await self._ping(destino)
             portas, titulo = await self._sondar(ip, self._guarda, self._limitador)
             if descoberta_id is not None:
-                await self._gravar_sonda(descoberta_id, portas, titulo)
+                await self._gravar_sonda(descoberta_id, ip, portas, titulo)
             if respondeu:
                 return
             porta = next((p for p in PORTAS if p in portas), None)

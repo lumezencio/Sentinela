@@ -184,7 +184,7 @@ class Descoberta(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     # MAC normalizado, `ip:<ip>` sem MAC ou `nvr:<fonte_id>:<canal>`
     chave: Mapped[str] = mapped_column(String(80), unique=True)
-    ip: Mapped[str] = mapped_column(String(45))
+    ip: Mapped[str] = mapped_column(String(45), index=True)
     mac: Mapped[str | None] = mapped_column(String(17), default=None)
     fabricante: Mapped[str | None] = mapped_column(String(120), default=None)
     nome_sugerido: Mapped[str | None] = mapped_column(String(120), default=None)
@@ -192,7 +192,7 @@ class Descoberta(Base):
     classe_sugerida: Mapped[str | None] = mapped_column(String(32), default=None)
     confianca: Mapped[float] = mapped_column(Float, default=0.0)
     origens: Mapped[list[Any]] = mapped_column(JSON, default=list)
-    status: Mapped[str] = mapped_column(String(10), default="pendente")
+    status: Mapped[str] = mapped_column(String(10), default="pendente", index=True)
     pai_equipamento_id: Mapped[str | None] = mapped_column(
         ForeignKey("equipamento.id", ondelete="SET NULL"), default=None
     )

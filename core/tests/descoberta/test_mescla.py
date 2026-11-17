@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from sentinela.db.modelos import Auditoria, Descoberta, Equipamento
+from sentinela.db.modelos import Auditoria, Descoberta, Equipamento, Fonte
+from sentinela.descoberta import mescla
 from sentinela.descoberta.fontes.base import Achado
 from sentinela.descoberta.mescla import chave_de, mesclar
 from tests.descoberta.apoio import AGORA, Cena, criar_equipamento, criar_fonte, montar_cena
@@ -296,3 +297,79 @@ async def test_sem_sondador_devolve_quem_sondar_fora_da_transacao(cena: Cena) ->
         await db.commit()
     d = next(d for d in await _descobertas(cena) if d.mac == M1)
     assert r.a_sondar == [d.id] and d.sondada_em is None
+
+
+async def test_conflito_nao_mexe_no_equipamento(cena: Cena) -> None:
+    """§9.5: no conflito nada muda no equipamento (nem ``visto_em`` nem ``fabricante``)."""
+    async with cena.sessoes() as db:
+        a = await criar_equipamento(db, "A", "10.99.1.20", mac=M1)
+        await criar_equipamento(db, "B", "10.99.1.21", mac=M2)
+        await db.commit()
+    achado = Achado("10.99.1.21", M1, "arp", F_MK, fabricante="Fabricante X")
+    async with cena.sessoes() as db:
+        r = await mesclar(db, [achado], cena.guarda, AGORA)
+        await db.commit()
+    assert len(r.conflitos) == 1
+    async with cena.sessoes() as db:
+        atual = await db.get(Equipamento, a.id)
+        assert atual is not None
+        assert atual.ip == "10.99.1.20"
+        assert atual.visto_em is None
+        assert atual.fabricante is None
+
+
+async def test_canal_religa_pai_pela_descoberta_aprovada(cena: Cena) -> None:
+    """Gravador removido e aprovado de novo: a câmera aprovada volta a ter o pai."""
+    async with cena.sessoes() as db:
+        nvr = await criar_equipamento(db, "NVR", "10.99.1.50", classe="gravador")
+        db.add(criar_fonte("hikvision", "10.99.1.50", id=F_NVR1, equipamento=nvr.id))
+        await db.commit()
+    canal = Achado("192.168.254.2", None, "gravador_canal", F_NVR1, pai_fonte_id=F_NVR1, canal=4)
+    async with cena.sessoes() as db:
+        await mesclar(db, [canal], cena.guarda, AGORA)
+        cam = await criar_equipamento(
+            db, "Cam", "192.168.254.2", classe="camera", checagem="gravador", pai=nvr.id, canal=4
+        )
+        [d] = (await db.execute(select(Descoberta))).scalars()
+        d.status, d.equipamento_id = "aprovada", cam.id
+        await db.commit()
+    # o gravador é removido (pai_id da câmera vira NULL) e um novo é aprovado/ligado
+    async with cena.sessoes() as db:
+        velho = await db.get(Equipamento, nvr.id)
+        assert velho is not None
+        await db.delete(velho)
+        await db.flush()
+        cam_atual = await db.get(Equipamento, cam.id)
+        assert cam_atual is not None
+        cam_atual.pai_id = None  # o ON DELETE SET NULL do banco, explícito aqui
+        novo = await criar_equipamento(db, "NVR novo", "10.99.1.50", classe="gravador")
+        fonte = await db.get(Fonte, F_NVR1)
+        assert fonte is not None
+        fonte.equipamento_id = novo.id
+        await db.commit()
+    async with cena.sessoes() as db:
+        r = await mesclar(db, [canal], cena.guarda, AGORA + timedelta(minutes=5))
+        await db.commit()
+        atual = await db.get(Equipamento, cam.id)
+        assert atual is not None
+        assert atual.pai_id == novo.id
+        assert atual.visto_em == AGORA + timedelta(minutes=5)
+    assert r.novas == []
+
+
+async def test_teto_de_pendentes_nao_cria_descoberta_nova(
+    cena: Cena, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mescla, "MAX_PENDENTES", 2)
+    achados = [Achado(f"10.99.1.{i}", None, "arp", F_MK) for i in range(10, 15)]
+    async with cena.sessoes() as db:
+        r = await mesclar(db, achados, cena.guarda, AGORA)
+        await db.commit()
+    assert len(await _descobertas(cena)) == 2
+    assert len(r.novas) == 2
+    assert r.truncado is True
+    # abaixo do teto: nada truncado
+    async with cena.sessoes() as db:
+        r2 = await mesclar(db, achados[:2], cena.guarda, AGORA)
+        await db.commit()
+    assert r2.truncado is False

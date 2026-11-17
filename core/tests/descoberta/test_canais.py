@@ -20,6 +20,7 @@ from sentinela.descoberta.canais import (
     CAUSA_CERTIFICADO_MUDOU,
     CAUSA_CERTIFICADO_NAO_CONFIADO,
     CAUSA_GRAVADOR_MUDO,
+    CAUSA_SEM_LEITURA,
     LeitorCanais,
 )
 from sentinela.descoberta.fontes.base import CertificadoMudou, CertificadoNaoConfiado, ErroColeta
@@ -407,3 +408,38 @@ async def test_leitor_certificado_suspende_leitura_e_registra_erro(
     await leitor.ciclo()
     assert len(cena.fontes[F1].chamadas) == 2
     assert cena.estado("cam1") is Estado.ONLINE
+
+
+# ---- câmeras sem leitura ativa do gravador (revisão final, item 3) ---------------------------
+
+
+@pytest.mark.parametrize("como", ["remover", "desativar", "desligar"])
+async def test_camera_sem_leitura_do_gravador_vai_a_desconhecido(cena: Cena, como: str) -> None:
+    """Fonte removida/desativada ou gravador desligado da fonte: as câmeras não congelam."""
+    async with cena.sessoes() as db:
+        if como == "remover":
+            fonte = await db.get(Fonte, F1)
+            assert fonte is not None
+            await db.delete(fonte)
+        elif como == "desativar":
+            await db.execute(update(Fonte).where(Fonte.id == F1).values(ativa=False))
+        else:  # gravador removido: as câmeras ficam sem pai
+            await db.execute(
+                update(Equipamento).where(Equipamento.pai_id == "nvr1").values(pai_id=None)
+            )
+        await db.commit()
+    await cena.leitor().ciclo()
+    for cam in CAMERAS_F1:
+        assert cena.barramento.estados(cam) == [("desconhecido", CAUSA_SEM_LEITURA)]
+    assert cena.estado("cam4") is Estado.ONLINE  # o outro gravador segue normalmente
+    assert CAUSA_SEM_LEITURA == "sem leitura do gravador"
+
+
+async def test_camera_pausada_sem_leitura_nao_muda(cena: Cena) -> None:
+    async with cena.sessoes() as db:
+        await db.execute(update(Fonte).where(Fonte.id == F1).values(ativa=False))
+        await db.execute(update(Equipamento).where(Equipamento.id == "cam1").values(pausado=True))
+        await db.commit()
+    await cena.leitor().ciclo()
+    assert cena.barramento.estados("cam1") == []
+    assert cena.estado("cam2") is Estado.DESCONHECIDO

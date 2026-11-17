@@ -7,8 +7,9 @@ declarar a sub-rede do IP (admin + CSRF, tudo auditado).
   descoberta, auditoria e gravador junto, ou nada); as válidas ficam, as recusadas voltam
   com o motivo. Um lote numa transação só com aceitação parcial exigiria SAVEPOINT, que o
   driver sqlite3 não respeita (o RELEASE do mais externo confirma tudo).
-- Equipamento criado vai ao barramento como ``equipamento``/``criado``; o WebSocket envia
-  a linha no mesmo formato do snapshot (Lista/Teia/Organograma ao vivo).
+- Equipamento criado vai ao barramento como ``equipamento``/``criado`` pelo próprio
+  ``Orquestrador.aprovar`` (uma vez por equipamento, também na aprovação automática); o
+  WebSocket envia a linha no mesmo formato do snapshot (Lista/Teia/Organograma ao vivo).
 - **Sondar** (§9.1 b) gera tráfego (e um ARP): limite de taxa e auditoria da tentativa,
   inclusive recusada.
 """
@@ -89,12 +90,6 @@ def _publicar_descoberta(request: Request, acao: str, d: Descoberta | str) -> No
     _publicar(request, "descoberta", dados)
 
 
-def _publicar_equipamento_criado(request: Request, eq: Equipamento) -> None:
-    for id in (eq.pai_id, eq.id):  # o gravador aprovado junto também aparece ao vivo
-        if id is not None:
-            _publicar(request, "equipamento", {"acao": "criado", "id": id})
-
-
 async def _nomes_de_conflito(db: AsyncSession, descobertas: list[Descoberta]) -> dict[str, str]:
     ids = {d.conflito_com for d in descobertas if d.conflito_com}
     if not ids:
@@ -149,7 +144,7 @@ async def aprovar_lote(entrada: LoteEntrada, request: Request, admin: Admin) -> 
     for id in dict.fromkeys(entrada.ids):  # sem repetidos, na ordem pedida
         try:
             async with sessoes() as db:
-                eq = await orq.aprovar(db, id, None, None, admin, ip=_ip_cliente(request))
+                await orq.aprovar(db, id, None, None, admin, ip=_ip_cliente(request))
         except ErroDescoberta as e:
             recusadas.append(Recusa(id=id, motivo=str(e)))
             continue
@@ -158,7 +153,6 @@ async def aprovar_lote(entrada: LoteEntrada, request: Request, admin: Admin) -> 
             recusadas.append(Recusa(id=id, motivo=MSG_FALHA_APROVAR))
             continue
         aprovadas.append(id)
-        _publicar_equipamento_criado(request, eq)
     return LoteSaida(aprovadas=aprovadas, recusadas=recusadas)
 
 
@@ -177,7 +171,6 @@ async def aprovar(
     classe = await db.get(Classe, eq.classe_id)
     if classe is None:  # chave estrangeira garante; defensivo
         raise nao_encontrado()
-    _publicar_equipamento_criado(request, eq)
     return EquipamentoSaida.de(eq, classe.slug)
 
 

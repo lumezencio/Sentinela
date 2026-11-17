@@ -12,10 +12,15 @@ Para cada grupo:
    o IP do equipamento muda (auditoria de sistema), salvo se o IP novo já é de outro
    equipamento (§9.5): nada muda e a descoberta fica pendente com ``conflito_com``.
    Equipamento só com IP que aparece com MAC ganha o MAC (auditado), se ninguém o tiver.
+   Canal cuja câmera aprovada perdeu o pai (gravador removido e aprovado de novo) é
+   achado pela ``Descoberta.equipamento_id`` e volta a ser filho do gravador atual (auditado).
 2. **descoberta ignorada**: só ``ultima_vez``.
 3. **nova ou pendente**: grava/atualiza e classifica **passivamente** (§9.1). A sondagem de
    portas só roda em sub-rede com ``permite_varredura``, no máximo uma vez a cada 24 h por
    chave, e antes de qualquer escrita no banco (a sessão só leu até ali).
+
+Teto: no máximo ``MAX_PENDENTES`` descobertas pendentes; acima disso o achado novo é
+descartado e ``ResultadoMescla.truncado`` avisa quem chama.
 
 Nada aqui faz commit nem publica: quem chama (orquestrador) faz as duas coisas.
 """
@@ -28,7 +33,7 @@ from datetime import datetime, timedelta
 from ipaddress import IPv4Address, IPv4Network
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinela.db.modelos import Auditoria, Descoberta, Equipamento, Fonte, SubRede
@@ -46,6 +51,8 @@ FONTE_VARREDURA = "varredura"  # ``fonte_id`` dos achados da varredura lenta
 MAX_ORIGENS = 20
 MAX_SINAIS_FONTE = 32
 LIMITE_TEXTO = 120
+# teto de descobertas pendentes: uma fonte (ou rede) hostil não enche o banco nem a fila
+MAX_PENDENTES = 10_000
 # a origem decide qual IP vale quando o mesmo MAC aparece com IPs diferentes
 _PRIORIDADE_IP = {"arp": 0, "snmp_arp": 1, "varredura": 2, "dhcp": 3}
 
@@ -63,6 +70,9 @@ class ResultadoMescla:
     # sem ``sondador``: descobertas que podem ser sondadas agora (quem chama sonda fora da
     # transação/trava e grava o resultado depois)
     a_sondar: list[str] = field(default_factory=list)
+    # achados que não viraram descoberta porque a fila de pendentes chegou a MAX_PENDENTES
+    truncado: bool = False
+    vagas: int = MAX_PENDENTES  # pendentes que ainda cabem (preenchido por ``mesclar``)
 
 
 def chave_de(a: Achado) -> str:
@@ -219,7 +229,7 @@ async def redes_com_varredura(db: AsyncSession) -> list[IPv4Network]:
     return redes
 
 
-def _na_rede(ip: str, redes: list[IPv4Network]) -> bool:
+def na_rede(ip: str, redes: list[IPv4Network]) -> bool:
     try:
         endereco = IPv4Address(ip)
     except ValueError:
@@ -276,6 +286,12 @@ async def _planejar_canal(db: AsyncSession, g: _Grupo) -> _Plano:
             )
         )
     d = await _descoberta(db, g.chave)
+    if eq is None and pai is not None and d is not None and d.equipamento_id is not None:
+        # câmera já aprovada cujo gravador foi removido e aprovado/ligado de novo: o pai
+        # volta pela descoberta (a chave ``nvr:<fonte>:<canal>`` é desta fonte)
+        anterior = await db.get(Equipamento, d.equipamento_id)
+        if anterior is not None and anterior.checagem == GRAVADOR and anterior.canal == g.canal:
+            eq = anterior
     modo: Modo = "conhecido" if eq is not None else "descoberta"
     return _Plano(g, modo, eq, d, pai=pai, fonte=fonte)
 
@@ -328,7 +344,7 @@ async def _planejar(
         and not fora
         and (d is None or d.status == PENDENTE)
         and (d is None or d.sondada_em is None or agora - d.sondada_em >= INTERVALO_SONDAGEM)
-        and _na_rede(g.ip, redes)
+        and na_rede(g.ip, redes)
     )
     return plano
 
@@ -355,6 +371,10 @@ async def mesclar(
         if g.fabricante is None and g.mac:
             g.fabricante = base.fabricante(g.mac)
     redes = await redes_com_varredura(db)
+    pendentes = await db.scalar(
+        select(func.count()).select_from(Descoberta).where(Descoberta.status == PENDENTE)
+    )
+    r.vagas = max(0, MAX_PENDENTES - int(pendentes or 0))
     planos = [await _planejar(db, g, guarda, agora, redes) for g in grupos]
     sondas: dict[str, tuple[set[int], str | None]] = {}
     if sondador is not None:
@@ -386,12 +406,12 @@ async def _aplicar(
     if p.fonte is not None and p.fonte.equipamento_id is None and p.pai is not None:
         p.fonte.equipamento_id = p.pai  # §9.3: liga a fonte ao gravador pelo IP
     eq = p.equipamento
-    if eq is not None:
+    if p.modo == "conhecido" and eq is not None:
+        # no "conflito" (§9.5) nada muda no equipamento: só a descoberta registra o caso
         eq.visto_em = agora
         if not eq.fabricante and g.fabricante:
             eq.fabricante = g.fabricante[:LIMITE_TEXTO]
-    if p.modo == "conhecido" and eq is not None:
-        await _atualizar_conhecido(db, eq, g, agora, r)
+        await _atualizar_conhecido(db, eq, g, agora, r, p.pai)
         d = p.descoberta
         if d is not None and d.status == PENDENTE:
             d.status, d.equipamento_id, d.conflito_com = APROVADA, eq.id, None
@@ -404,9 +424,21 @@ async def _aplicar(
 
 
 async def _atualizar_conhecido(
-    db: AsyncSession, eq: Equipamento, g: _Grupo, agora: datetime, r: ResultadoMescla
+    db: AsyncSession,
+    eq: Equipamento,
+    g: _Grupo,
+    agora: datetime,
+    r: ResultadoMescla,
+    pai: str | None = None,
 ) -> None:
     if g.canal is not None:
+        if pai is not None and eq.pai_id != pai:
+            antes = eq.pai_id
+            eq.pai_id = pai  # gravador aprovado/ligado de novo: a câmera volta a ser filha
+            auditar_sistema(
+                db, "equipamento.pai_automatico", eq.id, agora, {"pai_id": antes}, {"pai_id": pai}
+            )
+            r.equipamentos_atualizados.append(eq.id)
         return
     if g.mac and eq.mac is None and await _equipamento_por_mac(db, g.mac) is None:
         eq.mac = g.mac
@@ -436,11 +468,19 @@ async def _aplicar_descoberta(
         if await _existe(db, d.equipamento_id):
             d.ultima_vez = agora
             return None
+        if r.vagas <= 0:
+            r.truncado = True
+            return None
+        r.vagas -= 1
         d.status, d.equipamento_id = PENDENTE, None  # o equipamento foi removido: volta
     nova = d is None
     if d is None:
         if not g.ip and g.canal is None:
             return None  # só MAC (ex.: tabela FDB) e ninguém conhecido: nada a monitorar ainda
+        if r.vagas <= 0:
+            r.truncado = True  # fila cheia: o achado é descartado (quem chama avisa)
+            return None
+        r.vagas -= 1
         d = Descoberta(
             id=str(uuid.uuid4()),
             chave=g.chave,

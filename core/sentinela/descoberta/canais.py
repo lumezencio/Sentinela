@@ -19,6 +19,11 @@ O mapa gravador → filhos é relido do banco a cada ciclo, então câmeras apro
 reiniciar. Fonte sem coletor em ``fontes_por_id`` (ainda não instanciada) é pulada sem
 alterar o estado dos filhos.
 
+Câmera passiva (``checagem == "gravador"``, não pausada) que não está coberta por nenhuma
+leitura ativa — fonte removida ou desativada, gravador removido (``pai_id`` nulo) ou fonte
+ligada a outro equipamento — vai para ``desconhecido`` com causa "sem leitura do gravador"
+a cada ciclo: o estado nunca fica congelado no último valor lido.
+
 Certificado (spec §9.4, R7): se o gravador apresentar certificado não confiado ou diferente
 do confiado, a fonte é **suspensa** (nenhuma leitura até ``retomar``, chamado quando o admin
 confia de novo), ``fonte.ultimo_erro`` recebe o texto genérico e os filhos vão para
@@ -54,6 +59,7 @@ TIMEOUT_LEITURA_S = 15.0  # teto da leitura de um gravador (o cliente já tem 5 
 CAUSA_GRAVADOR_MUDO = "gravador sem resposta"
 CAUSA_CERTIFICADO_MUDOU = "certificado do gravador mudou"
 CAUSA_CERTIFICADO_NAO_CONFIADO = "certificado do gravador ainda não confiado"
+CAUSA_SEM_LEITURA = "sem leitura do gravador"
 ERRO_CANAL_OFFLINE = "câmera offline no gravador"
 ERRO_CANAL_AUSENTE = "canal ausente na resposta do gravador"
 
@@ -82,6 +88,7 @@ class LeitorCanais:
         self._relogio = relogio
         self._timeout = timeout_s
         self._filhos: dict[str, Filhos] = {}
+        self._sem_leitura: list[str] = []  # câmeras passivas sem gravador lido
         self._intervalo = INTERVALO_MIN_S
         self._suspensas: dict[str, str] = {}  # fonte -> causa
 
@@ -112,6 +119,8 @@ class LeitorCanais:
     async def ciclo(self) -> float:
         """Relê o mapa do banco, lê todos os gravadores em paralelo; devolve o intervalo."""
         await self._recarregar()
+        # nenhuma leitura ativa cobre estas câmeras: nada de estado congelado
+        self._agendador.forcar_desconhecido(self._sem_leitura, CAUSA_SEM_LEITURA)
         for fonte_id, causa in self._suspensas.items():
             # filhos que só apareceram depois da suspensão (já desconhecidos: nada muda)
             filhos = self._filhos.get(fonte_id, [])
@@ -147,6 +156,18 @@ class LeitorCanais:
                         )
                     )
                 ).all()
+                passivas = (
+                    (
+                        await db.execute(
+                            select(Equipamento.id).where(
+                                Equipamento.checagem == GRAVADOR,
+                                Equipamento.pausado.is_(False),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
         except Exception:
             # banco indisponível: mantém o mapa e o intervalo do ciclo anterior
             log.exception("falha ao reler gravadores e câmeras; mantendo o mapa anterior")
@@ -156,6 +177,8 @@ class LeitorCanais:
             if canal is not None:  # já filtrado na consulta; aqui só estreita o tipo
                 filhos.setdefault(fonte_id, []).append((equipamento_id, canal))
         self._filhos = filhos
+        cobertas = {eq for lista in filhos.values() for eq, _ in lista}
+        self._sem_leitura = [eq for eq in passivas if eq not in cobertas]
         self._intervalo = max(INTERVALO_MIN_S, float(intervalo or 0))
 
     async def _ler(self, fonte_id: str, filhos: Filhos) -> None:

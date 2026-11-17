@@ -93,3 +93,27 @@ async def test_varredura_sem_csrf_403(cliente_admin: httpx.AsyncClient) -> None:
     del cliente_admin.headers["X-CSRF"]
     assert (await cliente_admin.post(VARREDURA, json={"sub_rede_id": 1})).status_code == 403
     assert (await cliente_admin.delete(VARREDURA)).status_code == 403
+
+
+@pytest.mark.parametrize("como", ["patch", "delete"])
+async def test_tirar_permissao_ou_remover_sub_rede_para_a_varredura(
+    app: FastAPI,
+    cliente_admin: httpx.AsyncClient,
+    falsos: Falsos,
+    relogio: RelogioFalso,
+    como: str,
+) -> None:
+    sub = await subrede(cliente_admin, "10.99.3.0/24")
+    await _permitir(cliente_admin, sub["id"])
+    assert (await cliente_admin.post(VARREDURA, json={"sub_rede_id": sub["id"]})).status_code == 202
+    await relogio.avancar(2)
+    assert (await cliente_admin.get(VARREDURA)).json()["rodando"] is True
+    if como == "patch":
+        assert (await _permitir(cliente_admin, sub["id"], False)).status_code == 200
+    else:
+        assert (await cliente_admin.delete(f"{SUBREDES}/{sub['id']}")).status_code == 204
+    # parou já na resposta: nenhum pedido ARP a mais naquela sub-rede
+    assert (await cliente_admin.get(VARREDURA)).json()["rodando"] is False
+    feitos = len(falsos.pings)
+    await relogio.avancar(10)
+    assert len(falsos.pings) == feitos

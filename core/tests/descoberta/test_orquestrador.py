@@ -742,7 +742,7 @@ async def test_verificacao_com_falha_mantem_icmp(cena: Cena, cofre: Cofre) -> No
     _, eq = await _aprovada(cena, cofre, ping, sondar)
     atual = await _recarregado(cena, eq)
     assert (atual.checagem, atual.porta) == ("icmp", None)
-    assert cena.barramento.do_tipo("equipamento") == []
+    assert [m for m in cena.barramento.do_tipo("equipamento") if m["acao"] != "criado"] == []
 
 
 async def test_canal_e_varredura_nao_disparam_verificacao(cena: Cena, cofre: Cofre) -> None:
@@ -759,3 +759,162 @@ async def test_canal_e_varredura_nao_disparam_verificacao(cena: Cena, cofre: Cof
         eq = await orq.aprovar(db, d.id, "computador", None, None)
     await orq.ocioso()
     assert eq.checagem == "icmp" and pings == []  # ICMP já comprovado pela varredura
+
+
+# ---- revisão final: aprovação automática ao vivo, permissão, tetos e sonda velha -----------
+
+
+async def test_aprovacao_automatica_publica_equipamento_criado(cena: Cena, cofre: Cofre) -> None:
+    async with cena.sessoes() as db:
+        await gravar_ajuste(db, APROVACAO_AUTOMATICA, True)
+        await gravar_ajuste(db, LIMIAR_APROVACAO, 0.8)
+        await db.commit()
+    await _coletar_um(cena, cofre, _ap("10.99.1.20", M1))
+    async with cena.sessoes() as db:
+        eq = await db.scalar(select(Equipamento))
+    assert eq is not None
+    criados = [m for m in cena.barramento.do_tipo("equipamento") if m["acao"] == "criado"]
+    assert criados == [{"acao": "criado", "id": eq.id}]
+
+
+async def test_aprovar_canal_publica_gravador_e_camera_uma_vez(cena: Cena, cofre: Cofre) -> None:
+    fonte_id = await _fonte(cena, cofre, "dahua", host="10.99.1.51", porta=80)
+    canal = Achado(
+        "192.168.254.3", None, "gravador_canal", fonte_id, pai_fonte_id=fonte_id, canal=1
+    )
+    orq = _orquestrador(cena, cofre, {fonte_id: ColetorFalso([canal])})
+    await orq.coletar_agora(fonte_id)
+    [d] = await _descobertas(cena)
+    async with cena.sessoes() as db:
+        cam = await orq.aprovar(db, d.id, None, None, None)
+    criados = [m["id"] for m in cena.barramento.do_tipo("equipamento") if m["acao"] == "criado"]
+    assert criados == [cam.pai_id, cam.id]
+
+
+async def test_sondagem_em_fundo_exige_permissao_ainda_valida(cena: Cena, cofre: Cofre) -> None:
+    from sentinela.db.modelos import SubRede
+
+    sondados: list[str] = []
+
+    async def sondar(ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+        sondados.append(ip)
+        return {9100}, None
+
+    orq = _orquestrador(cena, cofre, {}, sondar=sondar)
+    # pendente numa sub-rede que permitia varredura (sondagem agendada)...
+    async with cena.sessoes() as db:
+        sub = await db.scalar(select(SubRede).where(SubRede.permite_varredura.is_(True)))
+        assert sub is not None
+        sub.permite_varredura = False  # ...e o admin tira a permissão antes de ela rodar
+        db.add(
+            Descoberta(
+                id="d-perm",
+                chave=M1,
+                ip="10.99.2.20",
+                mac=M1,
+                status="pendente",
+                sinais={},
+                origens=[],
+                primeira_vez=AGORA,
+                ultima_vez=AGORA,
+            )
+        )
+        await db.commit()
+    await orq._sondar_em_fundo("d-perm")  # noqa: SLF001
+    assert sondados == []
+    # "Sondar" do admin tem autorização própria (§9.1 b): continua valendo
+    await orq.sondar_descoberta("d-perm")
+    assert sondados == ["10.99.2.20"]
+
+
+async def test_sonda_velha_nao_grava_se_o_ip_mudou_ou_saiu_da_fila(
+    cena: Cena, cofre: Cofre
+) -> None:
+    liberar = asyncio.Event()
+    sondados: list[str] = []
+
+    async def sondar_lento(ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+        sondados.append(ip)
+        await liberar.wait()
+        return {9100}, None
+
+    f = await _fonte(cena, cofre, host="10.99.1.1")
+    coletor = ColetorFalso([Achado("10.99.2.20", M1, "arp", "a")])
+    orq = _orquestrador(cena, cofre, {f: coletor}, sondar=sondar_lento)
+    await orq.coletar_em_fundo(f)
+    for _ in range(200):
+        if sondados:
+            break
+        await asyncio.sleep(0.01)
+    assert sondados == ["10.99.2.20"]
+    # enquanto a sondagem está presa, o mesmo MAC aparece noutro IP
+    coletor.achados = [Achado("10.99.2.21", M1, "arp", "a")]
+    await cena.relogio.avancar(31)
+    await orq.coletar_agora(f)
+    liberar.set()
+    await orq.ocioso()
+    [d] = await _descobertas(cena)
+    assert d.ip == "10.99.2.21"
+    assert "portas" not in d.sinais  # o resultado era do IP antigo
+
+
+async def test_sonda_em_fundo_nao_grava_em_descoberta_ignorada(cena: Cena, cofre: Cofre) -> None:
+    liberar = asyncio.Event()
+    sondados: list[str] = []
+
+    async def sondar_lento(ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+        sondados.append(ip)
+        await liberar.wait()
+        return {9100}, None
+
+    f = await _fonte(cena, cofre, host="10.99.1.1")
+    orq = _orquestrador(
+        cena, cofre, {f: ColetorFalso([Achado("10.99.2.20", M1, "arp", "a")])}, sondar=sondar_lento
+    )
+    await orq.coletar_agora(f)
+    for _ in range(200):
+        if sondados:
+            break
+        await asyncio.sleep(0.01)
+    async with cena.sessoes() as db:
+        d = await db.scalar(select(Descoberta))
+        assert d is not None
+        d.status = "ignorada"
+        await db.commit()
+    liberar.set()
+    await orq.ocioso()
+    [d] = await _descobertas(cena)
+    assert d.status == "ignorada" and "portas" not in d.sinais
+
+
+async def test_teto_de_achados_por_coleta_avisa_na_fonte(
+    cena: Cena, cofre: Cofre, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentinela.descoberta import orquestrador
+
+    monkeypatch.setattr(orquestrador, "MAX_ACHADOS_COLETA", 3)
+    achados = [Achado(f"10.99.1.{i}", f"02:00:00:00:02:{i:02x}", "arp", "x") for i in range(20, 26)]
+    f = await _fonte(cena, cofre)
+    orq = _orquestrador(cena, cofre, {f: ColetorFalso(achados)})
+    await orq.coletar_agora(f)
+    assert len(await _descobertas(cena)) == 3
+    async with cena.sessoes() as db:
+        fonte = await db.get(Fonte, f)
+    assert fonte is not None and fonte.ultimo_erro == orquestrador.MSG_TRUNCADA
+    assert fonte.ultima_coleta == AGORA
+
+
+async def test_teto_de_pendentes_avisa_na_fonte(
+    cena: Cena, cofre: Cofre, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentinela.descoberta import mescla, orquestrador
+
+    monkeypatch.setattr(mescla, "MAX_PENDENTES", 2)
+    achados = [Achado(f"10.99.1.{i}", f"02:00:00:00:02:{i:02x}", "arp", "x") for i in range(20, 25)]
+    f = await _fonte(cena, cofre)
+    orq = _orquestrador(cena, cofre, {f: ColetorFalso(achados)})
+    await orq.coletar_agora(f)
+    assert len(await _descobertas(cena)) == 2
+    async with cena.sessoes() as db:
+        fonte = await db.get(Fonte, f)
+    assert fonte is not None and fonte.ultimo_erro == orquestrador.MSG_TRUNCADA
