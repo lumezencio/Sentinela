@@ -11,8 +11,7 @@ que alguns firmwares devolvem no canal nunca são lidos.
 
 from xml.etree.ElementTree import Element  # só o tipo; o parse é do defusedxml  # nosec B405
 
-from defusedxml import DefusedXmlException
-from defusedxml.ElementTree import ParseError, fromstring
+from defusedxml.ElementTree import fromstring
 
 from sentinela.descoberta.fontes.gravador_http import (
     MAX_CANAL,
@@ -24,6 +23,7 @@ from sentinela.descoberta.fontes.gravador_http import (
     InfoGravador,
     RecursoAusente,
     canal_ou_none,
+    interpretador,
     ip_ou_none,
     mac_ou_none,
 )
@@ -38,7 +38,7 @@ FABRICANTE = "Hikvision"
 def _xml(corpo: bytes, raiz: str) -> Element:
     try:
         elemento = fromstring(corpo, forbid_dtd=True)
-    except (DefusedXmlException, ParseError, ValueError, UnicodeError):
+    except Exception:  # noqa: BLE001 - DTD, XML inválido, codificação desconhecida...
         raise ErroGravador(MSG_RESPOSTA) from None
     if _nome(elemento) != raiz:
         raise ErroGravador(MSG_RESPOSTA)
@@ -71,6 +71,7 @@ def _texto(elemento: Element | None, nome: str, limite: int = 120) -> str | None
     return limpar(_cru(elemento, nome), limite)
 
 
+@interpretador
 def interpretar_dispositivo(corpo: bytes) -> InfoGravador:
     raiz = _xml(corpo, "DeviceInfo")
     return InfoGravador(
@@ -83,6 +84,7 @@ def interpretar_dispositivo(corpo: bytes) -> InfoGravador:
     )
 
 
+@interpretador
 def interpretar_canais(corpo: bytes) -> list[CanalGravador]:
     """Canais IP (``InputProxyChannel``). Sem ``id`` válido (1..MAX_CANAL) o canal é ignorado."""
     raiz = _xml(corpo, "InputProxyChannelList")
@@ -107,6 +109,7 @@ def interpretar_canais(corpo: bytes) -> list[CanalGravador]:
     return list(canais.values())
 
 
+@interpretador
 def interpretar_status(corpo: bytes) -> dict[int, bool]:
     raiz = _xml(corpo, "InputProxyChannelStatusList")
     estados: dict[int, bool] = {}

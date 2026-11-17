@@ -367,3 +367,47 @@ async def test_sem_resposta_erro_generico(cofre: Cofre) -> None:
     with pytest.raises(ErroColeta) as exc:
         await _coletor(_fonte(cofre, porta), cofre).coletar()
     assert "conectar" in str(exc.value)
+
+
+# ---- entrada hostil: nenhuma exceção controlada pelo aparelho escapa ------------------------
+
+_HOSTIS = [
+    fixture("hikvision_codificacao_desconhecida.xml"),
+    b"<?xml version='1.0' encoding='utf-16'?><DeviceInfo/>",
+    b"<?xml version='1.0' encoding='x-segredo-do-aparelho'?><a/>",
+    b'<?xml version="1.0"?><!DOCTYPE a><DeviceInfo/>',
+]
+
+
+def _sem_vazamento(erro: ErroColeta) -> None:
+    assert str(erro) == "resposta inesperada do gravador"
+    assert erro.__cause__ is None
+    assert erro.__context__ is None or erro.__suppress_context__
+
+
+@pytest.mark.parametrize("corpo", _HOSTIS)
+@pytest.mark.parametrize(
+    "interpretar", [interpretar_dispositivo, interpretar_canais, interpretar_status]
+)
+def test_xml_hostil_vira_erro_generico(corpo: bytes, interpretar: Any) -> None:
+    with pytest.raises(ErroColeta) as exc:
+        interpretar(corpo)
+    _sem_vazamento(exc.value)
+    assert "segredo" not in str(exc.value) and "inventada" not in str(exc.value)
+
+
+async def test_codificacao_desconhecida_em_coletar_testar_e_status(cofre: Cofre) -> None:
+    hostil = fixture("hikvision_codificacao_desconhecida.xml")
+    sim = SimuladorGravador(
+        {CAMINHO_DISPOSITIVO: hostil, CAMINHO_CANAIS: hostil, CAMINHO_STATUS: hostil}
+    )
+    async with sim.rodando() as porta:
+        coletor = _coletor(_fonte(cofre, porta), cofre)
+        with pytest.raises(ErroColeta) as exc_coleta:
+            await coletor.coletar()
+        with pytest.raises(ErroColeta) as exc_status:
+            await coletor.status_canais()
+        res = await coletor.testar()
+    _sem_vazamento(exc_coleta.value)
+    _sem_vazamento(exc_status.value)
+    assert res.ok is False and res.erro == "resposta inesperada do gravador"

@@ -30,6 +30,7 @@ from sentinela.descoberta.fontes.gravador_http import (
     FonteGravadorHttp,
     InfoGravador,
     RecursoAusente,
+    interpretador,
     ip_ou_none,
     mac_ou_none,
 )
@@ -64,6 +65,7 @@ def _canal_de_indice(indice: str) -> int | None:
     return n if n <= MAX_CANAL else None
 
 
+@interpretador
 def interpretar_sistema(corpo: bytes) -> InfoGravador:
     dados = dict(_linhas(corpo))
     bruto = dados.get("deviceType", "").strip()
@@ -75,6 +77,7 @@ def interpretar_sistema(corpo: bytes) -> InfoGravador:
     return InfoGravador(nome=modelo, modelo=modelo, fabricante=fabricante)
 
 
+@interpretador
 def interpretar_remotos(corpo: bytes) -> list[CanalGravador]:
     vagas: dict[int, dict[str, str]] = {}
     for chave, valor in _linhas(corpo):
@@ -109,6 +112,7 @@ def interpretar_remotos(corpo: bytes) -> list[CanalGravador]:
     return canais
 
 
+@interpretador
 def interpretar_estado(corpo: bytes) -> dict[int, bool]:
     itens: dict[str, dict[str, str]] = {}
     for chave, valor in _linhas(corpo):

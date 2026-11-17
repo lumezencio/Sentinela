@@ -16,10 +16,11 @@
 """
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import ssl
-from collections.abc import AsyncIterable, AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
 from dataclasses import dataclass
 from ipaddress import IPv4Address
 from types import TracebackType
@@ -93,6 +94,23 @@ class CanalGravador:
 
 
 # ---- utilidades de interpretação (compartilhadas por hikvision.py e dahua.py) --------------
+
+
+def interpretador[R](funcao: Callable[[bytes], R]) -> Callable[[bytes], R]:
+    """Blinda um parser de resposta do gravador: qualquer exceção que não seja ``ErroColeta``
+    (codificação desconhecida, bug com entrada hostil...) vira ``ErroGravador`` genérico, sem
+    encadear a exceção original (que pode carregar texto escolhido pelo aparelho)."""
+
+    @functools.wraps(funcao)
+    def protegido(corpo: bytes) -> R:
+        try:
+            return funcao(corpo)
+        except ErroColeta:
+            raise
+        except Exception:  # noqa: BLE001 - nada controlado pelo aparelho escapa
+            raise ErroGravador(MSG_RESPOSTA) from None
+
+    return protegido
 
 
 def ip_ou_none(valor: str | None) -> str | None:

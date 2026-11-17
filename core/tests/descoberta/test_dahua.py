@@ -239,3 +239,71 @@ async def test_erro_http_do_gravador_e_generico(cofre: Cofre) -> None:
         with pytest.raises(ErroColeta) as exc:
             await _coletor(_fonte(cofre, porta), cofre).status_canais()
     assert "segredo" not in str(exc.value)
+
+
+# ---- entrada hostil: nenhuma exceção controlada pelo aparelho escapa ------------------------
+
+_HOSTIS = [
+    "table.RemoteDevice[٣].Address=10.99.6.31\nstates[١].channel=٢\n".encode(),
+    b"\xff\xfe\xfd=\x00\x80\n=\n==\n" * 50,
+    "deviceType=\ud800".encode("utf-8", "surrogatepass"),
+    b"table.RemoteDevice[999999].Enable=true\nstates[0].channel=999999\n",
+    b"states[0].channel=-1\nstates[0].connectionState=Connected\n",
+]
+
+
+def _sem_vazamento(erro: ErroColeta) -> None:
+    assert str(erro) == "resposta inesperada do gravador"
+    assert erro.__cause__ is None
+    assert erro.__context__ is None or erro.__suppress_context__
+
+
+@pytest.mark.parametrize("corpo", _HOSTIS)
+@pytest.mark.parametrize(
+    "interpretar", [interpretar_sistema, interpretar_remotos, interpretar_estado]
+)
+def test_texto_hostil_so_devolve_resultado_ou_erro_generico(corpo: bytes, interpretar: Any) -> None:
+    try:
+        interpretar(corpo)
+    except ErroColeta as e:
+        _sem_vazamento(e)
+
+
+@pytest.mark.parametrize(
+    "interpretar", [interpretar_sistema, interpretar_remotos, interpretar_estado]
+)
+def test_falha_inesperada_do_parser_vira_erro_generico(
+    interpretar: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defesa em profundidade: mesmo um bug do parser não deixa escapar texto do aparelho."""
+    from sentinela.descoberta.fontes import dahua
+
+    def explode(corpo: bytes) -> list[tuple[str, str]]:
+        raise LookupError("unknown encoding: x-segredo-do-aparelho")
+
+    monkeypatch.setattr(dahua, "_linhas", explode)
+    with pytest.raises(ErroColeta) as exc:
+        interpretar(b"deviceType=X\n")
+    _sem_vazamento(exc.value)
+
+
+async def test_parser_com_defeito_em_coletar_testar_e_status(
+    cofre: Cofre, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentinela.descoberta.fontes import dahua
+
+    def explode(corpo: bytes) -> list[tuple[str, str]]:
+        raise RuntimeError("texto escolhido pelo aparelho")
+
+    monkeypatch.setattr(dahua, "_linhas", explode)
+    sim = SimuladorGravador(_rotas())
+    async with sim.rodando() as porta:
+        coletor = _coletor(_fonte(cofre, porta), cofre)
+        with pytest.raises(ErroColeta) as exc_coleta:
+            await coletor.coletar()
+        with pytest.raises(ErroColeta) as exc_status:
+            await coletor.status_canais()
+        res = await coletor.testar()
+    _sem_vazamento(exc_coleta.value)
+    _sem_vazamento(exc_status.value)
+    assert res.ok is False and res.erro == "resposta inesperada do gravador"
