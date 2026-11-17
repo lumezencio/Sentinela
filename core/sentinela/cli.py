@@ -3,6 +3,7 @@
     python -m sentinela.cli criar-admin --login X
     python -m sentinela.cli sub-rede adicionar|remover CIDR
     python -m sentinela.cli sub-rede listar
+    python -m sentinela.cli oui-atualizar ARQUIVO.csv [...] [--saida oui.tsv.gz]
 
 A senha é lida com ``getpass`` (duas vezes, para confirmar). Fora de produção, se
 ``SENTINELA_ADMIN_SENHA`` estiver definida, ela é usada no lugar (testes/demonstração).
@@ -19,6 +20,7 @@ import getpass
 import os
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -34,6 +36,8 @@ from sentinela.api.subredes import (
 from sentinela.config import Settings, obter_settings
 from sentinela.db.modelos import Auditoria, SubRede, Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
+from sentinela.descoberta.classificador.oui import CAMINHO_PADRAO as OUI_PADRAO
+from sentinela.descoberta.classificador.oui import atualizar_de_csv
 from sentinela.monitor.montagem import sub_redes_do_banco
 from sentinela.rede.guarda import DestinoProibido, Guarda
 from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
@@ -148,6 +152,16 @@ async def _sub_rede(settings: Settings, acao: str, texto: str | None) -> None:
         await motor.dispose()
 
 
+def _oui_atualizar(arquivos: list[str], saida: str | None) -> None:
+    """Regera a base OUI a partir de CSVs da IEEE já baixados (nunca acessa a rede)."""
+    destino = Path(saida) if saida else OUI_PADRAO
+    try:
+        total = atualizar_de_csv([Path(a) for a in arquivos], destino)
+    except (OSError, UnicodeDecodeError) as e:
+        raise ErroCli(f"não foi possível ler/gravar a base OUI ({type(e).__name__})", 2) from None
+    print(f"{total} prefixos gravados em {destino}")
+
+
 async def executar(argv: list[str], settings: Settings | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m sentinela.cli")
     comandos = parser.add_subparsers(dest="comando", required=True)
@@ -156,10 +170,18 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     sub = comandos.add_parser("sub-rede", help="declara as sub-redes privadas monitoradas")
     sub.add_argument("acao", choices=["adicionar", "remover", "listar"])
     sub.add_argument("cidr", nargs="?", help="ex. 10.99.0.0/24")
+    oui = comandos.add_parser(
+        "oui-atualizar", help="regera a base OUI a partir de CSVs da IEEE (MA-L, MA-M, MA-S)"
+    )
+    oui.add_argument("arquivos", nargs="+", help="CSV da IEEE já baixado")
+    oui.add_argument("--saida", help="arquivo de saída (padrão: a base embutida)")
     args = parser.parse_args(argv)
 
     settings = settings or obter_settings()
     try:
+        if args.comando == "oui-atualizar":
+            _oui_atualizar(args.arquivos, args.saida)
+            return 0
         if args.comando == "sub-rede":
             await _sub_rede(settings, args.acao, args.cidr)
             return 0
