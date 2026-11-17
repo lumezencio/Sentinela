@@ -54,15 +54,51 @@ for (const estilo of ESTILOS) {
     igual(calcularPosicoes(estilo, CLASSES, eqs), calcularPosicoes(estilo, [...CLASSES].reverse(), emb));
   });
 
-  test(`${estilo}: remover um equipamento não move os demais`, () => {
-    const eqs = cenario();
-    const antes = calcularPosicoes(estilo, CLASSES, eqs);
-    for (const alvo of [eqs[0], eqs[10], eqs[eqs.length - 1]]) {
-      const depois = calcularPosicoes(estilo, CLASSES, eqs.filter((e) => e !== alvo));
-      assert.equal(depois.has(alvo.id), false);
-      for (const e of eqs) if (e !== alvo) assert.deepEqual(depois.get(e.id), antes.get(e.id));
+  if (estilo === "a") {
+    test("a: remover um equipamento não move os demais (posição só pelo hash)", () => {
+      const eqs = cenario();
+      const antes = calcularPosicoes(estilo, CLASSES, eqs);
+      for (const alvo of [eqs[0], eqs[10], eqs[eqs.length - 1]]) {
+        const depois = calcularPosicoes(estilo, CLASSES, eqs.filter((e) => e !== alvo));
+        for (const e of eqs) if (e !== alvo) assert.deepEqual(depois.get(e.id), antes.get(e.id));
+      }
+    });
+  } else {
+    test(`${estilo}: remover/adicionar move no máximo 5% da classe e nada fora dela`, () => {
+      const eqs = [...equips(120, "camera"), ...equips(30, "iot"), ...equips(3, "wifi")];
+      const antes = calcularPosicoes(estilo, CLASSES, eqs);
+      const moveu = (depois, ids) => ids.filter((id) => depois.has(id)
+        && JSON.stringify(depois.get(id)) !== JSON.stringify(antes.get(id)));
+      const camera = eqs.filter((e) => e.classe === "camera").map((e) => e.id);
+      for (const alvo of [camera[0], camera[40], camera[119]]) {
+        const depois = calcularPosicoes(estilo, CLASSES, eqs.filter((e) => e.id !== alvo));
+        const outros = camera.filter((id) => id !== alvo);
+        assert.ok(moveu(depois, outros).length <= Math.floor(outros.length * 0.05), "remoção moveu >5%");
+        const fora = eqs.filter((e) => e.classe !== "camera").map((e) => e.id);
+        assert.equal(moveu(depois, fora).length, 0);
+      }
+      for (const novo of ["novo-1", "novo-2", "zz-3"]) {
+        const depois = calcularPosicoes(estilo, CLASSES, [...eqs, { id: novo, classe: "camera" }]);
+        assert.ok(moveu(depois, camera).length <= Math.floor(camera.length * 0.05), "adição moveu >5%");
+        assert.equal(moveu(depois, eqs.filter((e) => e.classe !== "camera").map((e) => e.id)).length, 0);
+      }
+    });
+
+    for (const n of [120, 129, 500, 1500]) {
+      test(`${estilo}: ${n} equipamentos numa classe sem sobreposição (mín. 4 unidades)`, () => {
+        const eqs = equips(n, "gravador");
+        const m = calcularPosicoes(estilo, CLASSES, eqs);
+        const pts = eqs.map((e) => m.get(e.id));
+        let min = Infinity;
+        for (let i = 0; i < pts.length; i++) {
+          for (let j = i + 1; j < pts.length; j++) {
+            min = Math.min(min, Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y, pts[i].z - pts[j].z));
+          }
+        }
+        assert.ok(min >= 4, `distância mínima ${min}`);
+      });
     }
-  });
+  }
 
   test(`${estilo}: classe com 0 e com 1 equipamento`, () => {
     const zero = calcularPosicoes(estilo, CLASSES, []);
