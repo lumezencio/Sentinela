@@ -74,6 +74,42 @@ async def test_lifespan_carrega_equipamentos_existentes(
         assert app.state.guarda.validar("10.99.0.7", None, "icmp")
 
 
+async def test_lifespan_registra_camera_de_gravador_sem_checar(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    from datetime import UTC, datetime
+
+    from sentinela.db.modelos import Classe
+
+    await _subrede(cliente_admin)
+    nvr = (await _equip(cliente_admin, nome="Gravador", ip="10.99.0.20")).json()["id"]
+    agora = datetime(2026, 1, 1, tzinfo=UTC)
+    async with _sessoes(app)() as db:
+        camera = await db.scalar(select(Classe.id).where(Classe.slug == "camera"))
+        assert camera is not None
+        # IP interno do gravador, fora das sub-redes declaradas: nenhum socket vai até ele
+        cam = Equipamento(
+            nome="Canal 1",
+            ip="192.168.254.11",
+            classe_id=camera,
+            checagem="gravador",
+            estado="online",
+            estado_desde=agora,
+            criado_em=agora,
+            pai_id=nvr,
+            canal=1,
+        )
+        db.add(cam)
+        await db.commit()
+        cam_id = cam.id
+    async with app.router.lifespan_context(app):
+        agendador = _agendador(app)
+        assert agendador.estado_de(cam_id) is Estado.ONLINE  # registrado, não recusado
+        assert agendador.estado_de(nvr) is Estado.DESCONHECIDO
+        assert cam_id not in agendador._vigente  # nunca agendado
+        assert nvr in agendador._vigente
+
+
 async def test_lifespan_repassa_latencia_instavel_ao_agendador(settings: Settings) -> None:
     from sentinela.main import criar_app
     from tests.conftest import criar_esquema

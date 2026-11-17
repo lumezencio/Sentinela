@@ -907,3 +907,152 @@ async def test_sonda_usa_destino_revalidado(rodando: Callable[[Cena], None]) -> 
     await cena.relogio.avancar_ate(40)
     # uma validação no cadastro + uma antes de cada sonda
     assert len(validados) == 1 + len(cena.checagem.execucoes)
+
+
+# ---- Fase 3: alvos passivos do gravador (§9.3, §9.7) ----------------------------------------
+
+CAUSA_GRAVADOR = "gravador sem resposta"
+
+
+def _camera(n: int, estado: Estado = Estado.ONLINE, ip: str | None = None) -> Alvo:
+    # câmera atrás do gravador: o IP pode até ser de uma rede interna não declarada
+    return Alvo(
+        id=f"cam{n}",
+        ip=ip or f"10.99.50.{n + 1}",
+        porta=None,
+        checagem="gravador",
+        intervalo_s=15.0,
+        critico=False,
+        estado=estado,
+    )
+
+
+def _cena_sem_checagem_gravador() -> tuple[Cena, list[str]]:
+    cena = _cena()
+    pedidas: list[str] = []
+
+    def checagens(tipo: str) -> ChecagemFalsa:
+        pedidas.append(tipo)
+        return cena.checagem
+
+    cena.agendador._checagens = checagens  # type: ignore[assignment]
+    return cena, pedidas
+
+
+async def test_alvo_gravador_nao_e_agendado(rodando: Callable[[Cena], None]) -> None:
+    cena, pedidas = _cena_sem_checagem_gravador()
+    cena.agendador.adicionar(_camera(1))
+    cena.agendador.adicionar(_camera(2, ip="192.168.254.10"))  # fora das sub-redes: sem guarda
+    rodando(cena)
+    await cena.relogio.avancar_ate(60)
+    assert cena.checagem.execucoes == []
+    assert cena.limitador.pedidos == []
+    assert pedidas == []  # nem chega a pedir uma checagem ativa
+    assert cena.agendador.estado_de("cam1") is Estado.ONLINE
+    assert cena.agendador.estado_de("cam2") is Estado.ONLINE
+    assert cena.barramento.do_tipo("alvo_recusado") == []
+    assert cena.barramento.do_tipo("estado") == []
+
+
+async def test_alvo_gravador_nao_entra_no_orcamento() -> None:
+    cena = _cena(taxa=1)
+    for n in range(100):
+        cena.agendador.adicionar(_camera(n))
+    assert cena.agendador.intervalo_efetivo("cam1") == pytest.approx(15.0)
+    assert cena.agendador.tempo_max_deteccao_s() == 0.0
+
+
+async def test_aplicar_externo_tres_falhas_vai_offline() -> None:
+    cena = _cena()
+    cena.agendador.adicionar(_camera(1))
+    for _ in range(3):
+        cena.agendador.aplicar_externo("cam1", FALHA)
+    await cena.agendador.aguardar_gravacoes()
+    assert cena.agendador.estado_de("cam1") is Estado.OFFLINE
+    estados = [m.dados["estado"] for _, m in cena.barramento.do_tipo("estado")]
+    assert estados == ["suspeito", "offline"]
+    assert [t.para for _, t, _ in cena.gravador.transicoes] == [Estado.SUSPEITO, Estado.OFFLINE]
+    assert len(cena.gravador.amostras) == 3  # amostra gravada como numa checagem própria
+    assert cena.checagem.execucoes == []
+
+
+async def test_aplicar_externo_ok_publica_latencia_no_lote(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    cena.agendador.adicionar(_camera(1, estado=Estado.DESCONHECIDO))
+    rodando(cena)
+    cena.agendador.aplicar_externo("cam1", OK)
+    await cena.relogio.avancar_ate(6)
+    assert cena.agendador.estado_de("cam1") is Estado.ONLINE
+    lotes = [m.dados["lote"] for _, m in cena.barramento.do_tipo("latencias")]
+    assert ["cam1", 1.0] in lotes[0]
+
+
+async def test_aplicar_externo_ignora_pausado_desconhecido_e_ativo() -> None:
+    cena = _cena()
+    cena.agendador.adicionar(_camera(1, estado=Estado.PAUSADO))
+    cena.agendador.adicionar(_alvo(2))
+    cena.agendador.aplicar_externo("cam1", FALHA)
+    cena.agendador.aplicar_externo("nao-existe", FALHA)
+    cena.agendador.aplicar_externo("eq2", FALHA)  # checado pelo próprio agendador
+    assert cena.gravador.amostras == []
+    assert cena.agendador.estado_de("cam1") is Estado.PAUSADO
+    assert cena.agendador.estado_de("eq2") is Estado.ONLINE
+
+
+async def test_forcar_desconhecido_publica_estado_com_causa() -> None:
+    cena = _cena()
+    cena.agendador.adicionar_lote([_camera(1), _camera(2, estado=Estado.DESCONHECIDO)])
+    cena.agendador.forcar_desconhecido(["cam1", "cam2", "nao-existe"], CAUSA_GRAVADOR)
+    await cena.agendador.aguardar_gravacoes()
+    msgs = [m.dados for _, m in cena.barramento.do_tipo("estado")]
+    assert len(msgs) == 1  # cam2 já estava desconhecido
+    assert msgs[0]["id"] == "cam1"
+    assert msgs[0]["estado"] == "desconhecido"
+    assert msgs[0]["causa"] == CAUSA_GRAVADOR
+    assert cena.gravador.causas == [CAUSA_GRAVADOR]
+    assert cena.agendador.estado_de("cam1") is Estado.DESCONHECIDO
+    cena.agendador.aplicar_externo("cam1", OK)  # leitura volta: histerese normal
+    assert cena.agendador.estado_de("cam1") is Estado.ONLINE
+
+
+async def test_mensagem_de_estado_sem_causa_nao_ganha_campo(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [FALHA]
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    await cena.relogio.avancar_ate(20)
+    msgs = [m.dados for _, m in cena.barramento.do_tipo("estado")]
+    assert msgs and all(set(d) == {"id", "estado", "desde"} for d in msgs)
+
+
+async def test_atualizar_ativo_para_gravador_para_de_checar(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    await cena.relogio.avancar_ate(30)
+    feitas = len(cena.checagem.execucoes)
+    assert feitas >= 1
+    cena.agendador.atualizar(replace(alvo, checagem="gravador"))
+    await cena.relogio.avancar_ate(120)
+    assert len(cena.checagem.execucoes) == feitas
+    cena.agendador.atualizar(replace(alvo, checagem="icmp"))  # volta a ser ativo
+    await cena.relogio.avancar_ate(200)
+    assert len(cena.checagem.execucoes) > feitas
+
+
+async def test_retomar_gravador_nao_agenda(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    cena.agendador.adicionar(_camera(1, estado=Estado.PAUSADO))
+    rodando(cena)
+    cena.agendador.retomar("cam1")
+    await cena.relogio.avancar_ate(60)
+    assert cena.checagem.execucoes == []
+    assert cena.agendador.estado_de("cam1") is Estado.DESCONHECIDO

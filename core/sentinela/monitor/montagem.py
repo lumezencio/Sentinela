@@ -42,7 +42,11 @@ def estado_inicial(eq: Equipamento) -> Estado:
 
 
 def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
-    """Alvo do agendador: intervalo e criticidade vêm da classe (R16)."""
+    """Alvo do agendador: intervalo e criticidade vêm da classe (R16).
+
+    Câmera atrás de gravador (``checagem == "gravador"``) vira alvo passivo: o agendador a
+    registra sem passar pela Guarda e nunca a checa; o estado vem da leitura de canais.
+    """
     return Alvo(
         id=eq.id,
         ip=eq.ip,

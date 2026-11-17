@@ -232,3 +232,52 @@ def test_retomar_zera_contadores() -> None:
 def test_precisa_confirmar_somente_em_suspeito() -> None:
     for e in Estado:
         assert _em(e).precisa_confirmar is (e is Estado.SUSPEITO)
+
+
+# ---- desconhecido forçado (gravador sem resposta, §9.7) --------------------
+
+CAUSA_GRAVADOR = "gravador sem resposta"
+
+
+def test_forcar_desconhecido_de_online_gera_transicao_com_causa() -> None:
+    m = _em(Estado.ONLINE)
+    t = m.forcar_desconhecido(CAUSA_GRAVADOR)
+    assert t == Transicao(Estado.ONLINE, Estado.DESCONHECIDO, causa=CAUSA_GRAVADOR)
+    assert t is not None and t.causa == CAUSA_GRAVADOR
+    assert m.estado is Estado.DESCONHECIDO
+
+
+def test_forcar_desconhecido_de_cada_estado_ativo() -> None:
+    for e in (Estado.ONLINE, Estado.INSTAVEL, Estado.SUSPEITO, Estado.OFFLINE):
+        m = _em(e)
+        t = m.forcar_desconhecido(CAUSA_GRAVADOR)
+        assert t is not None and (t.de, t.para) == (e, Estado.DESCONHECIDO)
+
+
+def test_forcar_desconhecido_ja_desconhecido_retorna_none() -> None:
+    m = _em(Estado.DESCONHECIDO)
+    assert m.forcar_desconhecido(CAUSA_GRAVADOR) is None
+    assert m.estado is Estado.DESCONHECIDO
+
+
+def test_forcar_desconhecido_nao_tira_da_pausa() -> None:
+    m = _em(Estado.PAUSADO)
+    assert m.forcar_desconhecido(CAUSA_GRAVADOR) is None
+    assert m.estado is Estado.PAUSADO
+
+
+def test_depois_de_forcado_ok_vai_online_pela_histerese_normal() -> None:
+    m = _em(Estado.OFFLINE)
+    m.aplicar(OK)  # 1 de 2 oks para sair de offline: contador não pode sobreviver
+    m.forcar_desconhecido(CAUSA_GRAVADOR)
+    assert m.aplicar(OK) == Transicao(Estado.DESCONHECIDO, Estado.ONLINE)
+
+
+def test_forcar_desconhecido_zera_contadores_de_falha() -> None:
+    m = _em(Estado.ONLINE)
+    m.aplicar(FALHA)
+    m.aplicar(FALHA)  # suspeito com 2 falhas
+    m.forcar_desconhecido(CAUSA_GRAVADOR)
+    assert m.aplicar(FALHA) == Transicao(Estado.DESCONHECIDO, Estado.SUSPEITO)
+    assert m.aplicar(FALHA) is None  # recomeça a contagem: 2 de 3
+    assert m.estado is Estado.SUSPEITO

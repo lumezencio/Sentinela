@@ -3,23 +3,34 @@
 import asyncio
 from collections import deque
 from dataclasses import dataclass
+from typing import Literal, get_args
 
 from sentinela.relogio import Relogio
 
 _EPS = 1e-9
 CUSTO_MAX = 3  # custo de uma checagem HTTP: a capacidade nunca fica abaixo disso
 
+Prioridade = Literal["alta", "normal", "baixa"]
+_NIVEL: dict[str, int] = {p: i for i, p in enumerate(get_args(Prioridade))}
+
 
 @dataclass
 class _Espera:
     custo: int
     futuro: asyncio.Future[None]
-    prioritario: bool = False
+    nivel: int = _NIVEL["normal"]
 
 
 class Limitador:
     """Token bucket global. O balde começa cheio: em qualquer janela de 1 s o consumo fica em
-    no máximo ``capacidade + taxa`` (o teto vale "em regime", a rajada inicial é aceita)."""
+    no máximo ``capacidade + taxa`` (o teto vale "em regime", a rajada inicial é aceita).
+
+    A fila tem três prioridades, FIFO dentro de cada uma: ``alta`` (reconfirmação de queda),
+    ``normal`` (checagens periódicas, leitura de canais do gravador) e ``baixa`` (coleta de
+    inventário, sondagem e varredura da descoberta). Baixa só é servida quando nenhuma alta
+    ou normal espera: sob saturação a descoberta pode ficar parada indefinidamente, e isso é
+    intencional (a detecção de queda nunca atrasa por causa dela). O teto é um só para todas.
+    """
 
     def __init__(self, taxa: float, relogio: Relogio, capacidade: int | None = None) -> None:
         self._validar_taxa(taxa)
@@ -53,19 +64,40 @@ class Limitador:
         self._tokens = min(self._tokens, self.capacidade)
         self._reprogramar()
 
-    async def adquirir(self, custo: int = 1, prioritario: bool = False) -> None:
+    async def adquirir(
+        self,
+        custo: int = 1,
+        prioritario: bool = False,
+        *,
+        prioridade: Prioridade | None = None,
+    ) -> None:
+        """Espera fichas para ``custo``. ``prioritario=True`` (forma antiga) equivale a
+        ``prioridade="alta"``; sem nenhum dos dois, ``"normal"``."""
+        nivel = self._nivel(prioritario, prioridade)
         if custo <= 0:
             raise ValueError("custo deve ser positivo")
         if custo > self.capacidade:
             raise ValueError("custo maior que a capacidade do limitador")
-        espera = _Espera(custo, asyncio.get_running_loop().create_future(), prioritario)
-        if prioritario:  # à frente dos normais, mas atrás dos prioritários já esperando
-            posicao = sum(1 for e in self._fila if e.prioritario)
-            self._fila.insert(posicao, espera)
-        else:
+        espera = _Espera(custo, asyncio.get_running_loop().create_future(), nivel)
+        # atrás de todos do mesmo nível ou mais urgentes já esperando, à frente dos demais
+        # (a fila fica ordenada por nível: o caso comum é só um append)
+        if not self._fila or self._fila[-1].nivel <= nivel:
             self._fila.append(espera)
+        else:
+            posicao = sum(1 for e in self._fila if e.nivel <= nivel)
+            self._fila.insert(posicao, espera)
         self._reprogramar()
         await espera.futuro
+
+    @staticmethod
+    def _nivel(prioritario: bool, prioridade: Prioridade | None) -> int:
+        if prioridade is None:
+            return _NIVEL["alta" if prioritario else "normal"]
+        if prioritario:
+            raise ValueError("use prioritario ou prioridade, não os dois")
+        if prioridade not in _NIVEL:
+            raise ValueError("prioridade inválida")
+        return _NIVEL[prioridade]
 
     def _reabastecer(self) -> None:
         agora = self._relogio.agora()

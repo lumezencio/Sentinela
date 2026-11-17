@@ -3,7 +3,7 @@ from collections.abc import Awaitable
 
 import pytest
 
-from sentinela.monitor.limitador import Limitador
+from sentinela.monitor.limitador import Limitador, Prioridade
 from sentinela.relogio import RelogioFalso
 
 
@@ -148,3 +148,114 @@ async def test_cancelar_cabeca_serve_proximo_sem_vazar_token() -> None:
 
     await correr(relogio, cenario())
     assert relogio.agora() == pytest.approx(1.0)  # o proximo pagou um token inteiro, sem sobra
+
+
+# ---- prioridade baixa (descoberta, §9.6) -----------------------------------
+
+
+async def test_baixa_espera_normal_e_alta() -> None:
+    relogio = RelogioFalso()
+    lim = Limitador(1, relogio)
+    await lim.adquirir(3)  # esvazia (capacidade mínima 3)
+    ordem: list[str] = []
+
+    async def pegar(nome: str, prioridade: Prioridade) -> None:
+        await lim.adquirir(prioridade=prioridade)
+        ordem.append(nome)
+
+    async def cenario() -> None:
+        tarefas = []
+        for nome, p in [
+            ("baixa1", "baixa"),
+            ("normal1", "normal"),
+            ("baixa2", "baixa"),
+            ("alta", "alta"),
+            ("normal2", "normal"),
+        ]:
+            tarefas.append(asyncio.create_task(pegar(nome, p)))  # type: ignore[arg-type]
+            await asyncio.sleep(0)
+        await asyncio.gather(*tarefas)
+
+    await correr(relogio, cenario())
+    assert ordem == ["alta", "normal1", "normal2", "baixa1", "baixa2"]
+
+
+async def test_baixa_na_cabeca_cede_a_normal_que_chega() -> None:
+    relogio = RelogioFalso()
+    lim = Limitador(1, relogio)
+    await lim.adquirir(3)
+    ordem: list[str] = []
+
+    async def pegar(nome: str, prioridade: Prioridade) -> None:
+        await lim.adquirir(prioridade=prioridade)
+        ordem.append(nome)
+
+    baixa = asyncio.create_task(pegar("baixa", "baixa"))
+    await relogio.avancar_ate(0.5)  # a baixa já espera ficha na cabeça da fila
+    assert ordem == []
+    normal = asyncio.create_task(pegar("normal", "normal"))
+    await correr(relogio, asyncio.gather(baixa, normal))
+    assert ordem == ["normal", "baixa"]
+
+
+async def test_baixa_nao_passa_do_teto() -> None:
+    relogio = RelogioFalso()
+    lim = Limitador(20, relogio)
+    servidos: list[float] = []
+
+    async def pegar(prioridade: Prioridade) -> None:
+        await lim.adquirir(prioridade=prioridade)
+        servidos.append(relogio.agora())
+
+    async def cenario() -> None:
+        tarefas = [asyncio.create_task(pegar("baixa")) for _ in range(400)]
+        tarefas += [asyncio.create_task(pegar("normal")) for _ in range(100)]
+        tarefas += [asyncio.create_task(pegar("alta")) for _ in range(50)]
+        await asyncio.gather(*tarefas)
+
+    tarefa = asyncio.ensure_future(cenario())
+    while not tarefa.done() and relogio.agora() < 10.0:
+        await asyncio.sleep(0)
+        prazo = relogio.proximo_prazo()
+        if prazo is not None and not tarefa.done():
+            await relogio.avancar_ate(min(prazo, 10.0))
+    tarefa.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tarefa
+    em_10s = [t for t in servidos if t <= 10.0]
+    assert len(em_10s) <= 20 * 10 + lim.capacidade
+    assert len(em_10s) >= 20 * 10  # o orçamento é usado
+
+
+async def test_prioritario_true_continua_alta() -> None:
+    relogio = RelogioFalso()
+    lim = Limitador(1, relogio)
+    await lim.adquirir(3)
+    ordem: list[str] = []
+
+    async def pegar(nome: str, **kw: object) -> None:
+        await lim.adquirir(**kw)  # type: ignore[arg-type]
+        ordem.append(nome)
+
+    async def cenario() -> None:
+        t1 = asyncio.create_task(pegar("normal", prioridade="normal"))
+        await asyncio.sleep(0)
+        t2 = asyncio.create_task(pegar("alta", prioridade="alta"))
+        await asyncio.sleep(0)
+        t3 = asyncio.create_task(pegar("legado", prioritario=True))
+        await asyncio.gather(t1, t2, t3)
+
+    await correr(relogio, cenario())
+    assert ordem == ["alta", "legado", "normal"]
+
+
+async def test_prioridade_e_prioritario_juntos_levanta() -> None:
+    lim = Limitador(5, RelogioFalso())
+    with pytest.raises(ValueError):
+        await lim.adquirir(prioritario=True, prioridade="baixa")
+
+
+async def test_prioridade_invalida_levanta() -> None:
+    lim = Limitador(5, RelogioFalso())
+    with pytest.raises(ValueError):
+        await lim.adquirir(prioridade="urgente")  # type: ignore[arg-type]
