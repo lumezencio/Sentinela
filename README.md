@@ -4,9 +4,11 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fases 1 e 2 concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D e
-> Organograma). A descoberta automática e os alertas vêm nas próximas fases. Veja
-> [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
+> Status: **Fase 1 concluída; Fase 2 concluída com pendência** (núcleo de monitoramento, lista ao
+> vivo, Docker, Teia 3D e Organograma). Pendência: no Lighthouse, "boas práticas" fica em 81 por um
+> aviso de depreciação vindo do Alpine CSP de terceiros (desempenho, acessibilidade e SEO em 100).
+> A descoberta automática e os alertas vêm nas próximas fases. Veja
+> [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md) (§18).
 
 ## Como funciona
 
@@ -101,8 +103,10 @@ docker compose -f docker-compose.yml -f docker-compose.demo.yml down
 
 ## Teia 3D e Organograma
 
-Além da **Lista**, a tela principal tem duas abas visuais, que usam os mesmos dados ao vivo e os
-mesmos filtros (classe, estado e busca) da Lista.
+Além da **Lista**, a tela principal tem duas abas visuais, que usam os mesmos dados ao vivo. Só o
+**Organograma** compartilha os filtros da Lista (classe, estado e busca): o que for escolhido numa
+aba vale na outra, e as contagens por estado de cada cartão refletem os filtros ativos. A **Teia**
+não usa os filtros: mostra sempre todos os equipamentos.
 
 **Teia 3D.** O servidor Sentinela fica no centro e cada classe de equipamento ocupa uma vaga fixa
 ao redor, com as cores definidas no cadastro de classes. Cada equipamento é uma esfera cujo
