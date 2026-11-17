@@ -1,0 +1,8 @@
+# Mesmas regras do core; asserts são o normal em teste.
+extend = "../../core/pyproject.toml"
+
+[lint]
+per-file-ignores = { "*.py" = ["S101"] }
+
+[lint.isort]
+known-first-party = ["sentinela", "conftest"]

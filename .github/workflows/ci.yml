@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy sentinela
+      - run: uv run bandit -r sentinela -ll
+      - run: uv run pip-audit
+      - run: uv run pytest -q
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build das imagens
+        run: |
+          docker build -t sentinela-core:ci core
+          docker build -t sentinela-web:ci web
+      - name: imagem do core sem testes nem segredos, usuário 10001
+        run: |
+          test "$(docker run --rm --entrypoint id sentinela-core:ci -u)" = 10001
+          # como root: o uid 10001 não lê alguns diretórios e o find sairia com 1 (quebra o bash -e)
+          achados="$(docker run --rm --user 0 --entrypoint sh sentinela-core:ci -c '
+            find / -xdev \( -name .env -o -name .git -o -path /app/tests -o -path /src/tests \
+              -o -path "*/site-packages/sentinela/tests" -o -name conftest.py \) -print 2>/dev/null || true')"
+          if [ -n "$achados" ]; then echo "$achados"; exit 1; fi
+          echo ok
+      - name: front sem sourcemap
+        run: |
+          mapas="$(docker run --rm --entrypoint find sentinela-web:ci /usr/share/nginx/html -name '*.map')"
+          if [ -n "$mapas" ]; then echo "$mapas"; exit 1; fi
+      - name: trivy (core)
+        # SHA da tag v0.36.0: tag de action pode ser movida, commit não
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.2
+          image-ref: sentinela-core:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: trivy (web)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.2
+          image-ref: sentinela-web:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

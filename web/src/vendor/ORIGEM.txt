@@ -1,0 +1,6 @@
+alpine-csp.min.js
+  pacote:    @alpinejs/csp 3.15.12 (publicado em 2026-04-30), arquivo dist/cdn.min.js
+  origem:    https://cdn.jsdelivr.net/npm/@alpinejs/csp@3.15.12/dist/cdn.min.js
+  sha256:    566167134bb2347110904e2ced6e816d2e8d837200c158f98b72372b3bb0b9a6
+  npm integrity do tarball (conferida): sha512-9jielHzVPqMlO9zQ6K1WtdhSHVX5OZfq5ZDUSVZfY10VnXRoRBx8nOadWjsG1xev/kz4EPaNN9eDFWtZSvJHxA==
+  licença:   MIT, ver LICENSE-alpine.txt (Copyright (c) 2019-2025 Caleb Porzio and contributors)

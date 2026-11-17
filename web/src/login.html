@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <title>Sentinela · Entrar</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <script src="js/tema.js"></script>
+  <script type="module" src="js/login.js"></script>
+</head>
+<body>
+  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div></div>
+  <main class="tela-login">
+    <section class="cartao-login vidro" aria-labelledby="titulo-login">
+      <div class="marca-login">
+        <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+          <g class="giro"><ellipse class="orbita" cx="20" cy="20" rx="17" ry="7"/><circle class="eletron" cx="37" cy="20" r="2.2"/></g>
+          <g class="giro giro-2"><ellipse class="orbita orbita-2" cx="20" cy="20" rx="7" ry="17"/><circle class="eletron" cx="20" cy="3" r="1.8"/></g>
+          <circle class="nucleo" cx="20" cy="20" r="4.5"/>
+        </svg>
+        <h1 id="titulo-login">Sentinela</h1>
+        <p>Vigilância serena da sua rede local.</p>
+      </div>
+      <form class="form-login" id="form-login" novalidate>
+        <div class="campo-form">
+          <label for="login">Login</label>
+          <input id="login" name="login" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required autofocus>
+        </div>
+        <div class="campo-form">
+          <label for="senha">Senha</label>
+          <input id="senha" name="senha" type="password" autocomplete="current-password" maxlength="256" required>
+        </div>
+        <p class="alerta" id="erro-login" role="alert" hidden></p>
+        <button class="botao botao-primario" id="entrar" type="submit">Entrar</button>
+      </form>
+      <p class="rodape-login">Acesso restrito. As tentativas são registradas.</p>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Arquivos que rodam dentro de Linux (bash, Docker, nginx) ficam sempre em LF,
+# mesmo em checkout no Windows com core.autocrlf=true (CRLF quebra o install.sh).
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+*.conf          text eol=lf
+*.template      text eol=lf
+*.yml           text eol=lf
+.env.example    text eol=lf

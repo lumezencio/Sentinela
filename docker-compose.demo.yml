@@ -1,0 +1,12 @@
+# Demonstração: ./install.sh --demo
+# Rede sintética de 300 equipamentos, checagens simuladas (nenhum pacote sai para a LAN).
+# Volume PRÓPRIO: a demonstração nunca abre o banco de uma instalação real.
+services:
+  core:
+    environment:
+      SENTINELA_DEMO: "true"
+    volumes: !override ["sentinela_demo_dados:/dados"]
+
+volumes:
+  sentinela_demo_dados:
+    name: sentinela_demo_dados
