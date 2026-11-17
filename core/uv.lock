@@ -1432,6 +1432,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyasn1"
+version = "0.6.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/7e/3c0da41061a2021cac7cd524fd57092adbe5b515e8bf9005702e366802e2/pyasn1-0.6.5.tar.gz", hash = "sha256:6b11616a6bcf3a40e635f082bb232fa57b5e0dd7f517bd7ddd69ec3794508a47", size = 155152, upload-time = "2026-10-27T06:32:49.125Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/19/1f/3eefd5c84c35cae44549ce1c7f7e58f7945b34f5a6bce07a135438522073/pyasn1-0.6.5-py3-none-any.whl", hash = "sha256:4017b0fce125096b8573b39c989fdb1a4b19cf761e683398184550fea0e66587", size = 84807, upload-time = "2026-10-27T06:32:48.045Z" },
+]
+
+[[package]]
 name = "pycparser"
 version = "3.12"
 source = { registry = "https://pypi.org/simple" }
@@ -1595,6 +1604,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e4/11/b213bebff182584360cb8d17c72c1677fec5c5c228de439e63bcf8ab1c8f/pyparsing-3.3.3.tar.gz", hash = "sha256:928ae7e20211f3b6f3915a72f06a0cfd29ab9d24279dd6346b6b1a7146397d36", size = 1050487, upload-time = "2026-09-20T20:59:05.609Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/bb/d215ee7c73b61497b28a5503f9f53523f294fcc936762b7caf90e0c1c2b5/pyparsing-3.3.3-py3-none-any.whl", hash = "sha256:ece8c00a69cf01b45d0b1dedabb469c90d8caf996d4fda40f147627a122849a4", size = 126420, upload-time = "2026-09-20T20:59:04.025Z" },
+]
+
+[[package]]
+name = "pysnmp"
+version = "7.1.30"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyasn1" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/55/2a/ab68df5b1a2f673da731da7caf39c29d924735359e7d50eacb80d2d38e53/pysnmp-7.1.30.tar.gz", hash = "sha256:db72f439b066725d2586dff068478dc8e9b303a4dba3294462b0e76b3cb63bc2", size = 268625, upload-time = "2026-09-28T07:51:09.188Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/41/6e/5ba915d4aa285d7ca7c8c3db0dddb5d848e9f85e383de064122fb0702c7b/pysnmp-7.1.30-py3-none-any.whl", hash = "sha256:1f648b7e38fc400e63b493a45d06581d837d07cddd901e6dc9c45be03e9ed685", size = 355559, upload-time = "2026-09-28T07:51:07.606Z" },
 ]
 
 [[package]]
@@ -1770,6 +1791,7 @@ dependencies = [
     { name = "httpx" },
     { name = "icmplib" },
     { name = "pydantic-settings" },
+    { name = "pysnmp" },
     { name = "python-multipart" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
@@ -1796,6 +1818,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "icmplib", specifier = ">=3.0.4" },
     { name = "pydantic-settings", specifier = ">=2.16.3" },
+    { name = "pysnmp", specifier = "==7.1.30" },
     { name = "python-multipart", specifier = ">=0.0.34" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.8" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },

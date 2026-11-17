@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "icmplib>=3.0.4",
     "pydantic-settings>=2.16.3",
+    "pysnmp==7.1.30",
     "python-multipart>=0.0.34",
     "sqlalchemy[asyncio]>=2.1.8",
     "uvicorn[standard]>=0.54.0",
@@ -55,5 +56,5 @@ dev = [
 ]
 
 [[tool.mypy.overrides]]
-module = ["icmplib", "icmplib.*"]
+module = ["icmplib", "icmplib.*", "pysnmp", "pysnmp.*"]
 ignore_missing_imports = true
