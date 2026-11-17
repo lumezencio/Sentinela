@@ -13,7 +13,13 @@ import sys
 from datetime import UTC, datetime
 from typing import Any, TextIO
 
-_PADRAO = frozenset(logging.makeLogRecord({}).__dict__) | {"message", "asctime", "taskName"}
+# atributos do LogRecord (e o ``color_message`` do uvicorn, com códigos ANSI) não viram campo
+_PADRAO = frozenset(logging.makeLogRecord({}).__dict__) | {
+    "message",
+    "asctime",
+    "taskName",
+    "color_message",
+}
 _UVICORN = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
 
@@ -67,8 +73,11 @@ def configurar_logs(handler: logging.Handler | None = None) -> logging.Handler:
     if raiz.level == logging.NOTSET or raiz.level > logging.WARNING:
         raiz.setLevel(logging.WARNING)
     logging.getLogger("sentinela").setLevel(logging.INFO)
-    for nome in _UVICORN:  # sem o handler em texto do uvicorn: tudo sai em JSON
+    for nome in _UVICORN:
         lg = logging.getLogger(nome)
-        lg.handlers.clear()
-        lg.propagate = True
+        # troca o handler em texto do uvicorn pelo JSON da raiz; logger que o uvicorn
+        # desligou (``--no-access-log``: sem handler e sem propagar) continua desligado
+        if lg.handlers:
+            lg.handlers.clear()
+            lg.propagate = True
     return novo

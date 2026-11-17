@@ -78,3 +78,28 @@ async def test_login_gera_linha_json_com_rotulo_e_resultado(
     assert logins[-1]["resultado"] == "falha"
     assert logins[-1]["level"] == "INFO"
     assert "senha-errada-de-teste" not in json.dumps(registros)
+
+
+def test_uvicorn_em_json_sem_reativar_access_log_desligado(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raiz = logging.getLogger()
+    for h in list(raiz.handlers):
+        if getattr(h, "_sentinela", False):
+            monkeypatch.setattr(raiz, "handlers", [x for x in raiz.handlers if x is not h])
+    erro, acesso = logging.getLogger("uvicorn"), logging.getLogger("uvicorn.access")
+    texto = logging.StreamHandler(io.StringIO())
+    monkeypatch.setattr(erro, "handlers", [texto])
+    monkeypatch.setattr(erro, "propagate", False)
+    monkeypatch.setattr(acesso, "handlers", [])  # como o uvicorn deixa com --no-access-log
+    monkeypatch.setattr(acesso, "propagate", False)
+    h = Memoria()
+    configurar_logs(h)
+    try:
+        assert erro.handlers == [] and erro.propagate is True
+        assert acesso.propagate is False
+        logging.getLogger("uvicorn.error").warning("subiu", extra={"color_message": "\x1b[36m"})
+        (linha,) = (json.loads(x) for x in h.linhas)
+        assert linha["message"] == "subiu" and "color_message" not in linha
+    finally:
+        raiz.removeHandler(h)
