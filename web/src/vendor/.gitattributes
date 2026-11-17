@@ -1,2 +1,4 @@
 # arquivos de terceiros byte a byte (o sha256 em ORIGEM.txt tem de bater)
 * -text
+# bundle da Teia: binário para o git (sem diff de texto nem conversão de fim de linha)
+teia-3d.bundle.js binary

@@ -4,8 +4,8 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fase 1 concluída** (núcleo de monitoramento, lista ao vivo, Docker). A descoberta
-> automática, a teia 3D e os alertas vêm nas próximas fases. Veja
+> Status: **Fases 1 e 2 concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D e
+> Organograma). A descoberta automática e os alertas vêm nas próximas fases. Veja
 > [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
 
 ## Como funciona
@@ -98,6 +98,44 @@ Para parar a demonstração **sem apagar os dados** (não use `-v`):
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.demo.yml down
 ```
+
+## Teia 3D e Organograma
+
+Além da **Lista**, a tela principal tem duas abas visuais, que usam os mesmos dados ao vivo. Só o
+**Organograma** compartilha os filtros da Lista (classe, estado e busca): o que for escolhido numa
+aba vale na outra, e as contagens por estado de cada cartão refletem os filtros ativos. A **Teia**
+não usa os filtros: mostra sempre todos os equipamentos.
+
+**Teia 3D.** O servidor Sentinela fica no centro e cada classe de equipamento ocupa uma vaga fixa
+ao redor, com as cores definidas no cadastro de classes. Cada equipamento é uma esfera cujo
+estado aparece também pela forma, não só pela cor: online é cheio, instável tem um anel, offline
+mostra "×" e pulsa, pausado fica cinza e translúcido, suspeito treme de leve. Clique numa esfera
+(ou num item do painel de classes) para ver o histórico das últimas quedas; quem é administrador
+pode pausar e retomar a checagem por ali. A cena 3D só é baixada quando você abre a aba, então a
+primeira tela continua leve. São cinco estilos, escolhidos na barra superior e lembrados no
+navegador: **Constelação** (padrão), **Órbitas**, **Galáxia**, **Átomo** e **Árvore 3D**.
+
+**Organograma.** Alternativa 2D em HTML puro: um cartão por classe, com a contagem por estado e a
+grade dos equipamentos, os piores estados primeiro (50 por cartão, com paginação). Dá para
+recolher cada cartão, ou todos, e clicar num equipamento para abrir a ficha. Funciona bem no
+celular e em máquinas sem aceleração gráfica.
+
+**Teclado.** Na Teia, o painel de classes é navegável por Tab; **Enter** num botão de classe foca a
+classe na cena e **Esc** fecha o painel do equipamento e, com ele fechado, volta à vista completa.
+No Organograma, Enter abre o equipamento e **Esc** fecha a ficha devolvendo o foco ao item.
+
+**Desempenho e degradação automática.** Até 1.000 equipamentos a cena é completa; de 1.000 a
+3.000 some a partícula de fluxo, a resolução cai e o brilho (bloom) é desligado; acima de 3.000, ou
+se o FPS ficar abaixo de 24 por 5 segundos, a Teia agrupa cada classe em um super-nó (no máximo
+uma entrada em modo agrupado por minuto; "Ver tudo", trocar de estilo ou voltar à aba liberam o
+modo completo de novo). O brilho só
+liga se o FPS medido nos primeiros 3 segundos for 50 ou mais. Com a aba oculta, o desenho pausa.
+Com `prefers-reduced-motion`, não há partículas, pulso nem rotação automática. Para medir o FPS
+da Teia em cada estilo na sua máquina, rode `web/tests/medir_fps.py` (de `core/`: `uv run --with
+playwright --with cryptography python ../web/tests/medir_fps.py --equipamentos 1000 --modo gpu`;
+usa um banco temporário e não entra no CI).
+
+**Sem WebGL.** Se o navegador não oferecer WebGL, a aba Teia mostra um aviso e leva ao Organograma.
 
 ## Documentação
 

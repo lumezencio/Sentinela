@@ -35,6 +35,8 @@ build/
 
 # Front
 node_modules/
+# scripts de build do bundle da Teia (o build/ acima é o do Python)
+!web/build/
 web/dist/
 *.map
 
@@ -43,3 +45,6 @@ web/dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Ledgers e rascunhos do processo de desenvolvimento (nunca no repositório público)
+.superpowers/

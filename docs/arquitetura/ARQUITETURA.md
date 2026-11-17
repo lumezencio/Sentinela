@@ -533,7 +533,7 @@ Sentinela/
 | Fase | Entrega | Pronto quando |
 |---|---|---|
 | **1. Núcleo** (concluída em 2026-11-16) | guarda de rede, cadastro manual/CSV, agendador + limitador, ICMP/TCP/HTTP, máquina de estados, lista, WebSocket, login, **modo demonstração** | 300 equipamentos simulados com estados ao vivo na lista; testes do guarda e do limitador verdes |
-| **2. Visual** | Teia 3D, Organograma, painel lateral, tema quântico, fallback | teia com 1.000 nós a 60 fps; organograma no celular; Lighthouse ≥ 90 |
+| **2. Visual** (concluída em 2026-11-17: Teia 3D com 5 estilos e Organograma; ver nota de desempenho no README. Lighthouse 13.6.0, preset desktop, perfil limpo, logado, contra a demo: Lista e Organograma com desempenho 100, acessibilidade 100, boas práticas 100 e SEO 100; CLS 0,014/0,017. Nota para o upstream: o Alpine CSP lê todas as globais do `window` ao carregar e dispara o aviso de depreciação da API Fenced Frame; o `tema.js` remove a global `fence` antes dele, até o Alpine passar a ignorar "fence" como já faz com "styleMedia" e "sharedStorage") | Teia 3D, Organograma, painel lateral, tema quântico, fallback | teia com 1.000 nós a 60 fps; organograma no celular; Lighthouse ≥ 90 |
 | **3. Descoberta** | MikroTik v6/v7, SNMP, gravadores Hikvision/Dahua, classificador, tela de Novos, varredura opcional | descoberta contra simuladores; teste de captura sem broadcast |
 | **4. Operação** | alertas Telegram com agrupamento e correlação, `/parede` com emparelhamento, TOTP, instalador, update/backup/restore, imagens multi-arquitetura | instalação limpa num Raspberry Pi em < 10 min; pipeline de segurança verde |
 

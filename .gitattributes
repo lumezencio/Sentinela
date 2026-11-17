@@ -7,3 +7,6 @@ Dockerfile      text eol=lf
 *.template      text eol=lf
 *.yml           text eol=lf
 .env.example    text eol=lf
+# fontes do bundle da Teia em LF: o bundle gerado no Windows e no CI tem de ser idêntico
+web/src/js/**/*.js text eol=lf
+web/build/* text eol=lf

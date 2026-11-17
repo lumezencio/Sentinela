@@ -5,13 +5,19 @@ RUN npm install --global --no-fund --no-audit esbuild@0.28.2
 WORKDIR /w
 COPY src/ ./src/
 # JS e CSS minificados arquivo a arquivo, SEM sourcemap; HTML, SVG e vendor/ copiados como estão
-# (o vendor/alpine-csp.min.js fica byte a byte igual ao conferido em vendor/ORIGEM.txt)
-RUN cp -r src dist \
+# (o vendor/alpine-csp.min.js fica byte a byte igual ao conferido em vendor/ORIGEM.txt; o
+# vendor/teia-3d.bundle.js, gerado por build/construir-teia.sh, tem de bater com o .sha256
+# commitado e não é minificado de novo: o esbuild abaixo só pega src/js/*.js do 1º nível;
+# os fontes de src/js/teia/ já estão dentro do bundle e não vão para a imagem)
+RUN (cd src/vendor && sha256sum -c teia-3d.bundle.js.sha256) \
+    && cp -r src dist \
     && find dist -name '.*' -type f -delete \
+    && rm -rf dist/js/teia \
     && esbuild src/js/*.js --minify --outdir=dist/js --log-level=warning \
     && esbuild src/css/*.css --minify --outdir=dist/css --log-level=warning \
     && if find dist -name '*.map' | grep -q .; then echo "sourcemap encontrado" >&2; exit 1; fi \
-    && cmp src/vendor/alpine-csp.min.js dist/vendor/alpine-csp.min.js
+    && cmp src/vendor/alpine-csp.min.js dist/vendor/alpine-csp.min.js \
+    && cmp src/vendor/teia-3d.bundle.js dist/vendor/teia-3d.bundle.js
 
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24
 USER root

@@ -11,6 +11,8 @@ import {
   paginar,
   prepararItem,
 } from "./lista.js";
+import { organogramaDoPainel } from "./organograma.js";
+import { visoesDoPainel } from "./teia-pagina.js";
 import { criarConexao } from "./ws.js";
 
 const CHAVE_TEMA = "sentinela-tema";
@@ -42,7 +44,7 @@ function painel() {
   let relogio = 0;
   let ressinc = 0;
 
-  return {
+  const dados = {
     usuario: "",
     admin: false,
     conexao: "conectando",
@@ -71,6 +73,8 @@ function painel() {
     subredeAviso: "",
 
     async init() {
+      this.iniciarVisoes(); // aba pelo hash já na abertura (a Teia monta sob demanda)
+      this.iniciarOrganograma(); // depois: o hashchange das visões já trocou a aba
       // core fora do ar ao abrir a página: tenta de novo com recuo (1 s → 30 s)
       let eu = await api.eu();
       let recuo = RECUO_INICIAL_MS;
@@ -83,6 +87,7 @@ function painel() {
       }
       this.usuario = eu.dados.login;
       this.admin = eu.dados.papel === "admin";
+      this.liberarTeia(); // só agora a Teia monta (e o bundle é pedido)
       conexao = criarConexao({
         aoMensagem: (msg) => this.receber(msg),
         aoMudarEstado: (estado) => {
@@ -107,8 +112,10 @@ function painel() {
         aplicarSnapshot(store, msg);
         this.classes = store.ordemClasses.map((c) => ({ slug: c.slug, nome: c.nome }));
         this.carregado = true;
+        this.teiaAoMudarStore();
       } else if (msg.tipo === "estado") {
-        if (!aplicarEstado(store, msg)) this.pedirRessincronizacao();
+        if (aplicarEstado(store, msg)) this.teiaAoEstado(msg.id);
+        else this.pedirRessincronizacao();
       } else if (msg.tipo === "latencias") {
         aplicarLatencias(store, msg.lote);
       } else {
@@ -132,6 +139,9 @@ function painel() {
 
     renderizar() {
       this.contadores = contar(store);
+      this.renderizarTeia();
+      this.renderizarOrganograma(); // só na aba dele; no máximo 2 vezes por segundo
+      if (this.aba !== "lista") return; // a lista só é montada na aba dela
       const filtrada = filtrar(
         store,
         { classe: this.filtroClasse, estado: this.filtroEstado, busca: this.busca },
@@ -147,7 +157,9 @@ function painel() {
 
     // ---------- filtros, ordenação, paginação ----------
     aoFiltrar() {
+      // filtros compartilhados entre Lista e Organograma: as duas voltam à 1ª página
       this.pagina = 1;
+      this.zerarPaginasOrganograma();
       this.renderizar();
     },
     filtrarEstado(grupo) {
@@ -277,6 +289,7 @@ function painel() {
       }
       const e = r.dados;
       store.itens.set(e.id, prepararItem({ ...e, desde: e.estado_desde }));
+      this.teiaAoMudarStore();
       this.$refs.dlgNovo.close();
       this.aviso = `“${e.nome}” cadastrado.`;
       this.renderizar();
@@ -395,6 +408,9 @@ function painel() {
       if (conexao) conexao.ressincronizar();
     },
   };
+  // abas e Teia (teia-pagina.js): mesmas propriedades no mesmo objeto, getters preservados
+  Object.defineProperties(dados, Object.getOwnPropertyDescriptors(visoesDoPainel(store)));
+  return Object.defineProperties(dados, Object.getOwnPropertyDescriptors(organogramaDoPainel(store)));
 }
 
 document.addEventListener("alpine:init", () => {

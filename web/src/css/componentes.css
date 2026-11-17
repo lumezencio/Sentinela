@@ -5,6 +5,13 @@
   padding: 0 16px 48px;
 }
 
+/* Link direto para #teia/#organograma: o tema.js marca <html data-aba> antes da 1ª pintura e a
+   Lista não aparece até o Alpine assumir (depois o próprio :hidden das abas manda) */
+html[data-aba="teia"] #conteudo-lista,
+html[data-aba="organograma"] #conteudo-lista {
+  display: none;
+}
+
 /* ---------- cabeçalho (vidro nº 1) ---------- */
 .topo {
   position: sticky;
@@ -343,6 +350,79 @@
   background: var(--superficie-2);
 }
 
+/* Sem salto de layout (CLS) quando as linhas chegam: a lista reserva a altura da janela (a
+   paginação já nasce fora da dobra) */
+@media (min-width: 768px) {
+  .painel-lista {
+    min-height: calc(100vh - 300px);
+  }
+}
+
+/* Colunas fixas (independem do conteúdo) só com largura de sobra; abaixo disso a tabela se
+   ajusta ao conteúdo e nada é cortado. O IP nunca corta; nome e "desde" têm title. */
+@media (min-width: 1200px) {
+  .tabela {
+    table-layout: fixed;
+  }
+  .tabela td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tabela td.td-ip {
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .tabela th:nth-child(1) {
+    width: 23%;
+  }
+  .tabela th:nth-child(2) {
+    width: 14%;
+  }
+  .tabela th:nth-child(3) {
+    width: 14%;
+  }
+  .tabela th:nth-child(4) {
+    width: 17%;
+  }
+  .tabela th:nth-child(5) {
+    width: 12%;
+  }
+  .tabela th:nth-child(6) {
+    width: 10%;
+  }
+  .tabela th:nth-child(7) {
+    width: 10%;
+  }
+}
+
+.tabela td.col-ip {
+  min-width: 16ch; /* IPv4 de 15 caracteres + folga, em fonte mono */
+  white-space: nowrap;
+}
+
+/* aviso de falha (link direto para #teia/#organograma sem o Alpine): só CSS, depois de 3 s;
+   com o Alpine rodando, x-show o esconde antes disso */
+.aviso-sem-alpine {
+  display: none;
+}
+
+html[data-aba="teia"] .aviso-sem-alpine,
+html[data-aba="organograma"] .aviso-sem-alpine {
+  display: block;
+  animation: surgir-aviso 0.3s ease 3s both;
+}
+
+@keyframes surgir-aviso {
+  from {
+    opacity: 0;
+    visibility: hidden;
+  }
+  to {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
 .ordenar {
   display: inline-flex;
   align-items: center;
@@ -627,5 +707,923 @@
   }
   .paginacao {
     justify-content: space-between;
+  }
+}
+
+/* Teia 3D: o contêiner/canvas da cena mantém foco visível para quem navega por teclado
+   (a lib trazia "canvas:focus { outline: none }"; aqui fica explícito o contrário) */
+.teia-cena:focus-visible,
+.teia-cena canvas:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: -2px;
+}
+
+/* ======================= Teia 3D (aba #teia) ======================= */
+/* A página inteira vira palco: corpo com a altura da janela, sem rolagem; a seção ocupa o resto */
+html[data-aba="teia"] body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* o <main> único vira a coluna que ocupa o resto da altura; a seção da Teia o preenche */
+html[data-aba="teia"] .conteudo {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+html[data-aba="teia"] .campo {
+  display: none; /* a cena já tem fundo próprio: sem animação escondida gastando GPU */
+}
+
+/* a cena é sempre escura: os painéis de vidro seguem a cena em qualquer tema */
+.teia {
+  color-scheme: dark;
+  --vidro: rgba(17, 20, 28, 0.66);
+  --borda: rgba(173, 184, 214, 0.16);
+  --texto: #e8ebf2;
+  --texto-suave: #a9b0c0;
+  --superficie-2: rgba(255, 255, 255, 0.06);
+  --primaria: #8793e8;
+  --acento: #68c7bc;
+  --online: #4ca878;
+  --instavel: #d9a441;
+  --offline: #e08080;
+  --pausado: #8a91a4;
+  --desconhecido: #9aa0b0;
+  --vao: 16px;
+  position: relative;
+  flex: 1;
+  min-height: 420px;
+  overflow: hidden;
+  background: #0e1016;
+  color: var(--texto);
+}
+
+.teia .vidro {
+  border: 1px solid var(--borda);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.teia .botao {
+  border-color: var(--borda);
+  background: var(--superficie-2);
+  color: var(--texto);
+}
+
+.teia .botao-fantasma {
+  border-color: transparent;
+  background: transparent;
+}
+
+.teia-palco {
+  position: absolute;
+  inset: 0;
+}
+
+.teia-palco canvas {
+  display: block;
+}
+
+/* rótulos das classes e do servidor: HTML sobre o canvas (fora do bloom); a cena só move
+   cada um por transform e ajusta --escala (limitada em enquadramento.js) */
+.teia-rotulos {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.teia-rotulo {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.teia-rotulo > span {
+  display: block;
+  max-width: 220px;
+  padding: 1px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(14, 16, 22, 0.55);
+  color: #eef0f7;
+  font: 600 12px/1.45 var(--fonte);
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cor-classe, #8793e8) 45%, transparent);
+  transform: translate(-50%, calc(-100% - 14px)) scale(var(--escala, 1));
+  transform-origin: 50% 100%;
+  transition: opacity 0.25s ease;
+}
+
+.teia-rotulo.abaixo > span {
+  transform: translate(-50%, 14px) scale(var(--escala, 1));
+  transform-origin: 50% 0;
+}
+
+.teia-rotulo.servidor > span {
+  background: transparent;
+  color: #c9cff8;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  box-shadow: none;
+  transform: translate(-50%, 30px) scale(var(--escala, 1));
+  transform-origin: 50% 0;
+}
+
+.teia-rotulo.esmaecido > span {
+  opacity: 0.28;
+}
+
+/* ---------- avisos (carregando, erro, reconexão) ---------- */
+.teia-aviso,
+.teia-conexao {
+  position: absolute;
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-weight: 600;
+  transform: translateX(-50%);
+}
+
+.teia-aviso {
+  top: 45%;
+}
+
+.teia-aviso-erro {
+  flex-wrap: wrap;
+  justify-content: center;
+  border-color: var(--offline);
+  border-radius: var(--raio);
+}
+
+.teia-conexao {
+  bottom: calc(var(--vao) + 52px);
+  border-color: var(--instavel);
+}
+
+/* ---------- seletor de estilo + ver tudo ---------- */
+.teia-topo {
+  position: absolute;
+  top: var(--vao);
+  right: calc(var(--vao) * 2 + 340px);
+  left: calc(var(--vao) * 2 + 272px);
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.teia-topo > * {
+  pointer-events: auto;
+}
+
+.teia-estilos {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+}
+
+.teia-estilo,
+.teia-ver-tudo {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--texto-suave);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.teia-estilo:hover,
+.teia-ver-tudo:hover {
+  color: var(--texto);
+}
+
+.teia-estilo[aria-pressed="true"] {
+  background: linear-gradient(135deg, rgba(135, 147, 232, 0.92), rgba(104, 199, 188, 0.92));
+  color: #10131a;
+  box-shadow: 0 0 18px rgba(135, 147, 232, 0.35);
+}
+
+.teia-ver-tudo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  border: 1px solid var(--borda);
+}
+
+.teia-ver-tudo .icone {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- painéis laterais ---------- */
+.teia-classes,
+.teia-painel-equip {
+  position: absolute;
+  top: var(--vao);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - var(--vao) * 2 - 48px);
+  border-radius: 18px;
+  animation: surgir 0.3s ease-out both;
+}
+
+.teia-classes {
+  left: var(--vao);
+  width: 272px;
+  padding: 14px 10px 10px;
+}
+
+.teia-classes-todas,
+.teia-classe-focada {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.teia-titulo {
+  margin: 0 6px 8px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.teia-titulo:focus {
+  outline: none;
+}
+
+.teia-titulo:focus-visible {
+  outline: 2px solid var(--acento);
+}
+
+.teia-sub {
+  color: var(--texto-suave);
+  font-size: 12.5px;
+}
+
+.teia-lista-classes,
+.teia-equips,
+.teia-historico {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.teia-lista-classes,
+.teia-equips {
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.teia-classe,
+.teia-equip {
+  display: grid;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.teia-classe {
+  grid-template-columns: auto 1fr auto;
+  column-gap: 10px;
+}
+
+.teia-classe:hover,
+.teia-equip:hover,
+.teia-equip[aria-current="true"] {
+  border-color: var(--borda);
+  background: var(--superficie-2);
+}
+
+.teia-classe.vazia {
+  opacity: 0.5;
+}
+
+.teia-classe .pino {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--cor-classe, var(--texto-suave));
+  box-shadow: 0 0 10px var(--cor-classe, transparent);
+}
+
+.teia-classe-nome {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teia-classe-total {
+  color: var(--texto-suave);
+  font-family: var(--fonte-mono);
+  font-size: 13px;
+}
+
+.teia-mini {
+  display: flex;
+  grid-column: 2 / -1;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.teia-mini > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--cor-status);
+}
+
+.teia-mini .icone-status {
+  width: 12px;
+  height: 12px;
+}
+
+.teia-classe-cabeca {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.teia-classe-cabeca .teia-titulo {
+  margin: 0;
+}
+
+.teia-equip {
+  grid-template-columns: auto 1fr;
+  column-gap: 10px;
+  min-height: 44px;
+}
+
+.teia-equip > .estado {
+  grid-row: span 2;
+}
+
+.teia-equip-nome {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teia-equip-ip {
+  grid-column: 2;
+  color: var(--texto-suave);
+  font-family: var(--fonte-mono);
+  font-size: 12px;
+}
+
+.teia-paginas {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--texto-suave);
+  font-size: 13px;
+}
+
+/* ---------- painel do equipamento ---------- */
+.teia-painel-equip {
+  top: calc(var(--vao) + 60px);
+  right: var(--vao);
+  width: 340px;
+  max-height: calc(100% - var(--vao) * 2 - 60px - 48px);
+  padding: 16px 18px 18px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.teia-equip-cabeca {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.teia-equip-cabeca .teia-titulo {
+  margin: 4px 0 0;
+  font-size: 19px;
+  overflow-wrap: anywhere;
+}
+
+.teia-equip-cabeca .classe .pino {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.teia-ficha {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin: 14px 0 0;
+}
+
+.teia-ficha > div:first-child {
+  grid-column: 1 / -1;
+}
+
+.teia-ficha dt {
+  color: var(--texto-suave);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.teia-ficha dd {
+  margin: 2px 0 0;
+  font-weight: 600;
+}
+
+.teia-ficha .estado {
+  margin-right: 6px;
+}
+
+.mono {
+  font-family: var(--fonte-mono);
+  font-size: 13.5px;
+}
+
+.teia-equip-acoes {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.teia-equip-acoes .botao {
+  flex: 1;
+  min-height: 38px;
+}
+
+.teia-painel-equip .alerta {
+  margin-top: 10px;
+}
+
+.teia-subtitulo {
+  margin: 18px 0 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--borda);
+  color: var(--texto-suave);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.teia-historico {
+  display: grid;
+  gap: 6px;
+}
+
+.teia-historico li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--offline);
+  border-radius: 10px;
+  background: var(--superficie-2);
+  font-size: 13.5px;
+}
+
+.teia-historico .st-offline {
+  display: inline-flex;
+  grid-row: span 2;
+}
+
+.teia-historico time {
+  font-weight: 600;
+}
+
+.teia-hist-volta {
+  grid-column: 2;
+  color: var(--texto-suave);
+  font-size: 12px;
+}
+
+.teia-historico-vazio {
+  margin: 0;
+}
+
+/* ---------- legenda ---------- */
+.teia-legenda {
+  position: absolute;
+  right: var(--vao);
+  bottom: var(--vao);
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 999px;
+  color: var(--texto-suave);
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.teia-legenda li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.teia-legenda .icone-status {
+  width: 12px;
+  height: 12px;
+}
+
+/* ======================= Organograma (aba #organograma) ======================= */
+.teia-aviso-org {
+  margin-top: 20px;
+  border-left-color: var(--instavel);
+}
+
+.org-ferramentas {
+  margin-top: 20px;
+}
+
+.org-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.org-cartoes {
+  display: grid;
+  gap: 14px;
+}
+
+/* um cartão por classe: a cor da classe (já validada #rrggbb no JS) na borda esquerda */
+.org-cartao {
+  min-width: 0;
+  padding: 10px 14px 14px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--cor-classe, var(--borda));
+  border-radius: var(--raio);
+  box-shadow: var(--sombra);
+}
+
+.org-cabeca {
+  margin: 0;
+  font-size: inherit;
+}
+
+.org-alternar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 4px;
+  border: 0;
+  border-radius: var(--raio-p);
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.org-alternar:hover {
+  background: var(--superficie-2);
+}
+
+.org-seta {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: var(--texto-suave);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease;
+}
+
+.org-alternar[aria-expanded="true"] .org-seta {
+  transform: rotate(90deg);
+}
+
+.org-alternar .pino {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--cor-classe, var(--texto-suave));
+}
+
+.org-classe-nome {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.org-total {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.org-contagens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 2px 0 0;
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.org-conta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cor-status);
+}
+
+.org-conta .icone-status {
+  width: 13px;
+  height: 13px;
+}
+
+/* a cor do estado fica no ícone; o número com o texto usa a cor do texto (contraste AA no
+   cartão claro, onde os tons de estado ficam abaixo de 4,5:1 em 13 px) */
+.org-conta > span {
+  color: var(--texto);
+}
+
+.org-grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 168px), 1fr));
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.org-grade li {
+  min-width: 0;
+}
+
+.org-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--superficie);
+  color: var(--texto);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.org-item:hover {
+  border-color: var(--texto-suave);
+  background: var(--superficie-2);
+}
+
+.org-item .estado {
+  flex: none;
+}
+
+.org-nome {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.org-paginas {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--texto-suave);
+  font-size: 14px;
+}
+
+.org-dialogo {
+  max-height: calc(100dvh - 32px);
+  padding: 20px 22px 22px;
+  overflow-y: auto;
+}
+
+.org-dialogo .teia-titulo {
+  margin: 4px 0 0;
+}
+
+@media (max-width: 1024px) {
+  .org-ferramentas .org-acoes {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 767px) {
+  .org-acoes .botao {
+    flex: 1;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+  .org-cartao {
+    padding: 8px 10px 12px;
+  }
+  .org-grade {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .org-item {
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  .org-paginas {
+    justify-content: space-between;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .org-seta,
+  .org-item {
+    transition: none;
+  }
+}
+
+/* ---------- até 1100 px: painéis mais estreitos; estilos à direita, em cima ---------- */
+@media (max-width: 1100px) {
+  .teia {
+    --vao: 12px;
+  }
+  .teia-classes {
+    width: 236px;
+  }
+  .teia-topo {
+    right: var(--vao);
+    left: calc(var(--vao) * 2 + 236px);
+    justify-content: flex-end;
+  }
+  .teia-estilo {
+    padding: 0 10px;
+  }
+  .teia-painel-equip {
+    top: calc(var(--vao) + 108px);
+    width: 320px;
+    max-height: calc(100% - var(--vao) * 2 - 108px - 48px);
+  }
+}
+
+/* ---------- abaixo de 768 px: chips roláveis no painel; equipamento numa folha de baixo ---------- */
+@media (max-width: 767px) {
+  .teia {
+    --vao: 8px;
+    min-height: 360px;
+  }
+  .teia-classes {
+    top: var(--vao);
+    right: var(--vao);
+    left: var(--vao);
+    width: auto;
+    max-height: none;
+    padding: 8px;
+    border-radius: 16px;
+  }
+  .teia-classes-todas .teia-titulo {
+    display: none;
+  }
+  .teia-lista-classes,
+  .teia-equips {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+  .teia-lista-classes li,
+  .teia-equips li {
+    flex: none;
+    scroll-snap-align: start;
+  }
+  .teia-classe,
+  .teia-equip {
+    grid-template-columns: auto auto auto;
+    min-height: 36px;
+    padding: 4px 12px;
+    border-color: var(--borda);
+    border-radius: 999px;
+    background: var(--superficie-2);
+    font-size: 13px;
+  }
+  .teia-equip {
+    grid-template-columns: auto auto;
+  }
+  .teia-mini,
+  .teia-equip-ip {
+    display: none;
+  }
+  .teia-equip > .estado {
+    grid-row: auto;
+  }
+  .teia-classe-cabeca {
+    margin-bottom: 6px;
+  }
+  .teia-classe-cabeca .teia-titulo {
+    font-size: 14px;
+  }
+  .teia-paginas {
+    margin-top: 4px;
+  }
+  .teia-topo {
+    top: auto;
+    right: var(--vao);
+    bottom: var(--vao);
+    left: var(--vao);
+    flex-wrap: nowrap;
+    justify-content: space-between;
+  }
+  .teia-estilos {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .teia-estilo {
+    padding: 0 10px;
+    font-size: 12.5px;
+  }
+  .teia-ver-tudo {
+    flex: none;
+    padding: 0 12px;
+  }
+  .teia-ver-tudo span {
+    display: none;
+  }
+  .teia-painel-equip {
+    top: auto;
+    right: var(--vao);
+    bottom: calc(var(--vao) + 54px);
+    left: var(--vao);
+    width: auto;
+    max-height: 46%;
+  }
+  .teia-legenda {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .teia-classes,
+  .teia-painel-equip {
+    animation: none;
   }
 }
