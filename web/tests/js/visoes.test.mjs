@@ -106,6 +106,17 @@ test("webglDisponivel: true com webgl2 ou webgl; false sem contexto ou com exce�
   assert.equal(webglDisponivel(null), false);
 });
 
+test("webglDisponivel: libera o contexto de teste (WEBGL_lose_context) para não gastar um dos poucos contextos", () => {
+  const perdidos = [];
+  const ctx = { getExtension: (n) => (n === "WEBGL_lose_context" ? { loseContext: () => perdidos.push(n) } : null) };
+  const doc = { createElement: () => ({ getContext: (t) => (t === "webgl2" ? ctx : null) }) };
+  assert.equal(webglDisponivel(doc), true);
+  assert.deepEqual(perdidos, ["WEBGL_lose_context"]);
+  // sem a extensão (ou sem getExtension) continua dizendo que há WebGL
+  const semExt = { createElement: () => ({ getContext: () => ({ getExtension: () => null }) }) };
+  assert.equal(webglDisponivel(semExt), true);
+});
+
 test("carregarTeia: um único import() do bundle (promessa memorizada)", async () => {
   const chamadas = [];
   const importar = (u) => { chamadas.push(u); return Promise.resolve({ montarTeia() {} }); };

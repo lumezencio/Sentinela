@@ -48,7 +48,12 @@ export function salvarEstilo(estilo, armazenamento) {
 export function webglDisponivel(doc = globalThis.document) {
   try {
     const canvas = doc.createElement("canvas");
-    return Boolean(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+    const ctx = canvas.getContext("webgl2") || canvas.getContext("webgl");
+    if (!ctx) return false;
+    // só uma sondagem: devolve o contexto já (o navegador limita quantos ficam vivos)
+    const perder = typeof ctx.getExtension === "function" ? ctx.getExtension("WEBGL_lose_context") : null;
+    if (perder) perder.loseContext();
+    return true;
   } catch {
     return false;
   }
