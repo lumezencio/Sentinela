@@ -365,6 +365,29 @@ def test_teia_abre_e_troca_os_5_estilos_sem_erro(page: Page, alvo: Alvo) -> None
     assert erros == [], erros
 
 
+def test_teia_movimento_reduzido_sem_particulas_nem_rotacao(browser: Browser, alvo: Alvo) -> None:
+    contexto = browser.new_context(
+        reduced_motion="reduce", ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        erros = vigiar_console(page)
+        entrar(page, alvo)
+        palco = abrir_teia(page)
+        expect(palco).to_have_attribute("data-movimento", "reduzido")
+        expect(palco).to_have_attribute("data-nivel", re.compile(r"^(completo|reduzido|agrupado)$"))
+        nivel = palco.get_attribute("data-nivel")
+        nos = int(palco.get_attribute("data-nos") or "0")
+        # coerência nível x nós: agrupado só com super-nós por classe (poucos), completo até 1.000
+        assert (nivel == "agrupado") == (nos < TOTAL_DEMO), (nivel, nos)
+        page.wait_for_timeout(1500)
+        expect(palco).to_have_attribute("data-movimento", "reduzido")
+        assert canvases_da_teia(page) == 1
+        assert erros == [], erros
+    finally:
+        contexto.close()
+
+
 def test_teia_clicar_equipamento_mostra_historico(page: Page, alvo: Alvo) -> None:
     erros = vigiar_console(page)
     entrar(page, alvo)
