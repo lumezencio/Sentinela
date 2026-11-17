@@ -11,7 +11,9 @@ URL local e ``SENTINELA_SMOKE_COMPOSE_LOCAL=1`` (senão o cenário é pulado).
 """
 
 import gzip
+import hashlib
 import re
+from pathlib import Path
 from typing import Any
 
 from playwright.sync_api import Browser, ConsoleMessage, Page, Response, Route, expect
@@ -244,3 +246,15 @@ def test_csv_mostra_total_de_erros(page: Page, alvo: Alvo) -> None:
         page.get_by_text("0 importado(s), 60 linha(s) com erro (mostrando as primeiras 50).")
     ).to_be_visible()
     expect(page.locator(".erros-csv li")).to_have_count(50)
+
+
+VENDOR = Path(__file__).resolve().parents[1] / "src" / "vendor"
+
+
+def test_bundle_teia_confere_sha256() -> None:
+    # o bundle commitado é o mesmo que o .sha256 declara (o Dockerfile confere igual)
+    bundle = (VENDOR / "teia-3d.bundle.js").read_bytes()
+    esperado, nome = (VENDOR / "teia-3d.bundle.js.sha256").read_text(encoding="ascii").split()
+    assert nome == "teia-3d.bundle.js"
+    assert hashlib.sha256(bundle).hexdigest() == esperado
+    assert not list(VENDOR.glob("*.map"))

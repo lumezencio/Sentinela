@@ -35,6 +35,8 @@ build/
 
 # Front
 node_modules/
+# scripts de build do bundle da Teia (o build/ acima é o do Python)
+!web/build/
 web/dist/
 *.map
 
