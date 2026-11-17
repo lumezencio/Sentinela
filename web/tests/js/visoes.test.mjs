@@ -6,7 +6,7 @@ import {
 } from "../../src/js/teia/estilos.js";
 import {
   abaDoHash, CHAVE_ESTILO, carregarTeia, equipamentosDaClasse, ESTILOS, estiloSalvo,
-  fichaDoEquipamento, linhaDeHistorico, NOMES_ESTILO, resumoDasClasses, salvarEstilo,
+  fichaDoEquipamento, formatarDuracao, margensDosPaineis, NOMES_ESTILO, quedasDoHistorico, resumoDasClasses, salvarEstilo,
   URL_BUNDLE_TEIA, webglDisponivel,
 } from "../../src/js/visoes.js";
 
@@ -185,19 +185,68 @@ test("fichaDoEquipamento: nome, classe, IP, checagem, estado, há quanto, latên
   assert.equal(fichaDoEquipamento(store.itens.get("c3"), store, agora).pausado, true);
 });
 
-test("linhaDeHistorico: rótulos de ESTADOS e data pt-BR", () => {
-  const l = linhaDeHistorico({ id: 7, de: "online", para: "offline", em: "2026-11-17T13:05:00+00:00", duracao_s: null, causa: null });
-  assert.equal(l.id, 7);
-  assert.equal(l.de, "Online");
-  assert.equal(l.para, "Offline");
-  assert.equal(l.paraClasse, "st-offline");
-  assert.match(l.data, /^17\/11\/2026,? \d{2}:\d{2}$/);
-  assert.equal(l.dataIso, "2026-11-17T13:05:00+00:00");
-  const estranho = linhaDeHistorico({ id: 8, de: "x<b>", para: "desconhecido", em: "lixo" });
-  assert.equal(estranho.de, "x<b>"); // texto, nunca HTML (vai por x-text)
-  assert.equal(estranho.para, "Aguardando");
-  assert.equal(estranho.paraClasse, "st-desconhecido");
-  assert.equal(estranho.data, "—");
-  // suspeito parece online (§9.2), mas o histórico não mostra "Online → Online"
-  assert.equal(linhaDeHistorico({ id: 9, de: "online", para: "suspeito", em: "x" }).para, "Online (verificando)");
+test("formatarDuracao: s, min, h, d em pt-BR", () => {
+  assert.equal(formatarDuracao(42), "42 s");
+  assert.equal(formatarDuracao(60), "1 min");
+  assert.equal(formatarDuracao(185), "3 min");
+  assert.equal(formatarDuracao(3600 * 2 + 60 * 5), "2 h 5 min");
+  assert.equal(formatarDuracao(3600 * 3), "3 h");
+  assert.equal(formatarDuracao(86400 + 3600 * 2), "1 d 2 h");
+  assert.equal(formatarDuracao(-5), "0 s");
+  assert.equal(formatarDuracao(Number.NaN), "—");
+});
+
+test("quedasDoHistorico (R7): só quedas (para offline), mais recentes primeiro, com a volta", () => {
+  // a API devolve do mais recente para o mais antigo
+  const eventos = [
+    { id: 9, de: "online", para: "offline", em: "2026-11-17T12:00:00Z", duracao_s: 50 },
+    { id: 8, de: "offline", para: "online", em: "2026-11-17T11:10:00Z", duracao_s: 600 },
+    { id: 7, de: "online", para: "offline", em: "2026-11-17T11:00:00Z", duracao_s: 30 },
+    { id: 6, de: "instavel", para: "online", em: "2026-11-17T10:50:00Z" },
+    { id: 5, de: "offline", para: "instavel", em: "2026-11-17T10:40:00Z", duracao_s: null },
+    { id: 4, de: "online", para: "offline", em: "2026-11-17T10:00:00Z" },
+    { id: 3, de: "offline", para: "pausado", em: "2026-11-17T09:30:00Z" },
+    { id: 2, de: "online", para: "offline", em: "2026-11-17T09:00:00Z" },
+    { id: 1, de: "desconhecido", para: "online", em: "2026-11-17T08:00:00Z" },
+  ];
+  const q = quedasDoHistorico(eventos);
+  assert.deepEqual(q.map((x) => x.id), [9, 7, 4, 2]);
+  assert.equal(q[0].volta, "ainda offline");
+  assert.equal(q[1].volta, "voltou após 10 min"); // duracao_s do evento de volta
+  assert.equal(q[2].volta, "voltou após 40 min"); // sem duracao_s: pelas datas
+  assert.equal(q[3].volta, ""); // saiu de offline para pausado: não é volta
+  assert.match(q[0].data, /^17\/11\/2026,? \d{2}:\d{2}$/);
+  assert.equal(q[0].dataIso, "2026-11-17T12:00:00Z");
+  assert.deepEqual(quedasDoHistorico([]), []);
+  assert.deepEqual(quedasDoHistorico(null), []);
+});
+
+test("quedasDoHistorico: no máximo 10", () => {
+  const ev = Array.from({ length: 30 }, (_, i) => ({
+    id: 30 - i, de: i % 2 ? "online" : "offline", para: i % 2 ? "offline" : "online",
+    em: new Date(Date.UTC(2026, 10, 17, 12, 0, 0) - i * 60000).toISOString(),
+  }));
+  assert.equal(quedasDoHistorico(ev).length, 10);
+});
+
+test("margensDosPaineis: painel alto à esquerda/direita, faixa em cima/embaixo", () => {
+  const palco = { left: 0, top: 60, right: 1280, bottom: 800, width: 1280, height: 740 };
+  const m = margensDosPaineis(palco, [
+    { left: 16, top: 76, right: 288, bottom: 600, width: 272, height: 524 }, // classes
+    { left: 924, top: 136, right: 1264, bottom: 560, width: 340, height: 424 }, // equipamento
+    null,
+    { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }, // escondido
+  ]);
+  assert.deepEqual(m, { esquerda: 288, direita: 356, cima: 0, baixo: 0 });
+  const celular = { left: 0, top: 100, right: 360, bottom: 740, width: 360, height: 640 };
+  const c = margensDosPaineis(celular, [
+    { left: 8, top: 108, right: 352, bottom: 160, width: 344, height: 52 }, // chips em cima
+    { left: 8, top: 380, right: 352, bottom: 678, width: 344, height: 298 }, // folha de baixo
+  ]);
+  assert.deepEqual(c, { esquerda: 0, direita: 0, cima: 60, baixo: 360 });
+  // folha de baixo alta (mais da metade da altura) continua sendo faixa de baixo
+  const alta = margensDosPaineis(celular, [
+    { left: 8, top: 300, right: 352, bottom: 690, width: 344, height: 390 },
+  ]);
+  assert.deepEqual(alta, { esquerda: 0, direita: 0, cima: 0, baixo: 440 });
 });

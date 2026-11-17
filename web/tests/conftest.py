@@ -48,6 +48,9 @@ class Alvo:
     login: str
     senha: str
     core: Core
+    # usuário com papel "visualizador" (opcional contra o compose)
+    login_leitor: str = ""
+    senha_leitor: str = ""
 
 
 def _porta_livre() -> int:
@@ -92,7 +95,9 @@ def _certificado(pasta: Path) -> tuple[Path, Path]:
     return arq_chave, arq_cert
 
 
-async def _preparar_banco(banco_url: str, login: str, senha: str) -> None:
+async def _preparar_banco(
+    banco_url: str, login: str, senha: str, leitor: tuple[str, str] | None = None
+) -> None:
     from sentinela.db.base import Base
     from sentinela.db.modelos import Usuario
     from sentinela.db.sessao import criar_motor, fabrica_sessao
@@ -104,6 +109,10 @@ async def _preparar_banco(banco_url: str, login: str, senha: str) -> None:
             await conn.run_sync(Base.metadata.create_all)
         async with fabrica_sessao(motor)() as db:
             db.add(Usuario(login=login, hash_senha=gerar_hash(senha), papel="admin"))
+            if leitor:
+                db.add(
+                    Usuario(login=leitor[0], hash_senha=gerar_hash(leitor[1]), papel="visualizador")
+                )
             await db.commit()
     finally:
         await motor.dispose()
@@ -240,17 +249,22 @@ def alvo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]:
             login=os.environ["SENTINELA_SMOKE_LOGIN"],
             senha=os.environ["SENTINELA_SMOKE_SENHA"],
             core=CoreCompose() if _compose_local_autorizado(url) else CoreIntocavel(),
+            login_leitor=os.environ.get("SENTINELA_SMOKE_LEITOR_LOGIN", ""),
+            senha_leitor=os.environ.get("SENTINELA_SMOKE_LEITOR_SENHA", ""),
         )
         return
     pasta = tmp_path_factory.mktemp("smoke")
     banco_url = f"sqlite+aiosqlite:///{(pasta / 'smoke.db').as_posix()}"
     login, senha = "admin", secrets.token_urlsafe(18)
-    _em_thread(lambda: asyncio.run(_preparar_banco(banco_url, login, senha)))
+    leitor = ("leitor", secrets.token_urlsafe(18))
+    _em_thread(lambda: asyncio.run(_preparar_banco(banco_url, login, senha, leitor)))
     chave, cert = _certificado(pasta)
     servidor = ServidorLocal(banco_url, _porta_livre(), chave, cert)
     servidor.levantar()
     try:
-        yield Alvo(f"https://127.0.0.1:{servidor.porta}", login, senha, servidor)
+        yield Alvo(
+            f"https://127.0.0.1:{servidor.porta}", login, senha, servidor, leitor[0], leitor[1]
+        )
     finally:
         servidor.derrubar()
 

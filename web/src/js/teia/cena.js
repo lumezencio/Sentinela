@@ -3,7 +3,7 @@
 // bloom opcional e degradação automática. Fina por cima de funções puras (estilos.js,
 // aparencia.js, desempenho.js, reconciliar.js); empacotada no vendor/teia-3d.bundle.js.
 import ForceGraph3D from "3d-force-graph";
-import { AmbientLight, Color, FogExp2, PointLight, Vector2 } from "three";
+import { AmbientLight, Color, FogExp2, PointLight, Vector2, Vector3 } from "three";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { aparenciaDe, corDaClasse } from "./aparencia.js";
@@ -11,14 +11,15 @@ import {
   bloomPermitido, criarMedidorFps, decidirNivel, limparAgrupadoPorFps, quedaSustentada,
 } from "./desempenho.js";
 import { calcularPosicoes, ESTILOS, RAIO_CLASSES } from "./estilos.js";
+import { enquadrar, posicaoDoRotulo, raioEnvolvente } from "./enquadramento.js";
 import {
-  atualizarRotulo, brilhoParaComposicaoLinear, criarAcervo, criarEstrelas, criarObjetoClasse,
+  brilhoParaComposicaoLinear, criarAcervo, criarAnelSelecao, criarEstrelas, criarObjetoClasse,
   criarObjetoEquipamento, criarObjetoGrupo, criarObjetoServidor, FUNDO, OPACIDADE_ESMAECIDA,
   TAMANHO, vestirClasse, vestirCorpo,
 } from "./objetos.js";
 import {
-  assinaturas, CLASSE_SERVIDOR, classesDaCena, diferencaNos, posicaoDeAproximacao, raioSuperNo,
-  resumoPorClasse, rotuloAbaixo, textoRotuloClasse,
+  assinaturas, CLASSE_SERVIDOR, classesDaCena, diferencaNos, raioSuperNo, resumoPorClasse,
+  rotuloAbaixo, textoRotuloClasse,
 } from "./reconciliar.js";
 
 const CAMERA_PADRAO = { x: 0, y: 260, z: 520 };
@@ -44,7 +45,9 @@ function rgba(hex, alfa) {
  * conhecidos pela cena, em qualquer nível), data-nivel e data-movimento.
  */
 export function montarTeia(container, opcoes = {}) {
-  const aoClicarEquipamento = opcoes.aoClicarEquipamento || (() => {});
+  const aoClicarEquipamento = opcoes.aoClicarEquipamento || null;
+  // px da cena cobertos por painéis da página: {esquerda, direita, cima, baixo}
+  const margens = typeof opcoes.margens === "function" ? opcoes.margens : () => ({});
   const aoClicarClasse = opcoes.aoClicarClasse || (() => {});
   const reduzido = !!opcoes.movimentoReduzido;
 
@@ -77,6 +80,7 @@ export function montarTeia(container, opcoes = {}) {
   const ligacoes = new Map(); // "a>b" -> link (reutilizado entre sincronizações)
   const animados = new Set(); // nós com pulso/tremor
   let assin = new Map();
+  let selecionado = null; // nó de equipamento com o anel de seleção
 
   // ---------- grafo ----------
   container.classList.add("teia-cena"); // foco visível pelo CSS (componentes.css)
@@ -115,6 +119,15 @@ export function montarTeia(container, opcoes = {}) {
   const info = container.querySelector(".graph-info-msg");
   if (info) info.style.display = "none";
 
+  // rótulos HTML por cima do canvas: fora do bloom e da oclusão das esferas; texto só por
+  // textContent; posição por CSSOM (transform) a cada quadro
+  const camada = document.createElement("div");
+  camada.className = "teia-rotulos";
+  camada.setAttribute("aria-hidden", "true");
+  container.appendChild(camada);
+  const rotulos = new Map(); // id do nó -> {el, span, texto, no, ultimo}
+  const vetor = new Vector3();
+
   const scene = G.scene();
   // fundo como scene.background (não só clear color): com o EffectComposer do bloom o clear
   // color sai convertido duas vezes (cinza); o background é limpo no espaço de cor do alvo
@@ -124,6 +137,8 @@ export function montarTeia(container, opcoes = {}) {
   G.lights([new AmbientLight(0xffffff, 0.35), luzServidor]);
   const estrelas = criarEstrelas(1500);
   scene.add(estrelas);
+  const anelSelecao = criarAnelSelecao(acervo);
+  scene.add(anelSelecao);
 
   const controles = G.controls();
   controles.minDistance = 60; // não atravessar o servidor
@@ -147,15 +162,11 @@ export function montarTeia(container, opcoes = {}) {
   function objetoDe(no) {
     if (no.tipo === "servidor") return criarObjetoServidor(acervo);
     if (no.tipo === "classe") {
-      return criarObjetoClasse(acervo, {
-        cor: no.cor, texto: textoRotuloClasse(no.nome, no.total), esmaecido: esmaecidoClasse(no.slug),
-        abaixo: rotuloAbaixo(no.ordem),
-      });
+      return criarObjetoClasse(acervo, { cor: no.cor, esmaecido: esmaecidoClasse(no.slug) });
     }
     if (no.tipo === "grupo") {
       const obj = criarObjetoGrupo(acervo, {
-        raio: raioSuperNo(no.total), estado: no.estado, texto: textoRotuloClasse(no.nome, no.total),
-        corClasse: no.cor, esmaecido: esmaecidoClasse(no.slug), abaixo: rotuloAbaixo(no.ordem),
+        raio: raioSuperNo(no.total), estado: no.estado, esmaecido: esmaecidoClasse(no.slug),
       });
       registrarAnimacao(no, obj);
       return obj;
@@ -178,10 +189,8 @@ export function montarTeia(container, opcoes = {}) {
     if (!obj) return; // ainda não criado: objetoDe já usa o estado atual
     if (no.tipo === "classe") {
       vestirClasse(obj, acervo, no.cor, esmaecidoClasse(no.slug));
-      atualizarRotulo(obj.userData.rotulo, textoRotuloClasse(no.nome, no.total), no.cor);
     } else if (no.tipo === "grupo") {
       vestirCorpo(obj, acervo, no.estado, esmaecidoClasse(no.slug));
-      atualizarRotulo(obj.userData.rotulo, textoRotuloClasse(no.nome, no.total), no.cor);
       registrarAnimacao(no, obj);
     } else if (no.tipo === "equip") {
       vestirCorpo(obj, acervo, no.estado, esmaecidoClasse(no.classe));
@@ -389,6 +398,79 @@ export function montarTeia(container, opcoes = {}) {
     }
     for (const chave of [...ligacoes.keys()]) if (!usadas.has(chave)) ligacoes.delete(chave);
     G.graphData({ nodes, links });
+    if (selecionado) selecionado = nos.get(selecionado.id) || null;
+    sincronizarRotulos();
+  }
+
+  // ---------- rótulos HTML ----------
+  function sincronizarRotulos() {
+    const alvos = [srv, ...(est.nivel === "agrupado" ? grupos.values() : hubs.values())];
+    const vistos = new Set();
+    for (const no of alvos) {
+      vistos.add(no.id);
+      const texto = no === srv ? "SENTINELA" : textoRotuloClasse(no.nome, no.total);
+      let r = rotulos.get(no.id);
+      if (!r) {
+        const el = document.createElement("div");
+        el.className = "teia-rotulo";
+        const span = document.createElement("span");
+        el.appendChild(span);
+        el.hidden = true;
+        camada.appendChild(el);
+        r = { el, span, texto: null, ultimo: "" };
+        rotulos.set(no.id, r);
+      }
+      r.no = no;
+      if (r.texto !== texto) {
+        r.span.textContent = texto;
+        r.texto = texto;
+      }
+      r.el.classList.toggle("servidor", no === srv);
+      r.el.classList.toggle("abaixo", no !== srv && rotuloAbaixo(no.ordem));
+      r.el.classList.toggle("esmaecido", no !== srv && esmaecidoClasse(no.slug));
+      if (no.cor) r.el.style.setProperty("--cor-classe", no.cor);
+    }
+    for (const [id, r] of [...rotulos]) {
+      if (!vistos.has(id)) {
+        r.el.remove();
+        rotulos.delete(id);
+      }
+    }
+  }
+
+  function atualizarRotulos() {
+    const camera = G.camera();
+    const largura = G.width(), altura = G.height();
+    for (const r of rotulos.values()) {
+      const p = posicaoDe(r.no);
+      vetor.set(p.x, p.y, p.z);
+      const distancia = vetor.distanceTo(camera.position);
+      vetor.project(camera);
+      const pos = posicaoDoRotulo({ ndc: vetor, distancia, largura, altura });
+      if (!pos.visivel) {
+        if (!r.el.hidden) r.el.hidden = true;
+        continue;
+      }
+      if (r.el.hidden) r.el.hidden = false;
+      const chave = `${pos.x},${pos.y},${pos.escala}`;
+      if (chave === r.ultimo) continue;
+      r.ultimo = chave;
+      r.el.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`;
+      r.el.style.setProperty("--escala", String(pos.escala));
+    }
+  }
+
+  function atualizarAnel(t) {
+    const no = selecionado;
+    if (!no || est.nivel === "agrupado") {
+      anelSelecao.visible = false;
+      return;
+    }
+    const p = posicaoDe(no);
+    anelSelecao.position.set(p.x, p.y, p.z);
+    const s = TAMANHO.haloEquipamento * (reduzido ? 0.95 : 0.9 + 0.12 * Math.sin(t * 4));
+    anelSelecao.scale.set(s, s, 1);
+    anelSelecao.visible = true;
   }
 
   function atualizarAtributos() {
@@ -472,9 +554,20 @@ export function montarTeia(container, opcoes = {}) {
     return { x: no.fx ?? no.x ?? 0, y: no.fy ?? no.y ?? 0, z: no.fz ?? no.z ?? 0 };
   }
 
-  function aproximar(no, distancia) {
-    const p = posicaoDe(no);
-    G.cameraPosition(posicaoDeAproximacao(p, distancia) ?? CAMERA_PADRAO, p, reduzido ? 0 : CAMERA_MS);
+  /** Enquadra `alvo` (raio R) vindo de `de`, com o centro na área livre dos painéis. */
+  function enquadrarAlvo(alvo, de, raio) {
+    const camera = G.camera();
+    const e = enquadrar({
+      alvo, de, raio, fov: camera.fov || 50, largura: G.width(), altura: G.height(),
+      margens: margens() || {},
+    });
+    G.cameraPosition(e.camera, e.olhar, reduzido ? 0 : CAMERA_MS);
+  }
+
+  function raioDaClasse(slug, centro) {
+    const pts = [];
+    for (const no of nos.values()) if (no.classe === slug) pts.push(posicaoDe(no));
+    return raioEnvolvente(centro, pts, TAMANHO.haloEquipamento / 2, 40);
   }
 
   function girar(ligado) {
@@ -484,11 +577,12 @@ export function montarTeia(container, opcoes = {}) {
 
   function clicar(no) {
     if (no.tipo === "equip") {
-      focarEquipamento(no.id);
-      aoClicarEquipamento(no.id);
+      // com página: ela abre o painel e chama focarEquipamento já com a margem do painel
+      if (aoClicarEquipamento) aoClicarEquipamento(no.id);
+      else focarEquipamento(no.id);
     } else if (no.tipo === "classe" || no.tipo === "grupo") {
       aoClicarClasse(no.slug);
-    } else if (no.tipo === "servidor" && est.store) {
+    } else if (no.tipo === "servidor" && est.store && aoClicarEquipamento) {
       for (const it of est.store.itens.values()) {
         if (it.classe === CLASSE_SERVIDOR) {
           aoClicarEquipamento(it.id);
@@ -503,19 +597,36 @@ export function montarTeia(container, opcoes = {}) {
     for (const g of grupos.values()) revestir(g);
     for (const no of nos.values()) revestir(no);
     aplicarAcessoriosDeLink();
+    sincronizarRotulos();
   }
 
   function focarClasse(slug) {
     if (est.destruido) return;
     est.foco = slug ?? null;
+    if (selecionado && selecionado.classe !== est.foco) selecionado = null;
     reaplicarEsmaecimento();
     if (est.foco === null) {
       girar(true);
       return;
     }
     girar(false);
-    const alvo = est.nivel === "agrupado" ? grupos.get(est.foco) : hubs.get(est.foco);
-    if (alvo) aproximar(alvo, 200);
+    enquadrarClasse();
+  }
+
+  function enquadrarClasse() {
+    const agrupado = est.nivel === "agrupado";
+    const alvo = agrupado ? grupos.get(est.foco) : hubs.get(est.foco);
+    if (!alvo) return;
+    const centro = posicaoDe(alvo);
+    const raio = agrupado ? raioSuperNo(alvo.total) * 2 + 30 : raioDaClasse(est.foco, centro);
+    enquadrarAlvo(centro, posicaoDe(srv), raio);
+  }
+
+  /** Refaz o enquadramento atual (fim da transição de estilo, painel aberto/fechado). */
+  function reenquadrar() {
+    if (est.destruido) return;
+    if (selecionado) focarEquipamento(selecionado.id);
+    else if (est.foco) enquadrarClasse();
   }
 
   /**
@@ -533,7 +644,16 @@ export function montarTeia(container, opcoes = {}) {
     const no = nos.get(id);
     if (!no) return;
     girar(false);
-    aproximar(no, 160);
+    selecionado = no;
+    // hub fora do eixo; enquadra a vizinhança (parte da classe), não só a esfera
+    const h = hubs.get(no.classe);
+    const raio = h ? Math.max(36, 0.55 * raioDaClasse(no.classe, posicaoDe(h))) : 36;
+    enquadrarAlvo(posicaoDe(no), h ? posicaoDe(h) : posicaoDe(srv), raio);
+  }
+
+  /** Tira o anel de seleção (painel do equipamento fechado). */
+  function limparSelecao() {
+    selecionado = null;
   }
 
   // Pedido explícito do usuário: devolve a vista completa se o FPS a tinha agrupado.
@@ -553,6 +673,7 @@ export function montarTeia(container, opcoes = {}) {
   function verTudo() {
     if (est.destruido) return;
     liberarAgrupadoPorFps();
+    selecionado = null;
     if (est.foco !== null) {
       est.foco = null;
       reaplicarEsmaecimento();
@@ -573,9 +694,8 @@ export function montarTeia(container, opcoes = {}) {
       aplicarAcessoriosDeLink();
       G.d3ReheatSimulation();
     }
-    const alvo = est.foco && (est.nivel === "agrupado" ? grupos.get(est.foco) : hubs.get(est.foco));
-    if (!alvo) cameraGeral();
-    else if (!est.transicao) aproximar(alvo, 200); // com transição: foca ao terminar
+    if (!est.foco && !selecionado) cameraGeral();
+    else if (!est.transicao) reenquadrar(); // com transição: enquadra ao terminar
   }
 
   // ---------- bloom ----------
@@ -640,12 +760,14 @@ export function montarTeia(container, opcoes = {}) {
       }
       if (k >= 1) {
         est.transicao = null;
-        if (est.foco) focarClasse(est.foco);
+        reenquadrar();
       }
     }
 
-    if (reduzido) return;
     const t = agora / 1000;
+    atualizarAnel(t);
+    atualizarRotulos();
+    if (reduzido) return;
     const aneis = srv.__threeObj?.userData.aneis;
     if (aneis) {
       aneis[0].rotation.x = t * 0.5;
@@ -753,6 +875,8 @@ export function montarTeia(container, opcoes = {}) {
     renderer.forceContextLoss();
     if (window.scene === scene) delete window.scene; // three-render-objects expõe a cena em window
     animados.clear();
+    rotulos.clear();
+    selecionado = null;
     nos.clear(); hubs.clear(); grupos.clear(); ligacoes.clear();
     container.replaceChildren();
     container.style.cursor = "";
@@ -772,6 +896,8 @@ export function montarTeia(container, opcoes = {}) {
     definirEstilo,
     focarClasse,
     focarEquipamento,
+    limparSelecao,
+    reenquadrar,
     verTudo,
     pausar,
     retomar,

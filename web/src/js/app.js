@@ -85,6 +85,7 @@ function painel() {
       }
       this.usuario = eu.dados.login;
       this.admin = eu.dados.papel === "admin";
+      this.liberarTeia(); // só agora a Teia monta (e o bundle é pedido)
       conexao = criarConexao({
         aoMensagem: (msg) => this.receber(msg),
         aoMudarEstado: (estado) => {

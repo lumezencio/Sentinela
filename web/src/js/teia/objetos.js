@@ -11,7 +11,6 @@ import {
 import { aparenciaDe } from "./aparencia.js";
 
 export const FUNDO = "#0e1016";
-const TEXTO = "#E8EBF2";
 const PRIMARIA = "#8793E8";
 const ACENTO = "#68C7BC";
 const NUCLEO = "#dfe4ff";
@@ -124,40 +123,18 @@ function texMarca(acervo, forma) {
   });
 }
 
-// ---------- rótulos (texto do servidor só como textura de canvas, nunca HTML) ----------
-function desenharRotulo(canvas, texto, cor) {
-  const g = canvas.getContext("2d");
-  g.clearRect(0, 0, canvas.width, canvas.height);
-  let px = 44;
-  const fonte = (p) => `600 ${p}px "Segoe UI", system-ui, sans-serif`;
-  g.font = fonte(px);
-  while (px > 18 && g.measureText(texto).width > canvas.width - 24) g.font = fonte(--px);
-  g.textAlign = "center";
-  g.textBaseline = "middle";
-  g.shadowColor = cor;
-  g.shadowBlur = 18;
-  g.fillStyle = TEXTO;
-  g.fillText(texto, canvas.width / 2, canvas.height / 2);
-}
-
-/** Sprite de texto com textura própria (descartada junto com o nó). */
-export function criarRotulo(texto, cor) {
-  const canvas = novoCanvas(512, 96);
-  desenharRotulo(canvas, texto, cor);
-  const s = new Sprite(new SpriteMaterial({ map: textura(canvas), transparent: true, depthWrite: false }));
-  s.scale.set(64, 12, 1);
+// ---------- seleção ----------
+/** Anel pulsante em volta do equipamento selecionado (posição/escala definidas na cena). */
+export function criarAnelSelecao(acervo) {
+  const mat = acervo.obter("mat:selecao", () => new SpriteMaterial({
+    map: texMarca(acervo, "anel"), color: ACENTO, transparent: true, depthTest: false,
+    depthWrite: false,
+  }));
+  const s = new Sprite(mat);
   s.raycast = naoRaycast;
-  s.userData = { canvas, texto, cor };
+  s.renderOrder = 10;
+  s.visible = false;
   return s;
-}
-
-export function atualizarRotulo(sprite, texto, cor) {
-  const u = sprite.userData;
-  if (u.texto === texto && u.cor === cor) return;
-  desenharRotulo(u.canvas, texto, cor);
-  u.texto = texto;
-  u.cor = cor;
-  sprite.material.map.needsUpdate = true;
 }
 
 // ---------- materiais comuns ----------
@@ -238,28 +215,22 @@ export function criarObjetoEquipamento(acervo, estado, { esmaecido = false, reso
 
 /** Super-nó do nível "agrupado": tamanho pela contagem, cor/marca pelo pior estado. */
 export function criarObjetoGrupo(acervo, opcoes) {
-  const { raio, estado, texto, corClasse, esmaecido = false, abaixo = false } = opcoes;
+  const { raio, estado, esmaecido = false } = opcoes;
   const g = criarCorpo(acervo, raio / TAMANHO.equipamento, 24);
   vestirCorpo(g, acervo, estado, esmaecido);
-  const rot = criarRotulo(texto, corClasse);
-  rot.position.y = abaixo ? -(raio + 8) : raio + 8;
-  g.add(rot);
-  g.userData.rotulo = rot;
   return g;
 }
 
 // ---------- classe ----------
-/** `abaixo`: rótulo sob o hub (vagas ímpares, ver rotuloAbaixo) para não colidir com o vizinho. */
-export function criarObjetoClasse(acervo, { cor, texto, esmaecido = false, abaixo = false }) {
+/** O rótulo da classe é HTML sobre a cena (cena.js), fora do bloom. */
+export function criarObjetoClasse(acervo, { cor, esmaecido = false }) {
   const g = new Group();
   const halo = new Sprite();
   halo.raycast = naoRaycast; // o halo grande não rouba o clique dos equipamentos perto
   halo.scale.set(TAMANHO.haloClasse, TAMANHO.haloClasse, 1);
   const esfera = new Mesh(geoEsfera(acervo, TAMANHO.classe, 32));
-  const rot = criarRotulo(texto, cor);
-  rot.position.y = abaixo ? -14 : 14;
-  g.add(halo, esfera, rot);
-  g.userData = { halo, esfera, rotulo: rot };
+  g.add(halo, esfera);
+  g.userData = { halo, esfera };
   vestirClasse(g, acervo, cor, esmaecido);
   return g;
 }
@@ -268,7 +239,6 @@ export function vestirClasse(grupo, acervo, cor, esmaecido) {
   const u = grupo.userData;
   u.esfera.material = matSolido(acervo, cor, 1, esmaecido);
   u.halo.material = matHalo(acervo, cor, 0.9, esmaecido);
-  u.rotulo.material.opacity = esmaecido ? OPACIDADE_ESMAECIDA * 2 : 1;
 }
 
 // ---------- servidor ----------
@@ -291,9 +261,7 @@ export function criarObjetoServidor(acervo) {
   anel2.scale.setScalar(1.35);
   anel.raycast = naoRaycast;
   anel2.raycast = naoRaycast;
-  const rot = criarRotulo("SENTINELA", PRIMARIA);
-  rot.position.y = -34;
-  g.add(halo, nucleo, anel, anel2, rot);
+  g.add(halo, nucleo, anel, anel2);
   g.userData = { aneis: [anel, anel2] };
   return g;
 }

@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 from playwright.sync_api import Browser, ConsoleMessage, Page, Response, Route, expect
 
 from conftest import Alvo
@@ -27,10 +28,10 @@ POR_PAGINA = 50
 TIPOS_PRIMEIRA_TELA = ("document", "script", "stylesheet", "image", "fetch", "font")
 
 
-def entrar(page: Page, alvo: Alvo) -> None:
+def entrar(page: Page, alvo: Alvo, login: str = "", senha: str = "") -> None:
     page.goto("/login.html")
-    page.get_by_label("Login").fill(alvo.login)
-    page.get_by_label("Senha").fill(alvo.senha)
+    page.get_by_label("Login").fill(login or alvo.login)
+    page.get_by_label("Senha").fill(senha or alvo.senha)
     page.get_by_role("button", name="Entrar").click()
     page.wait_for_url("**/index.html")
     expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
@@ -461,3 +462,56 @@ def test_sem_webgl_abre_organograma(
         assert not [u for u in pedidos if BUNDLE_TEIA in u], pedidos
     finally:
         navegador.close()
+
+
+def test_visualizador_nao_ve_pausar_no_painel(page: Page, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    abrir_teia(page)
+    page.locator("#teia-classes").get_by_role("button", name=re.compile(r"^Gravadores")).click()
+    page.locator("#teia-classes ul.teia-equips").get_by_role("button").first.click()
+    painel = page.locator("#painel-equipamento")
+    expect(painel.get_by_role("heading", name="Últimas quedas")).to_be_visible()
+    expect(painel.get_by_role("button", name=re.compile("^(Pausar|Retomar)$"))).to_be_hidden()
+
+
+def test_historico_atrasado_de_outro_equipamento_nao_sobrescreve(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    retidas: list[Route] = []
+
+    def eventos(route: Route) -> None:
+        if not retidas:
+            retidas.append(route)  # 1º equipamento (A): resposta segurada
+        else:
+            route.continue_()
+
+    page.route("**/api/v1/equipamentos/*/eventos*", eventos)
+    abrir_teia(page)
+    page.locator("#teia-classes").get_by_role("button", name=re.compile(r"^Gravadores")).click()
+    botoes = page.locator("#teia-classes ul.teia-equips").get_by_role("button")
+    botoes.nth(0).click()
+    for _ in range(50):  # o pedido de A chega e fica segurado
+        if retidas:
+            break
+        page.wait_for_timeout(100)
+    assert len(retidas) == 1
+    nome_b = botoes.nth(1).locator(".teia-equip-nome").inner_text()
+    botoes.nth(1).click()
+    painel = page.locator("#painel-equipamento")
+    expect(painel.get_by_role("heading", level=2)).to_have_text(nome_b)
+    visivel = painel.locator(".teia-historico li:visible, .teia-historico-vazio:visible")
+    expect(visivel.first).to_be_visible(timeout=10_000)
+    antes = painel.locator(".teia-historico").inner_text()
+    # agora a resposta de A chega, atrasada, com uma queda inconfundível
+    assert len(retidas) == 1
+    retidas[0].fulfill(
+        status=200,
+        content_type="application/json",
+        body='[{"id": 999999, "de": "online", "para": "offline",'
+        ' "em": "2001-01-01T00:00:00+00:00", "duracao_s": null, "causa": null}]',
+    )
+    page.wait_for_timeout(500)
+    expect(painel.get_by_role("heading", level=2)).to_have_text(nome_b)
+    assert "2001" not in painel.locator(".teia-historico").inner_text()
+    assert painel.locator(".teia-historico").inner_text() == antes

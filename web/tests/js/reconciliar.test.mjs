@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  CLASSE_SERVIDOR, assinaturas, classesDaCena, diferencaNos, piorEstado, posicaoDeAproximacao,
+  CLASSE_SERVIDOR, assinaturas, classesDaCena, diferencaNos, piorEstado,
   raioSuperNo, resumoPorClasse, rotuloAbaixo, textoRotuloClasse,
 } from "../../src/js/teia/reconciliar.js";
 
@@ -103,12 +103,4 @@ test("rotuloAbaixo: vaga par (hub elevado) acima, ímpar abaixo; segue ordem % 1
   assert.equal(rotuloAbaixo(13), true);
   assert.equal(rotuloAbaixo(-1), true);
   assert.equal(rotuloAbaixo(undefined), false);
-});
-
-test("posicaoDeAproximacao: ao longo do raio a partir do centro, 60 acima; centro -> null", () => {
-  assert.equal(posicaoDeAproximacao({ x: 0, y: 0, z: 0.2 }, 160), null);
-  const c = posicaoDeAproximacao({ x: 100, y: 0, z: 0 }, 160);
-  assert.deepEqual(c, { x: 260, y: 60, z: 0 });
-  const d = posicaoDeAproximacao({ x: 30, y: 40, z: 0 }, 50); // |p| = 50 -> k = 2
-  assert.deepEqual(d, { x: 60, y: 140, z: 0 });
 });

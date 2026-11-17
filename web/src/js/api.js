@@ -77,7 +77,7 @@ export const api = {
   eu: () => requisitar("GET", "/auth/eu"),
   criarEquipamento: (dados) => requisitar("POST", "/equipamentos", { json: dados }),
   eventosEquipamento: (id) =>
-    requisitar("GET", `/equipamentos/${encodeURIComponent(id)}/eventos?limit=10`),
+    requisitar("GET", `/equipamentos/${encodeURIComponent(id)}/eventos?limit=50`),
   pausarEquipamento: (id) => requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/pausar`),
   retomarEquipamento: (id) =>
     requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/retomar`),

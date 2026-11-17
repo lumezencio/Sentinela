@@ -167,22 +167,74 @@ export function fichaDoEquipamento(item, store, agora = Date.now()) {
 }
 
 const formatoData = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
+const VOLTAS = new Set(["online", "suspeito", "instavel"]);
+export const MAX_QUEDAS = 10;
 
-function rotuloEstado(estado) {
-  const est = ESTADOS[estado];
-  if (!est) return String(estado ?? "—");
-  return est.dica ? `${est.rotulo} (${est.dica})` : est.rotulo;
+/** "42 s", "3 min", "2 h 5 min", "1 d 2 h". */
+export function formatarDuracao(segundos) {
+  const n = Number(segundos);
+  if (!Number.isFinite(n)) return "—";
+  const s = Math.max(0, Math.round(n));
+  if (s < 60) return `${s} s`;
+  const min = Math.round(s / 60);
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60), m = min % 60;
+  if (h < 24) return m ? `${h} h ${m} min` : `${h} h`;
+  const d = Math.floor(h / 24), hr = h % 24;
+  return hr ? `${d} d ${hr} h` : `${d} d`;
 }
 
-/** Linha do histórico ("de → para" e data pt-BR) a partir de um EventoSaida da API. */
-export function linhaDeHistorico(evento) {
-  const t = Date.parse(evento.em);
-  return {
-    id: evento.id,
-    de: rotuloEstado(evento.de),
-    para: rotuloEstado(evento.para),
-    paraClasse: `st-${chaveEstado(evento.para)}`,
-    data: Number.isNaN(t) ? "—" : formatoData.format(t),
-    dataIso: String(evento.em ?? ""),
-  };
+/**
+ * R7: só as quedas (para "offline"), das mais recentes para as mais antigas (a API já
+ * devolve assim), até 10, cada uma com a data e, se o evento seguinte foi a volta,
+ * "voltou após <duração>" (duracao_s do evento de volta ou diferença das datas).
+ */
+export function quedasDoHistorico(eventos) {
+  if (!Array.isArray(eventos)) return [];
+  const quedas = [];
+  for (let i = 0; i < eventos.length && quedas.length < MAX_QUEDAS; i++) {
+    const ev = eventos[i];
+    if (!ev || ev.para !== "offline") continue;
+    const t = Date.parse(ev.em);
+    let volta = "";
+    const seguinte = i > 0 ? eventos[i - 1] : null;
+    if (!seguinte) {
+      volta = "ainda offline";
+    } else if (VOLTAS.has(seguinte.para)) {
+      const dur = Number.isFinite(seguinte.duracao_s)
+        ? seguinte.duracao_s
+        : (Date.parse(seguinte.em) - t) / 1000;
+      volta = `voltou após ${formatarDuracao(dur)}`;
+    }
+    quedas.push({
+      id: ev.id,
+      data: Number.isNaN(t) ? "—" : formatoData.format(t),
+      dataIso: String(ev.em ?? ""),
+      volta,
+    });
+  }
+  return quedas;
+}
+
+/**
+ * Quanto da área da cena (px) os painéis cobrem: painel mais alto que largo (em proporção
+ * da cena) → lado (esquerda/direita); mais largo → faixa em cima/embaixo. Caixas como as de getBoundingClientRect; vazias ignoradas.
+ */
+export function margensDosPaineis(palco, caixas) {
+  const m = { esquerda: 0, direita: 0, cima: 0, baixo: 0 };
+  const cx = palco.left + palco.width / 2, cy = palco.top + palco.height / 2;
+  for (const c of caixas || []) {
+    if (!c || !(c.width > 0) || !(c.height > 0)) continue;
+    // faixa (cima/baixo) se cobre proporcionalmente mais largura que altura; senão, lado
+    const faixa = c.width / palco.width > c.height / palco.height;
+    if (faixa) {
+      if (c.top + c.height / 2 < cy) m.cima = Math.max(m.cima, Math.round(c.bottom - palco.top));
+      else m.baixo = Math.max(m.baixo, Math.round(palco.bottom - c.top));
+    } else if (c.left + c.width / 2 < cx) {
+      m.esquerda = Math.max(m.esquerda, Math.round(c.right - palco.left));
+    } else {
+      m.direita = Math.max(m.direita, Math.round(palco.right - c.left));
+    }
+  }
+  return m;
 }

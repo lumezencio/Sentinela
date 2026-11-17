@@ -51,9 +51,24 @@ test("acervo: super-nós de qualquer tamanho reutilizam a mesma geometria (escal
     const g2 = criarObjetoGrupo(acervo, { raio: 22, estado: "offline", texto: "B · 900", corClasse: "#8793E8" });
     assert.equal(g1.userData.esfera.geometry, g2.userData.esfera.geometry);
     assert.ok(g2.userData.esfera.scale.x > g1.userData.esfera.scale.x);
-    const g3 = criarObjetoGrupo(acervo, { raio: 9, estado: "online", texto: "C · 3", corClasse: "#8793E8", abaixo: true });
-    assert.ok(g3.userData.rotulo.position.y < 0);
-    assert.ok(g1.userData.rotulo.position.y > 0);
+    // rótulos agora são HTML sobre a cena (fora do bloom): nada de sprite de texto no nó
+    assert.equal(g1.userData.rotulo, undefined);
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test("anel de seleção: sprite compartilhado, sem raycast, por cima (sem depthTest)", async () => {
+  const { criarAnelSelecao } = await import("../../src/js/teia/objetos.js");
+  const ctx = new Proxy({}, { get: () => () => ({ addColorStop() {} }) });
+  globalThis.document = { createElement: () => ({ getContext: () => ctx, width: 0, height: 0 }) };
+  try {
+    const acervo = criarAcervo();
+    const a = criarAnelSelecao(acervo), b = criarAnelSelecao(acervo);
+    assert.equal(a.material, b.material);
+    assert.equal(a.material.depthTest, false);
+    assert.equal(a.visible, false);
+    assert.equal(a.raycast(), undefined);
   } finally {
     delete globalThis.document;
   }

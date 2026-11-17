@@ -5,12 +5,14 @@
 import { api } from "./api.js";
 import {
   abaDoHash, carregarTeia, equipamentosDaClasse, ESTILOS, estiloSalvo, fichaDoEquipamento,
-  linhaDeHistorico, NOMES_ESTILO, resumoDasClasses, salvarEstilo, webglDisponivel,
+  margensDosPaineis, NOMES_ESTILO, quedasDoHistorico, resumoDasClasses, salvarEstilo,
+  webglDisponivel,
 } from "./visoes.js";
 
 const AVISO_SEM_3D = "Seu navegador não tem 3D; mostrando o Organograma.";
 const MSG_HISTORICO = "Não foi possível carregar o histórico.";
 const MSG_CARGA = "Não foi possível abrir a Teia. Tente de novo.";
+const MSG_PAUSA = "Não foi possível pausar/retomar.";
 const TITULOS = { lista: "Lista", teia: "Teia", organograma: "Organograma" };
 
 const FICHA_VAZIA = {
@@ -30,6 +32,7 @@ export function visoesDoPainel(store) {
   let webgl = null; // detecção memorizada
   let pedidoHistorico = 0; // descarta respostas de um equipamento anterior
   let focoAntesDoPainel = null;
+  let autenticado = false; // a Teia (e o pedido do bundle) só depois do /auth/eu
 
   return {
     aba: abaDoHash(window.location.hash),
@@ -51,6 +54,7 @@ export function visoesDoPainel(store) {
     historicoCarregando: false,
     historicoErro: "",
     acaoErro: "",
+    pausando: false,
 
     // ---------- abas ----------
     iniciarVisoes() {
@@ -61,6 +65,12 @@ export function visoesDoPainel(store) {
         else if (this.aba === "teia") controle.retomar();
       });
       this.aplicarRota();
+    },
+
+    /** Chamado pelo app.js quando /auth/eu respondeu: a Teia pode montar. */
+    liberarTeia() {
+      autenticado = true;
+      if (this.aba === "teia") this.entrarNaTeia();
     },
 
     aplicarRota() {
@@ -74,7 +84,7 @@ export function visoesDoPainel(store) {
       document.documentElement.dataset.aba = nova;
       document.title = `Sentinela · ${TITULOS[nova]}`;
       if (nova === "teia") {
-        this.entrarNaTeia();
+        if (autenticado) this.entrarNaTeia();
       } else {
         if (controle) controle.pausar();
         this.agendarRender();
@@ -135,8 +145,9 @@ export function visoesDoPainel(store) {
         controle = modulo.montarTeia(this.$refs.palcoTeia, {
           estilo: this.estilo,
           movimentoReduzido: movimentoReduzido(),
-          aoClicarEquipamento: (id) => this.abrirEquipamento(id, false),
+          aoClicarEquipamento: (id) => this.abrirEquipamento(id),
           aoClicarClasse: (slug) => this.focarClasse(slug),
+          margens: () => this.margensDaCena(),
         });
       } catch {
         controle = null;
@@ -148,6 +159,20 @@ export function visoesDoPainel(store) {
       if (this.carregado) controle.sincronizar(store);
       if (this.classeFocada) controle.focarClasse(this.classeFocada);
       if (this.aba !== "teia" || document.hidden) controle.pausar();
+    },
+
+    /** px da cena cobertos pelo painel de classes e pelo do equipamento (se aberto). */
+    margensDaCena() {
+      const palco = this.$refs.palcoTeia;
+      if (!palco) return {};
+      const caixa = (id) => {
+        const el = document.getElementById(id);
+        return el && !el.hidden ? el.getBoundingClientRect() : null;
+      };
+      return margensDosPaineis(palco.getBoundingClientRect(), [
+        caixa("teia-classes"),
+        this.equipAberto ? caixa("painel-equipamento") : null,
+      ]);
     },
 
     tentarTeiaDeNovo() {
@@ -264,16 +289,19 @@ export function visoesDoPainel(store) {
     },
 
     // ---------- painel do equipamento ----------
-    abrirEquipamento(id, centralizar) {
+    abrirEquipamento(id) {
       const it = store.itens.get(id);
       if (!it) return;
       if (!this.equipAberto) focoAntesDoPainel = document.activeElement;
       this.equip = fichaDoEquipamento(it, store);
       this.equipAberto = true;
       this.acaoErro = "";
-      if (centralizar && controle) controle.focarEquipamento(id);
       this.carregarHistorico(id, false);
-      this.$nextTick(() => this.$refs.tituloEquip && this.$refs.tituloEquip.focus());
+      this.$nextTick(() => {
+        // painel já desenhado: a câmera desconta a largura dele (ou a folha de baixo)
+        if (controle && this.equipAberto && this.equip.id === id) controle.focarEquipamento(id);
+        if (this.$refs.tituloEquip) this.$refs.tituloEquip.focus();
+      });
     },
 
     fecharEquipamento(devolverFoco = true) {
@@ -286,6 +314,10 @@ export function visoesDoPainel(store) {
       this.acaoErro = "";
       const voltar = focoAntesDoPainel;
       focoAntesDoPainel = null;
+      if (controle) {
+        controle.limparSelecao();
+        if (devolverFoco) this.$nextTick(() => controle && controle.reenquadrar());
+      }
       if (devolverFoco && voltar && voltar.isConnected && typeof voltar.focus === "function") {
         voltar.focus();
       }
@@ -302,11 +334,12 @@ export function visoesDoPainel(store) {
       if (pedido !== pedidoHistorico) return; // outro equipamento já foi aberto
       this.historicoCarregando = false;
       if (!r.ok || !Array.isArray(r.dados)) {
+        if (silencioso) return; // recarga em segundo plano: mantém a lista mostrada
         this.historico = [];
         this.historicoErro = MSG_HISTORICO;
         return;
       }
-      this.historico = r.dados.map(linhaDeHistorico);
+      this.historico = quedasDoHistorico(r.dados);
     },
 
     equipAtual(id) {
@@ -320,27 +353,29 @@ export function visoesDoPainel(store) {
     },
 
     async alternarPausa() {
-      if (!this.admin || !this.equipAberto || this.enviando) return;
+      if (!this.admin || !this.equipAberto || this.pausando) return;
       const id = this.equip.id;
       const pausar = !this.equip.pausado;
       this.acaoErro = "";
-      this.enviando = true;
+      this.pausando = true;
       const r = pausar ? await api.pausarEquipamento(id) : await api.retomarEquipamento(id);
-      this.enviando = false;
-      if (!this.equipAberto || this.equip.id !== id) return;
+      this.pausando = false;
       if (!r.ok || !r.dados) {
-        this.acaoErro = r.erro || MSG_CARGA;
+        if (this.equipAberto && this.equip.id === id) this.acaoErro = MSG_PAUSA;
         return;
       }
-      // o painel reflete a resposta; o store (lista e cena) segue o WS
+      // a resposta já vale para o store (o WS confirma depois): painel, lista e cena juntos
       const e = r.dados;
-      this.equip = fichaDoEquipamento(
-        {
-          id, nome: e.nome, ip: e.ip, classe: e.classe, estado: e.estado, desde: e.estado_desde,
-          latencia_ms: e.latencia_ms, checagem: e.checagem, porta: e.porta,
-        },
-        store,
-      );
+      const item = store.itens.get(id);
+      if (item) {
+        item.estado = e.estado;
+        item.desde = e.estado_desde;
+        item.latencia_ms = e.latencia_ms ?? null;
+        if (controle) controle.atualizarEstado(id);
+        this.agendarRender();
+      }
+      if (!this.equipAberto || this.equip.id !== id) return;
+      if (item) this.equip = fichaDoEquipamento(item, store);
       this.carregarHistorico(id, true);
     },
   };

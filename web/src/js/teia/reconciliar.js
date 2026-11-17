@@ -86,11 +86,3 @@ export function rotuloAbaixo(ordem) {
   const v = (((Number(ordem) || 0) % 12) + 12) % 12;
   return v % 2 === 1;
 }
-
-/** Câmera ao aproximar de p: no mesmo raio a partir do centro, `distancia` além, 60 acima. */
-export function posicaoDeAproximacao(p, distancia) {
-  const r = Math.hypot(p.x, p.y, p.z);
-  if (r < 1) return null;
-  const k = 1 + distancia / r;
-  return { x: p.x * k, y: p.y * k + 60, z: p.z * k };
-}

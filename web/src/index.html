@@ -246,7 +246,7 @@
         <ul class="teia-equips" aria-label="Equipamentos da classe, piores estados primeiro">
           <template x-for="q in teiaEquips" :key="q.id">
             <li>
-              <button class="teia-equip" type="button" @click="abrirEquipamento(q.id, true)" :aria-current="equipAtual(q.id)">
+              <button class="teia-equip" type="button" @click="abrirEquipamento(q.id)" :aria-current="equipAtual(q.id)">
                 <span :class="q.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="q.estadoIcone"/></svg></span>
                 <span class="teia-equip-nome" x-text="q.nome"></span>
                 <span class="teia-equip-ip" x-text="q.ip"></span>
@@ -284,7 +284,7 @@
         <div><dt>Latência</dt><dd class="mono" x-text="equip.latencia"></dd></div>
       </dl>
       <div class="teia-equip-acoes" x-show="admin">
-        <button class="botao" type="button" @click="alternarPausa" :disabled="enviando" x-text="rotuloPausa">Pausar</button>
+        <button class="botao" type="button" @click="alternarPausa" :disabled="pausando" x-text="rotuloPausa">Pausar</button>
       </div>
       <p class="alerta" role="alert" x-show="acaoErro" x-text="acaoErro"></p>
       <h3 class="teia-subtitulo">Últimas quedas</h3>
@@ -292,12 +292,11 @@
       <p class="teia-historico-vazio teia-sub" x-show="historicoVazio">Nenhuma queda registrada.</p>
       <p class="alerta" role="alert" x-show="historicoErro" x-text="historicoErro"></p>
       <ol class="teia-historico">
-        <template x-for="h in historico" :key="h.id">
+        <template x-for="q in historico" :key="q.id">
           <li>
-            <span class="teia-hist-de" x-text="h.de"></span>
-            <svg class="icone" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span class="so-leitor">para</span>
-            <span class="teia-hist-para" :class="h.paraClasse" x-text="h.para"></span>
-            <time :datetime="h.dataIso" x-text="h.data"></time>
+            <span class="st-offline"><svg class="icone-status" aria-hidden="true"><use href="#i-offline"/></svg></span>
+            <time :datetime="q.dataIso" x-text="q.data"></time>
+            <span class="teia-hist-volta" x-show="q.volta" x-text="q.volta"></span>
           </li>
         </template>
       </ol>
