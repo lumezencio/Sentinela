@@ -13,6 +13,10 @@ from collections.abc import Iterable
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
 
+# só estes campos da credencial são segredo; ``usuario``, ``versao``, ``auth`` e ``priv``
+# ("admin", "3", "SHA256", "AES") apareceriam mascarados em textos legítimos do aparelho
+CHAVES_SECRETAS = frozenset({"senha", "comunidade", "senha_auth", "senha_priv"})
+
 
 class ErroCofre(Exception):
     """Falha ao cifrar/decifrar; a mensagem é sempre genérica."""
@@ -39,6 +43,15 @@ class Cofre:
         if not isinstance(dados, dict):
             raise ErroCofre("não foi possível decifrar a credencial")
         return {str(k): str(v) for k, v in dados.items()}
+
+    def segredos(self, blob: bytes) -> list[str]:
+        """Valores secretos da credencial (``CHAVES_SECRETAS``) para ``mascarar``; credencial
+        ilegível ou vazia: lista vazia."""
+        try:
+            dados = self.decifrar(blob)
+        except ErroCofre:
+            return []
+        return [v for k, v in dados.items() if k in CHAVES_SECRETAS and v]
 
     @staticmethod
     def mascarar(texto: str, segredos: Iterable[str]) -> str:

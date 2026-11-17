@@ -9,17 +9,19 @@
   minúsculos, validada antes de comparar), senão 409. Vale uma vez; editar host/porta/TLS ou
   remover a fonte apaga a mostrada e a confiada. Reiniciar o processo também a esquece
   (o admin testa de novo): nada de impressão "mostrada" persiste fora do teste.
-- testar/coletar contam no limite de 10 por minuto por usuário.
+- testar/coletar contam no limite de 10 por minuto por usuário. ``coletar`` responde 202 na
+  hora e coleta em fundo (o fim chega pelo WebSocket como ``fonte``/``coletada``).
 - Toda escrita é auditada sem segredo; erros ao cliente são genéricos.
 """
 
 import hmac
 import logging
+import math
 import re
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,7 +43,7 @@ from sentinela.descoberta.fontes.base import ResultadoTeste
 from sentinela.descoberta.mescla import APROVADA
 from sentinela.descoberta.orquestrador import ColetaRecente, FonteInexistente, Orquestrador
 from sentinela.rede.guarda import DestinoProibido, Guarda, Protocolo
-from sentinela.seguranca.cofre import Cofre, ErroCofre
+from sentinela.seguranca.cofre import Cofre
 
 log = logging.getLogger(__name__)
 
@@ -102,13 +104,6 @@ def _retrato(f: Fonte) -> dict[str, Any]:
         "intervalo_s": f.intervalo_s,
         "impressao_tls": f.impressao_tls,
     }
-
-
-def _segredos(cofre: Cofre, f: Fonte) -> list[str]:
-    try:
-        return list(cofre.decifrar(f.credencial_cifrada).values())
-    except ErroCofre:
-        return []
 
 
 def _texto(texto: str | None, segredos: list[str], limite: int = 200) -> str | None:
@@ -244,7 +239,8 @@ async def testar(id: IdFonte, request: Request, db: SessaoDB, admin: Admin) -> T
         resultado: ResultadoTeste = await _orq(request).testar(id)
     except FonteInexistente:
         raise nao_encontrado() from None
-    segredos = _segredos(request.app.state.cofre, fonte)
+    cofre: Cofre = request.app.state.cofre
+    segredos = cofre.segredos(fonte.credencial_cifrada)
     impressao = resultado.impressao_tls
     if impressao is None or not _HEX64.fullmatch(impressao):
         impressao = None
@@ -284,19 +280,24 @@ async def confiar(
     return FonteSaida.de(fonte)
 
 
-@router.post("/{id}/coletar", response_model=FonteSaida)
+@router.post("/{id}/coletar", status_code=status.HTTP_202_ACCEPTED, response_model=FonteSaida)
 async def coletar(id: IdFonte, request: Request, db: SessaoDB, admin: Admin) -> FonteSaida:
-    """Coleta agora e devolve a fonte com ``ultima_coleta``/``ultimo_erro`` atualizados
-    (no máximo 1 por fonte a cada 30 s: 429)."""
+    """Pede a coleta e volta na hora (202, estado atual da fonte): a coleta pode passar do
+    tempo do proxy (nginx 60 s). Ela roda em fundo no orquestrador e o fim chega pelo
+    WebSocket (``fonte``/``coletada``); detalhes em ``GET /fontes``. No máximo 1 por fonte a
+    cada 30 s: 429 imediato com ``Retry-After``."""
     limitar_taxa(request, admin)
     fonte = await _carregar(db, id)
     try:
-        await _orq(request).coletar_agora(id)
+        await _orq(request).coletar_em_fundo(id)
     except ColetaRecente as e:
-        raise erro(status.HTTP_429_TOO_MANY_REQUESTS, str(e)) from None
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(e),
+            headers={"Retry-After": str(max(1, math.ceil(e.espera_s)))},
+        ) from None
     except FonteInexistente:
         raise nao_encontrado() from None
     auditar(db, request, admin, "fonte.coletar", id)
     await db.commit()
-    await db.refresh(fonte)
     return FonteSaida.de(fonte)

@@ -79,7 +79,7 @@ from sentinela.monitor.limitador import Limitador
 from sentinela.monitor.montagem import registrar_no_agendador
 from sentinela.rede.guarda import DestinoProibido, Guarda
 from sentinela.relogio import Relogio
-from sentinela.seguranca.cofre import Cofre, ErroCofre
+from sentinela.seguranca.cofre import Cofre
 
 log = logging.getLogger(__name__)
 
@@ -114,8 +114,9 @@ class ErroDescoberta(Exception):
 
 
 class ColetaRecente(ErroDescoberta):
-    def __init__(self) -> None:
+    def __init__(self, espera_s: float = COLETA_MIN_S) -> None:
         super().__init__("Coleta feita há menos de 30 s; aguarde.")
+        self.espera_s = espera_s  # segundos até poder coletar de novo (Retry-After)
 
 
 class FonteInexistente(ErroDescoberta):
@@ -363,16 +364,30 @@ class Orquestrador:
 
     # ---- coleta -----------------------------------------------------------------------------
 
-    async def coletar_agora(self, fonte_id: str) -> None:
-        """Coleta já (rota "coletar"); ``ColetaRecente`` se a última começou há < 30 s."""
+    async def _reservar_coleta(self, fonte_id: str) -> None:
+        """``ColetaRecente`` (com a espera restante) se a última começou há < 30 s;
+        ``FonteInexistente``; senão marca o início já (dois pedidos seguidos: o 2º é 429)."""
         ultimo = self._inicio.get(fonte_id)
-        if ultimo is not None and self._relogio.agora() - ultimo < COLETA_MIN_S:
-            raise ColetaRecente
+        if ultimo is not None:
+            passado = self._relogio.agora() - ultimo
+            if passado < COLETA_MIN_S:
+                raise ColetaRecente(COLETA_MIN_S - passado)
         async with self._sessoes() as db:
             if await db.get(Fonte, fonte_id) is None:
                 raise FonteInexistente
         self._inicio[fonte_id] = self._relogio.agora()
+
+    async def coletar_agora(self, fonte_id: str) -> None:
+        """Coleta já e espera o fim; ``ColetaRecente`` se a última começou há < 30 s."""
+        await self._reservar_coleta(fonte_id)
         await self._coletar(fonte_id)
+
+    async def coletar_em_fundo(self, fonte_id: str) -> None:
+        """Rota "coletar": as recusas (``ColetaRecente``/``FonteInexistente``) saem na hora; a
+        coleta roda numa tarefa de fundo do orquestrador (cancelada no encerramento, limitada
+        por ``timeout_coleta``) e o fim é publicado como ``fonte``/``coletada``."""
+        await self._reservar_coleta(fonte_id)
+        self._lancar(self._coletar(fonte_id))
 
     async def _coletar(self, fonte_id: str) -> None:
         try:
@@ -381,6 +396,28 @@ class Orquestrador:
                 await self._coletar_fonte(fonte_id)
         except Exception as e:  # noqa: BLE001 - uma fonte nunca derruba as outras
             log.error("coleta da fonte %s falhou: %s", fonte_id, type(e).__name__)
+            return
+        await self._publicar_coleta(fonte_id)
+
+    async def _publicar_coleta(self, fonte_id: str) -> None:
+        """``fonte`` ``{acao: "coletada", id, ok, ultima_coleta}`` ao fim de toda coleta.
+        Sem o texto do erro: o WebSocket chega também ao visualizador; o admin lê
+        ``ultimo_erro`` em ``GET /fontes``."""
+        try:
+            async with self._sessoes() as db:
+                fonte = await db.get(Fonte, fonte_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("fonte %s não lida após a coleta: %s", fonte_id, type(e).__name__)
+            return
+        if fonte is None:
+            return
+        dados = {
+            "acao": "coletada",
+            "id": fonte_id,
+            "ok": fonte.ultimo_erro is None,
+            "ultima_coleta": fonte.ultima_coleta.isoformat() if fonte.ultima_coleta else None,
+        }
+        self._barramento.publicar(Mensagem("fonte", dados))
 
     async def _coletar_fonte(self, fonte_id: str) -> None:
         async with self._sessoes() as db:
@@ -419,10 +456,7 @@ class Orquestrador:
         await self.processar_achados(achados, fonte_id=fonte_id)
 
     def _mascarar(self, fonte: Fonte, texto: str) -> str:
-        try:
-            segredos = list(self._cofre.decifrar(fonte.credencial_cifrada).values())
-        except ErroCofre:
-            segredos = []
+        segredos = self._cofre.segredos(fonte.credencial_cifrada)
         return Cofre.mascarar(texto, segredos)[:LIMITE_ERRO]
 
     async def _registrar_erro(self, fonte_id: str, erro: str) -> None:

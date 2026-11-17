@@ -29,6 +29,7 @@ from sentinela.descoberta.orquestrador import (
     MSG_TESTE_INESPERADO,
     AprovacaoRecusada,
     ColetaRecente,
+    FonteInexistente,
     Orquestrador,
     SondagemRecusada,
     checagem_sugerida,
@@ -203,6 +204,61 @@ async def test_coletar_agora_limite_30s(cena: Cena, cofre: Cofre) -> None:
     await cena.relogio.avancar(1)
     await orq.coletar_agora(f1)
     assert coletores[f1].coletas == 2
+
+
+async def test_coletar_em_fundo_volta_logo_e_avisa_no_fim(cena: Cena, cofre: Cofre) -> None:
+    f1 = await _fonte(cena, cofre)
+    liberar = asyncio.Event()
+
+    class Lento(ColetorFalso):
+        async def coletar(self) -> list[Achado]:
+            await liberar.wait()
+            return await super().coletar()
+
+    coletores: dict[str, ColetorFalso] = {f1: Lento()}
+    orq = _orquestrador(cena, cofre, coletores)
+    await asyncio.wait_for(orq.coletar_em_fundo(f1), timeout=2)  # não espera a coleta
+    assert cena.barramento.do_tipo("fonte") == []
+    with pytest.raises(ColetaRecente) as e:  # recusa imediata, com a espera restante
+        await orq.coletar_em_fundo(f1)
+    assert 29 < e.value.espera_s <= 30
+    liberar.set()
+    await orq.ocioso()
+    assert coletores[f1].coletas == 1
+    [msg] = cena.barramento.do_tipo("fonte")
+    assert msg["acao"] == "coletada" and msg["id"] == f1 and msg["ok"] is True
+    assert msg["ultima_coleta"] is not None
+
+
+async def test_coletar_em_fundo_avisa_falha_sem_texto(cena: Cena, cofre: Cofre) -> None:
+    f1 = await _fonte(cena, cofre)
+    orq = _orquestrador(cena, cofre, {f1: ColetorFalso(erro=ErroColeta(f"x {SENHA}"))})
+    await orq.coletar_em_fundo(f1)
+    await orq.ocioso()
+    [msg] = cena.barramento.do_tipo("fonte")
+    assert msg == {"acao": "coletada", "id": f1, "ok": False, "ultima_coleta": None}
+
+
+async def test_coletar_em_fundo_fonte_inexistente(cena: Cena, cofre: Cofre) -> None:
+    orq = _orquestrador(cena, cofre, {})
+    with pytest.raises(FonteInexistente):
+        await orq.coletar_em_fundo("nao-existe")
+
+
+async def test_mascara_so_segredos_nao_campos_da_credencial(cena: Cena, cofre: Cofre) -> None:
+    v3 = {
+        "versao": "3",
+        "usuario": "admin",
+        "auth": "SHA256",
+        "senha_auth": "MARCA-auth-1",
+        "priv": "AES",
+        "senha_priv": "MARCA-priv-2",
+    }
+    f1 = await _fonte(cena, cofre, "snmp", porta=161, credencial=cofre.cifrar(v3))
+    erro = "Version 15.2(3)E admin SHA256 AES MARCA-auth-1 MARCA-priv-2"
+    orq = _orquestrador(cena, cofre, {f1: ColetorFalso(teste=ErroColeta(erro))})
+    r = await orq.testar(f1)
+    assert r.erro == "Version 15.2(3)E admin SHA256 AES *** ***"
 
 
 async def test_publica_mensagens_no_barramento(cena: Cena, cofre: Cofre) -> None:

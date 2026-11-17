@@ -9,6 +9,8 @@ Protocolo (servidor → cliente, JSON):
 - ``{"tipo": "descoberta", "acao": "nova"|"atualizada"|"removida", "id", "classe_sugerida",
   "confianca"}``, ``{"tipo": "pendentes", "total"}`` e ``{"tipo": "varredura", "cidr",
   "feitos", "total", "achados", "estado"}`` (descoberta, Fase 3);
+- ``{"tipo": "fonte", "acao": "coletada", "id", "ok", "ultima_coleta"}`` ao fim de cada
+  coleta de fonte (sem texto de erro: o admin lê ``ultimo_erro`` em ``GET /fontes``);
 - ``{"tipo": "equipamento", "acao": "criado"|"atualizado", "equipamento": {...}}`` com a
   linha no MESMO formato de ``snapshot.equipamentos`` (aprovação, IP mudado pela descoberta,
   checagem trocada depois da aprovação), ou ``{"tipo": "equipamento", "acao": "removido",
@@ -48,7 +50,9 @@ FECHA_ORIGEM_PROIBIDA = 4403
 FECHA_CLIENTE_LENTO = 1013  # "try again later"
 FECHA_ERRO_INTERNO = 1011
 # ``alvo_recusado`` é interno; ``equipamento`` é enriquecido com a linha do banco
-TIPOS_REPASSADOS = frozenset({"estado", "latencias", "descoberta", "pendentes", "varredura"})
+TIPOS_REPASSADOS = frozenset(
+    {"estado", "latencias", "descoberta", "pendentes", "varredura", "fonte"}
+)
 PING = {"tipo": "ping"}
 
 

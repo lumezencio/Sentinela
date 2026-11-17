@@ -93,6 +93,7 @@ async def test_segredos_nao_vazam(
     async def pedir(metodo: str, url: str, **kw: Any) -> httpx.Response:
         r = await c.request(metodo, url, **kw)
         respostas.append(r)
+        await app.state.orquestrador.ocioso()  # coleta em fundo termina antes da próxima
         await relogio.avancar(31)  # fora do limite de taxa e do "coletar agora"
         return r
 

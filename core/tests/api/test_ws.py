@@ -356,9 +356,12 @@ async def test_repassa_descoberta_varredura_e_pendentes(
     varredura = {"cidr": "10.99.0.0/24", "feitos": 3, "total": 256, "achados": 1}
     barramento.publicar(Mensagem("varredura", {**varredura, "estado": "rodando"}))
     barramento.publicar(Mensagem("pendentes", {"total": 7}))
+    fonte = {"acao": "coletada", "id": "f1", "ok": True, "ultima_coleta": DESDE.isoformat()}
+    barramento.publicar(Mensagem("fonte", fonte))
     assert await ws.json() == {"tipo": "descoberta", **nova}
     assert await ws.json() == {"tipo": "varredura", **varredura, "estado": "rodando"}
     assert await ws.json() == {"tipo": "pendentes", "total": 7}
+    assert await ws.json() == {"tipo": "fonte", **fonte}
 
 
 async def test_repassa_equipamento_com_os_campos_do_snapshot(

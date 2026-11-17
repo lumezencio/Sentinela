@@ -1,13 +1,20 @@
 """API de fontes de descoberta (Task 8 da Fase 3)."""
 
+import asyncio
 from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
+from sentinela.barramento import Barramento
 from sentinela.db.modelos import Fonte
-from sentinela.descoberta.fontes.base import CertificadoNaoConfiado, ErroColeta, ResultadoTeste
+from sentinela.descoberta.fontes.base import (
+    Achado,
+    CertificadoNaoConfiado,
+    ErroColeta,
+    ResultadoTeste,
+)
 from sentinela.relogio import RelogioFalso
 from sentinela.seguranca.cofre import Cofre
 from tests.api.apoio_descoberta import (
@@ -338,28 +345,94 @@ async def test_confiar_vale_uma_vez(cliente_admin: httpx.AsyncClient, falsos: Fa
     assert (await cliente_admin.post(url, json={"impressao": IMPRESSAO})).status_code == 409
 
 
+async def _ocioso(app: FastAPI) -> None:
+    await app.state.orquestrador.ocioso()
+
+
 async def test_coletar_agora(
     app: FastAPI, cliente_admin: httpx.AsyncClient, falsos: Falsos
 ) -> None:
     criada = await criar_fonte(cliente_admin)
     r = await cliente_admin.post(f"{FONTES}/{criada['id']}/coletar")
-    assert r.status_code == 200, r.text
+    assert r.status_code == 202, r.text
+    assert r.json()["id"] == criada["id"]
+    await _ocioso(app)
     assert falsos.coletor.coletas == 1
-    assert r.json()["ultima_coleta"] is not None and r.json()["ultimo_erro"] is None
+    [fonte] = (await cliente_admin.get(FONTES)).json()
+    assert fonte["ultima_coleta"] is not None and fonte["ultimo_erro"] is None
     assert (await auditorias(app))[-1].acao == "fonte.coletar"
 
 
+async def test_coletar_volta_202_logo_mesmo_com_coleta_lenta(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, falsos: Falsos
+) -> None:
+    liberar = asyncio.Event()
+    original = falsos.coletor.coletar
+
+    async def lenta() -> list[Achado]:
+        await liberar.wait()
+        return await original()
+
+    falsos.coletor.coletar = lenta  # type: ignore[method-assign]
+    criada = await criar_fonte(cliente_admin)
+    barramento: Barramento = app.state.barramento
+    async with barramento.assinar() as fluxo:
+        r = await asyncio.wait_for(cliente_admin.post(f"{FONTES}/{criada['id']}/coletar"), 2)
+        assert r.status_code == 202
+        assert falsos.coletor.coletas == 0  # ainda coletando
+        liberar.set()
+        await _ocioso(app)
+        msgs = []
+        while True:
+            m = await asyncio.wait_for(anext(fluxo), 2)
+            if m.tipo == "fonte":
+                msgs.append(m.dados)
+                break
+    assert msgs[0]["id"] == criada["id"] and msgs[0]["ok"] is True
+    assert falsos.coletor.coletas == 1
+
+
 async def test_coletar_agora_429_dentro_de_30s(
-    cliente_admin: httpx.AsyncClient, falsos: Falsos, relogio: RelogioFalso
+    app: FastAPI, cliente_admin: httpx.AsyncClient, falsos: Falsos, relogio: RelogioFalso
 ) -> None:
     criada = await criar_fonte(cliente_admin)
     url = f"{FONTES}/{criada['id']}/coletar"
-    assert (await cliente_admin.post(url)).status_code == 200
+    assert (await cliente_admin.post(url)).status_code == 202
+    await _ocioso(app)
+    await relogio.avancar(10)
     r = await cliente_admin.post(url)
     assert r.status_code == 429
-    await relogio.avancar(31)
-    assert (await cliente_admin.post(url)).status_code == 200
+    assert r.headers["Retry-After"] == "20"
+    await relogio.avancar(21)
+    assert (await cliente_admin.post(url)).status_code == 202
+    await _ocioso(app)
     assert falsos.coletor.coletas == 2
+
+
+async def test_testar_snmp_v3_mascara_so_os_segredos(
+    cliente_admin: httpx.AsyncClient, falsos: Falsos
+) -> None:
+    v3 = {
+        "versao": "3",
+        "usuario": "admin",
+        "auth": "SHA256",
+        "senha_auth": "MARCA-auth-1",
+        "priv": "AES",
+        "senha_priv": "MARCA-priv-2",
+    }
+    corpo = {"tipo": "snmp", "nome": "Switch", "host": "10.99.0.2", "credencial": v3}
+    r = await cliente_admin.post(FONTES, json=corpo)
+    assert r.status_code == 201, r.text
+    falsos.coletor.teste = ResultadoTeste(
+        ok=True,
+        identidade="Cisco IOS Version 15.2(3)E",
+        versao="SHA256 AES 3",
+        avisos=["usuário admin com acesso 3 MARCA-auth-1"],
+    )
+    t = await cliente_admin.post(f"{FONTES}/{r.json()['id']}/testar")
+    assert t.json()["identidade"] == "Cisco IOS Version 15.2(3)E"
+    assert t.json()["versao"] == "SHA256 AES 3"
+    assert t.json()["avisos"] == ["usuário admin com acesso 3 ***"]
 
 
 async def test_coletar_inexistente_404(cliente_admin: httpx.AsyncClient, falsos: Falsos) -> None:
@@ -405,5 +478,5 @@ async def test_credencial_nunca_sai(cliente_admin: httpx.AsyncClient, falsos: Fa
         await cliente_admin.post(f"{url}/coletar"),
     ]
     for r in respostas:
-        assert r.status_code == 200, r.text
+        assert r.status_code in (200, 202), r.text
         assert SENHA not in r.text and "leitor" not in r.text and "credencial_cifrada" not in r.text

@@ -48,3 +48,21 @@ def test_mascarar_remove_segredos() -> None:
     assert "abc123" not in saida
     assert "public-x" not in saida
     assert saida.count("***") == 2
+
+
+def test_segredos_so_das_chaves_secretas() -> None:
+    cofre = Cofre(SecretStr("ab" * 32))
+    v3 = {
+        "versao": "3",
+        "usuario": "admin",
+        "auth": "SHA256",
+        "senha_auth": "s-auth-123",
+        "priv": "AES",
+        "senha_priv": "s-priv-456",
+    }
+    assert sorted(cofre.segredos(cofre.cifrar(v3))) == ["s-auth-123", "s-priv-456"]
+    v2c = {"versao": "2c", "comunidade": "publica-x"}
+    assert cofre.segredos(cofre.cifrar(v2c)) == ["publica-x"]
+    assert cofre.segredos(cofre.cifrar({"usuario": "admin", "senha": "x1"})) == ["x1"]
+    assert cofre.segredos(b"lixo") == []
+    assert cofre.segredos(b"") == []
