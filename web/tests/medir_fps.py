@@ -26,8 +26,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from conftest import ServidorLocal, _certificado, _em_thread, _porta_livre, _preparar_banco  # noqa: E402
 from playwright.sync_api import Page, expect, sync_playwright  # noqa: E402
+
+from conftest import ServidorLocal, _certificado, _em_thread, _porta_livre, _preparar_banco  # noqa: E402
 
 ESTILOS = ("Constelação", "Órbitas", "Galáxia", "Átomo", "Árvore 3D")
 ARGS_GPU = ["--use-angle=d3d11", "--enable-gpu", "--ignore-gpu-blocklist", "--enable-webgl"]

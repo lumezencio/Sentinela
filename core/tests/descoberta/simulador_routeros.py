@@ -179,12 +179,13 @@ class SimuladorRouterOS:
             w.close()
 
     @asynccontextmanager
-    async def rodando(self) -> AsyncIterator[int]:
+    async def rodando(self, host: str = "127.0.0.1", porta: int = 0) -> AsyncIterator[int]:
+        """Host/porta fixos só no container da captura (testes-rede); testes: 127.0.0.1:0."""
         contexto: ssl.SSLContext | None = None
         if self.certificado is not None:
             contexto = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             contexto.load_cert_chain(self.certificado.cert_pem, self.certificado.chave_pem)
-        srv = await asyncio.start_server(self._tratar, "127.0.0.1", 0, ssl=contexto)
+        srv = await asyncio.start_server(self._tratar, host, porta, ssl=contexto)
         try:
             yield srv.sockets[0].getsockname()[1]
         finally:

@@ -568,25 +568,49 @@ def test_snapshot_novo_nao_duplica_esferas(page: Page, alvo: Alvo) -> None:
     try:
         expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=30_000)
         expect(palco).to_have_attribute("data-equipamentos", str(TOTAL_DEMO + 1))
-        if palco.get_attribute("data-nivel") != "agrupado":
-            expect(palco).to_have_attribute("data-nos", str(TOTAL_DEMO + 1))
+        # o headless pode cair para o nível agrupado (FPS baixo) a qualquer momento, inclusive
+        # entre ler o nível e conferir os nós: espera o grafo assentar OU o agrupamento e só
+        # então confere (a checagem de duplicata continua exata no nível completo)
+        total = str(TOTAL_DEMO + 1)
+        # leitura atômica (um só instante) de nível e contagens: devolve quando assentou
+        foto = page.wait_for_function(
+            """([el, n]) => {
+                const d = el.dataset;
+                const pronto = d.nivel === "agrupado" || (d.nos === n && d.nosGrafo === n);
+                return pronto && {nivel: d.nivel, nos: d.nos, grafo: d.nosGrafo};
+            }""",
+            arg=[palco.element_handle(), total],
+            timeout=15_000,
+        ).json_value()
+        if foto["nivel"] != "agrupado":
+            assert foto["nos"] == total, foto
             # nenhum nó duplicado entregue ao grafo (não só no mapa interno da cena)
-            expect(palco).to_have_attribute("data-nos-grafo", str(TOTAL_DEMO + 1))
+            assert foto["grafo"] == total, foto
         assert canvases_da_teia(page) == 1
-        # 10 trocas de aba não acumulam geometrias/texturas na GPU (um renderer, objetos reusados)
-        page.wait_for_timeout(600)
-        nivel = palco.get_attribute("data-nivel")
-        geo = int(palco.get_attribute("data-geometrias") or "0")
-        tex = int(palco.get_attribute("data-texturas") or "0")
+
+        # trocas de aba não acumulam geometrias/texturas na GPU (um renderer, objetos reusados).
+        # A demo segue mudando estados: um nó que entra num estado ainda não desenhado aloca uma
+        # geometria nova, então "nunca cresce" numa janela seria medir a demo, não as trocas.
+        # Mede o que escala com as trocas: 10 trocas de aquecimento, linha de base, mais 10; o
+        # crescimento entre as duas medições fica em no máximo 2 (vazamento por troca daria ≥ 5).
+        def trocar_10_vezes() -> tuple[str | None, int, int]:
+            for n in range(10):
+                page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
+            expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
+            page.wait_for_timeout(600)
+            assert canvases_da_teia(page) == 1
+            return (
+                palco.get_attribute("data-nivel"),
+                int(palco.get_attribute("data-geometrias") or "0"),
+                int(palco.get_attribute("data-texturas") or "0"),
+            )
+
+        nivel, geo, tex = trocar_10_vezes()
         assert geo > 0, geo
-        for n in range(10):
-            page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
-        expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
-        page.wait_for_timeout(600)
-        assert canvases_da_teia(page) == 1
-        if palco.get_attribute("data-nivel") == nivel:  # trocar de nível recria os objetos
-            assert int(palco.get_attribute("data-geometrias") or "0") <= geo
-            assert int(palco.get_attribute("data-texturas") or "0") <= tex
+        nivel_depois, geo_depois, tex_depois = trocar_10_vezes()
+        if nivel_depois == nivel:  # trocar de nível recria os objetos
+            assert geo_depois - geo <= 2, (geo, geo_depois)
+            assert tex_depois - tex <= 2, (tex, tex_depois)
     finally:
         assert page.evaluate(APAGAR_VIA_API, criado["corpo"]["id"]) == 204
 

@@ -41,6 +41,28 @@ jobs:
       - run: bash build/construir-teia.sh
       - run: git diff --exit-code src/vendor/
 
+  captura:
+    # prova de zero broadcast (spec da Fase 3, §6/§9.1): núcleo + simuladores numa rede
+    # isolada com tcpdump; reprova qualquer broadcast/multicast do Sentinela fora do ARP permitido
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: cena e análise da captura
+        run: bash testes-rede/rodar.sh
+      - name: guarda a captura e o resumo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captura-zero-broadcast
+          path: |
+            testes-rede/saida/captura.pcap
+            testes-rede/saida/cena.json
+            testes-rede/saida/arp_permitido.txt
+            testes-rede/saida/core.log
+          if-no-files-found: ignore
+          retention-days: 14
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:

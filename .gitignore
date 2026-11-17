@@ -48,3 +48,6 @@ Thumbs.db
 
 # Ledgers e rascunhos do processo de desenvolvimento (nunca no repositório público)
 .superpowers/
+
+# Saída da prova de zero broadcast (testes-rede/rodar.sh)
+testes-rede/saida/

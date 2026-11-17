@@ -109,15 +109,17 @@ class AgenteSnmp:
         self.pedidos = 0
 
     @asynccontextmanager
-    async def rodando(self) -> AsyncIterator[int]:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.bind(("127.0.0.1", 0))
-            porta = int(s.getsockname()[1])
+    async def rodando(self, host: str = "127.0.0.1", porta: int = 0) -> AsyncIterator[int]:
+        """Host/porta fixos só no container da captura (testes-rede); testes: 127.0.0.1:0."""
+        if not porta:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.bind((host, 0))
+                porta = int(s.getsockname()[1])
         motor = engine.SnmpEngine()
         config.add_transport(
             motor,
             udp.DOMAIN_NAME,
-            udp.UdpTransport().open_server_mode(("127.0.0.1", porta)),
+            udp.UdpTransport().open_server_mode((host, porta)),
         )
         config.add_v1_system(motor, "area", COMUNIDADE)
         config.add_vacm_user(motor, 2, "area", "noAuthNoPriv", (1, 3, 6), (1, 3, 6))

@@ -163,7 +163,7 @@ Regras do guarda:
 Além do guarda, há três barreiras extras:
 - **Nenhum socket com `SO_BROADCAST`** (teste estático procura essa flag no código).
 - **Nenhuma biblioteca de descoberta por multicast** nas dependências (lista de bloqueio verificada no CI).
-- **Teste de integração** num namespace de rede que captura todo o tráfego emitido durante uma rodada completa e falha se aparecer qualquer quadro com destino broadcast/multicast originado pelo Sentinela (fora o ARP inevitável da varredura opcional, que o teste contabiliza à parte).
+- **Prova de captura** (`testes-rede/`, job `captura` do CI): núcleo e simuladores de MikroTik, switch SNMP e gravador numa rede bridge isolada, com o `tcpdump` dono do namespace de rede do núcleo; uma rodada completa (testar, confiar, coletar, aprovar, sondar, varrer um /28) e o analisador reprova qualquer quadro do Sentinela com destino broadcast/multicast, exceto o ARP request para IPs autorizados (hosts das fontes, aprovados, sondados, faixa varrida), contado e relatado.
 
 > Transparência: num segmento IPv4 local, o **sistema operacional** emite um pedido ARP (broadcast) na primeira vez que fala com um IP ainda não presente no seu cache. Com as fontes passivas, os equipamentos monitorados já estão no cache do host após o primeiro contato e o kernel renova as entradas por unicast. A varredura opcional é a única função que provoca ARP para IPs inéditos, e por isso é desligada por padrão, lenta e sinalizada na tela.
 
@@ -175,11 +175,13 @@ Além do guarda, há três barreiras extras:
 |---|---|---|---|
 | **MikroTik** | API RouterOS 8729 (TLS) ou 8728 | `/ip/arp`, `/ip/dhcp-server/lease`, `/ip/neighbor`, `/interface/wireless/registration-table` (v6) ou `/interface/wifi/registration-table` (v7) | usuário do grupo `read` |
 | **SNMP** (roteador/switch de qualquer marca) | SNMP v2c ou v3 | `IP-MIB::ipNetToPhysicalTable` (fallback `ipNetToMediaTable`), `Q-BRIDGE-MIB::dot1qTpFdbTable` / `BRIDGE-MIB`, `LLDP-MIB`, `SNMPv2-MIB::sys*` | comunidade ou usuário v3 |
-| **Gravador** (NVR/DVR) | HTTP digest | Hikvision ISAPI: `/ISAPI/ContentMgmt/InputProxy/channels` e `/status`; Dahua/Intelbras: `/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice` e estado dos canais | usuário somente visualização do gravador |
+| **Gravador** (NVR/DVR) | HTTP ou HTTPS, Digest (HTTPS com impressão confiada, como o MikroTik) | Hikvision ISAPI: `/ISAPI/ContentMgmt/InputProxy/channels` e `/status`; Dahua/Intelbras: `/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice` e estado dos canais | usuário somente visualização do gravador |
 | **CSV** | arquivo | nome, IP, MAC, classe, pai | — |
-| **Varredura lenta** | ICMP + TCP connect | IPs de uma sub-rede declarada, 2 IPs/s por padrão | — |
+| **Varredura lenta** | ICMP; sondagem TCP só de quem respondeu | IPs de uma sub-rede com `permite_varredura`, 2 IPs/s, prioridade baixa, cancelável | — |
 
-Câmeras atrás do gravador viram equipamentos **filhos** do gravador, com estado lido do próprio gravador (o Sentinela não fala direto com elas, porque estão numa rede interna do NVR).
+Câmeras atrás do gravador viram equipamentos **filhos** do gravador, com estado lido do próprio gravador (o Sentinela não fala direto com elas, porque estão numa rede interna do NVR). A leitura dos canais tem prioridade normal (é monitoramento) e custo 1 por gravador; se falhar, os filhos vão para `desconhecido` com a causa "gravador sem resposta".
+
+MikroTik só por TLS (8729), com o certificado fixado pela impressão SHA-256 que o admin confirma no primeiro teste ("Confiar neste certificado", auditado); impressão diferente depois bloqueia a coleta até nova confirmação. Credenciais cifradas com Fernet (`SENTINELA_CHAVE_CREDENCIAIS`), nunca devolvidas pela API (`credencial_definida: bool`) nem escritas em log ou auditoria.
 
 ### 7.2 Fluxo
 
@@ -196,37 +198,49 @@ sequenceDiagram
     F->>G: validar(roteador:8729)
     F-->>O: [(ip, mac, origem, pai, extras)]
     loop cada achado novo ou alterado
-        O->>C: classificar(achado)
-        C->>G: validar(ip, portas da lista)
+        O->>C: classificar(achado, só sinais passivos)
         C-->>O: classe sugerida + confiança + sinais
+        opt sub-rede com varredura, clique em "Sondar" ou após aprovar
+            O->>G: validar(ip, porta da lista fixa)
+            O->>C: reclassificar com portas e título HTTP
+        end
         O->>R: upsert descoberta (pendente)
         O->>B: evento "descoberta.nova"
     end
 ```
 
-Regras: a identidade de um equipamento é o **MAC**, quando houver; senão, o IP. A mudança de IP de um MAC conhecido atualiza o cadastro, não cria outro. Descobertas ficam **pendentes** até aprovação; o administrador pode ligar "aprovar automaticamente acima de 80% de confiança".
+Regras: a identidade de um equipamento é o **MAC**, quando houver; senão, o IP. A mudança de IP de um MAC conhecido atualiza o cadastro, não cria outro (se o IP novo já é de outro equipamento, nada muda e a descoberta fica com o selo de conflito). Câmeras de gravador têm chave própria (`nvr:<fonte>:<canal>`). Descobertas ficam **pendentes** até aprovação; o administrador pode ligar "aprovar automaticamente a partir de 80% de confiança" (desligado por padrão). Achado fora das sub-redes declaradas fica visível com selo, mas só pode ser aprovado depois de declarar a sub-rede: o guarda continua sendo a única autoridade.
 
 ## 8. Classificação
 
-Motor de pontuação simples e auditável. Cada regra (`rules/*.yaml`, `yaml.safe_load`) diz: condição → classe → pontos.
+Motor de pontuação simples e auditável. Cada regra (`sentinela/descoberta/classificador/regras.toml`, lida com `tomllib` da biblioteca padrão, ADR 010) diz: condições → pontos por classe, com uma descrição que a tela mostra como motivo.
 
-```yaml
-- quando: { fabricante_contem: ["Hikvision", "Dahua", "Intelbras"] }
-  pontos: { camera: 30, gravador: 20 }
-- quando: { porta_aberta: 554 }
-  pontos: { camera: 40, gravador: 25 }
-- quando: { porta_aberta: 4370 }
-  pontos: { controle_acesso: 60 }
-- quando: { http_titulo_regex: "(?i)control ?id|idface|idaccess" }
-  pontos: { controle_acesso: 70 }
-- quando: { origem: "wifi_registration" }
-  pontos: { computador: 15, iot: 15 }
+```toml
+[[regra]]
+id = "fabricante-video"
+descricao = "Fabricante {fabricante}"
+quando = { fabricante_contem = ["Hikvision", "Dahua", "Intelbras"] }
+pontos = { camera = 30, gravador = 20 }
+
+[[regra]]
+id = "porta-rtsp"
+descricao = "Porta 554 (vídeo RTSP) aberta"
+quando = { porta_aberta = 554 }
+pontos = { camera = 40, gravador = 25 }
+
+[[regra]]
+id = "origem-canal-gravador"
+descricao = "Aparece como canal de um gravador"
+quando = { origem = "gravador_canal" }
+pontos = { camera = 60 }
 ```
+
+- **Classificação passiva** (ADR 011): a descoberta pendente é classificada só com o que as fontes já contaram (OUI do MAC, nome DHCP, identidade/plataforma de `/ip/neighbor`, registro Wi‑Fi, SNMP/LLDP, dados do gravador). Nenhum pacote vai ao aparelho para classificá-lo, porque o primeiro contato com um IP do segmento provoca um ARP (broadcast).
 
 - Confiança = pontos da classe vencedora ÷ soma dos pontos, com limiar de 50 pontos absolutos para sair de "Desconhecidos".
 - Sinais coletados ficam salvos em JSON na descoberta. A tela mostra **por que** o Sentinela achou que era uma câmera.
 - Base OUI da IEEE embutida e atualizável por comando (`sentinela oui-atualizar`), sem download em tempo de execução.
-- A sondagem de portas usa **só a lista fixa** das regras (cerca de 12 portas), uma conexão por vez por IP.
+- A sondagem de portas usa **só a lista fixa** (22, 23, 80, 443, 554, 4370, 8000, 8080, 8291, 9100, 37777, 3389), TCP connect, uma conexão por vez por IP, 1 s de limite, prioridade baixa; título HTTP só com 80/443/8080 abertas (`GET /`, 2 s, até 16 KB, sem seguir redirecionamento para outro host). Ela só roda em sub-rede com `permite_varredura`, quando o admin clica "Sondar" (auditado) ou depois da aprovação, e no máximo uma vez por dia por achado.
 
 ## 9. Monitoramento e orçamento de tráfego
 
@@ -508,7 +522,8 @@ Sentinela/
 |---|---|---|
 | Unidade | guarda de rede (tabela exaustiva de destinos), limitador, máquina de estados, motor de classificação, correlação de quedas | pytest |
 | Contrato | fontes contra **simuladores** de RouterOS API, agente SNMP (`snmpsim`) e respostas gravadas de ISAPI/CGI | pytest + fixtures sintéticas |
-| Integração | rodada completa num namespace de rede com equipamentos falsos; captura de tráfego confirma **zero broadcast/multicast** e o teto de pacotes/s | pytest + `tcpdump` em CI Linux |
+| Integração | fontes contra simuladores reais (RouterOS com TLS, agente SNMP do pysnmp, gravador com Digest); migração `downgrade`/`upgrade` | pytest |
+| Captura | rodada completa numa rede bridge isolada com simuladores; `tcpdump` confirma **zero broadcast/multicast** além do ARP autorizado (`testes-rede/`) | Compose + `tcpdump` + analisador sem dependências, job `captura` |
 | API | autenticação, CSRF, bloqueio, papéis, mascaramento de credenciais | pytest + httpx |
 | Front | 360/768/1280/1920 px, teclado, movimento reduzido, fallback sem WebGL, Lighthouse ≥ 90 nas telas 2D | Playwright |
 | Desempenho | 2.000 equipamentos simulados: CPU/RAM do core; FPS da teia com 1.000 nós | script de carga + Playwright |
@@ -527,6 +542,8 @@ Sentinela/
 | 007 | AGPL‑3.0 | MIT | uso livre, mas ninguém fecha o código para revender |
 | 008 | Descoberta precisa de aprovação | monitorar tudo que aparecer | evita poluir a teia com celulares de visitantes; opção de aprovação automática por confiança |
 | 009 | Câmeras atrás do NVR lidas pelo gravador | ignorar; rotear até a rede do NVR | essas câmeras são o caso mais comum; consultar o gravador não exige mexer na rede |
+| 010 | Regras do classificador em TOML (`tomllib`) | YAML (`yaml.safe_load`) | TOML está na biblioteca padrão do Python 3.11+: nenhuma dependência nova na imagem; sintaxe sem as ambiguidades de tipo do YAML; regras validadas ao carregar (classes, condições e regex com teto) |
+| 011 | Classificação passiva; sondagem só com autorização | sondar todo achado novo (portas/título) | sondar um IP inédito faz o sistema operacional emitir ARP (broadcast); a sondagem só acontece em sub-rede com varredura ligada, no clique "Sondar" (auditado) ou após a aprovação, e o teste de captura aceita ARP só para esses IPs |
 
 ## 18. Roteiro de entrega
 
@@ -534,7 +551,7 @@ Sentinela/
 |---|---|---|
 | **1. Núcleo** (concluída em 2026-11-16) | guarda de rede, cadastro manual/CSV, agendador + limitador, ICMP/TCP/HTTP, máquina de estados, lista, WebSocket, login, **modo demonstração** | 300 equipamentos simulados com estados ao vivo na lista; testes do guarda e do limitador verdes |
 | **2. Visual** (concluída em 2026-11-17: Teia 3D com 5 estilos e Organograma; ver nota de desempenho no README. Lighthouse 13.6.0, preset desktop, perfil limpo, logado, contra a demo: Lista e Organograma com desempenho 100, acessibilidade 100, boas práticas 100 e SEO 100; CLS 0,014/0,017. Nota para o upstream: o Alpine CSP lê todas as globais do `window` ao carregar e dispara o aviso de depreciação da API Fenced Frame; o `tema.js` remove a global `fence` antes dele, até o Alpine passar a ignorar "fence" como já faz com "styleMedia" e "sharedStorage") | Teia 3D, Organograma, painel lateral, tema quântico, fallback | teia com 1.000 nós a 60 fps; organograma no celular; Lighthouse ≥ 90 |
-| **3. Descoberta** | MikroTik v6/v7, SNMP, gravadores Hikvision/Dahua, classificador, tela de Novos, varredura opcional | descoberta contra simuladores; teste de captura sem broadcast |
+| **3. Descoberta** (concluída em 2026-11-17: fontes MikroTik por api-ssl com impressão confiada, SNMP v2c/v3, gravadores Hikvision/Dahua com estado das câmeras filhas; classificador TOML por pontos com 39 regras e base OUI embutida; abas Novos e Configurações; varredura lenta opcional; credenciais cifradas. Núcleo com 851 testes (`pytest -W error`), front com 151 testes de unidade, smoke Playwright verde 3×; primeira tela 83,2 KB gzip (teto 150 KB); Lighthouse 100 nas quatro categorias em Novos e Configurações (Lighthouse 13.6.0, preset desktop). Prova de captura no Docker Desktop 29.6.2: 568 quadros, 359 do Sentinela, 132 ARP request todos para IPs autorizados (18 IPs: 3 fontes, 1 aprovado, 1 sondado, 13 da faixa varrida), 0 broadcast/multicast proibido. Demo com 3 fontes simuladas e 40 descobertas pendentes) | MikroTik v6/v7, SNMP, gravadores Hikvision/Dahua, classificador, tela de Novos, varredura opcional | descoberta contra simuladores; teste de captura sem broadcast |
 | **4. Operação** | alertas Telegram com agrupamento e correlação, `/parede` com emparelhamento, TOTP, instalador, update/backup/restore, imagens multi-arquitetura | instalação limpa num Raspberry Pi em < 10 min; pipeline de segurança verde |
 
 ## 19. Riscos
