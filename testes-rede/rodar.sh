@@ -53,5 +53,5 @@ echo "[..] analisando a captura"
 "$PY" analisar_captura.py saida/captura.pcap \
   --origem 10.99.250.10 --origem 02:00:00:fa:00:10 \
   --arp-permitido "$(cat saida/arp_permitido.txt)" \
-  --rede 10.99.250.0/24 \
+  --rede 10.99.250.0/24,10.99.250.0/27,10.99.250.32/28 \
   --exigir-contato "$(cat saida/contato_exigido.txt)"

@@ -167,7 +167,10 @@ texto claro.
   só acontecem: na **varredura lenta** de uma sub-rede em que você ligou a chave "permite
   varredura" (2 IPs por segundo, cancelável, desligada por padrão); quando você clica
   **Sondar** numa descoberta; ou depois da aprovação (o monitoramento falaria com o IP de
-  qualquer jeito). Fora desses casos, nenhum ARP é provocado.
+  qualquer jeito). Além deles, só os **hosts das fontes** que você cadastrou (roteador, switch,
+  gravador) recebem contato e, portanto, um ARP no primeiro pacote. Fora desses casos, nenhum
+  ARP é provocado. Desligar "permite varredura" (ou remover a sub-rede) cancela na hora a
+  varredura em curso nela.
 - Um aparelho fora das sub-redes declaradas aparece com o selo "fora das sub-redes
   monitoradas" e o botão para declarar o /24; aprovar fica bloqueado até lá.
 

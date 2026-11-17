@@ -59,20 +59,23 @@ Dois ajustes de ambiente, ambos sobre quadros que **não** são do Sentinela:
 ```bash
 python analisar_captura.py saida/captura.pcap \
   --origem 10.99.250.10 --origem 02:00:00:fa:00:10 \
-  --arp-permitido "$(cat saida/arp_permitido.txt)" --rede 10.99.250.0/24 \
+  --arp-permitido "$(cat saida/arp_permitido.txt)" \
+  --rede 10.99.250.0/24,10.99.250.0/27,10.99.250.32/28 \
   --exigir-contato "$(cat saida/contato_exigido.txt)"
 ```
 
 Só biblioteca padrão (lê o pcap com `struct`). Reprova todo quadro do Sentinela (IP ou MAC de
 origem) com destino `ff:ff:ff:ff:ff:ff`, `01:00:5e:*`, `33:33:*` ou outro MAC de grupo, IPv4
-multicast, `255.255.255.255`, o broadcast dirigido da rede ou IPv6 multicast. A única exceção é
+multicast, `255.255.255.255`, o broadcast dirigido de qualquer rede de `--rede` (o /24 e as
+duas sub-redes declaradas pela cena) ou IPv6 multicast. A única exceção é
 o **ARP request** para um IP da lista permitida, que a cena monta a partir do que de fato fez:
 
 - hosts das fontes cadastradas pelo admin (`.11`, `.12`, `.35`);
 - IPs aprovados com checagem própria (`.20` e o gravador `.35`; a câmera atrás do gravador não
   entra, porque nunca recebe socket);
 - o IP sondado (`.21`);
-- a faixa varrida (`10.99.250.32/28`).
+- a faixa varrida (`10.99.250.32/28`), **sem** o endereço de rede (`.32`) e o de broadcast
+  (`.47`): num CIDR permitido, ARP para esses dois reprova.
 
 ARP gratuito (anúncio do próprio IP) também reprova.
 
@@ -80,7 +83,8 @@ Ausência de broadcast só prova algo se a captura viu o trabalho real. Por isso
 **inválida** (código 2) quando o pcap não tem quadros, não tem nenhum quadro do Sentinela
 (interface ou MAC errados, tcpdump que perdeu o buffer) ou não mostra unicast do Sentinela
 para algum host de `--exigir-contato` (os hosts das três fontes, gravados pela cena em
-`saida/contato_exigido.txt`). Código 1 = quadro proibido; 0 = aprovado.
+`saida/contato_exigido.txt`). Argumento malformado ou `--exigir-contato` vazio também dão
+código 2 (mensagem curta, sem traceback). Código 1 = quadro proibido; 0 = aprovado.
 
 O teste negativo do analisador (`core/tests/rede/test_analisar_captura.py`, roda com a suíte
 do núcleo) usa pcaps sintéticos: um quadro mDNS reprova; ARP para IP permitido passa e é
@@ -89,16 +93,20 @@ unicast dão prova inválida.
 
 ## Resultado de referência
 
-Docker Desktop 29.6.2 (Windows 11), 2026-11-17:
+Docker Desktop 29.6.2 (Windows 11), 2026-11-17, rodada final da Fase 3:
 
 ```
-quadros na captura: 568
-quadros emitidos pelo Sentinela: 359
+quadros na captura: 582
+quadros emitidos pelo Sentinela: 372
 broadcast/multicast emitidos pelo Sentinela: 132
 ARP request permitidos: 132 para 18 IP(s)
   fontes: .11 2, .12 2, .35 2 | aprovado .20: 30 | sondado .21: 18 | varredura .33-.46: 6 cada
 APROVADO: nenhum broadcast/multicast além do ARP permitido
 ```
+
+A prova cobre **IPv4**: o IPv6 está desligado na rede de teste (ver acima). A ausência de
+multicast IPv6 do Sentinela é garantida pela Guarda (recusa `ff00::/8`) e pelos testes
+estáticos (nenhum `SO_BROADCAST`, nenhuma biblioteca de descoberta multicast).
 
 O ARP do `.20` se repete porque o IP aprovado não existe na rede de teste (o monitoramento o
 procura a cada ciclo e o vê offline); num aparelho real, depois da primeira resposta, o kernel

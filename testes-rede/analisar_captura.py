@@ -11,9 +11,12 @@ broadcast ou multicast: MAC ``ff:ff:ff:ff:ff:ff``, ``01:00:5e:*``, ``33:33:*`` o
 grupo; IPv4 multicast, ``255.255.255.255`` ou o broadcast dirigido de ``--rede``; IPv6
 multicast. A única exceção é o ARP request (operação 1) para um IP de ``--arp-permitido``
 (IPs ou CIDRs: hosts das fontes, aprovados, sondados e a faixa varrida), contado e relatado.
+Num CIDR permitido, o endereço de rede e o de broadcast **não** são permitidos (a varredura
+os pula; ARP para eles reprova).
 
-Prova inválida (código 2): captura sem quadros, sem nenhum quadro da origem, ou sem unicast
-do Sentinela para algum IP de ``--exigir-contato`` (os hosts das fontes que a cena usou).
+Prova inválida (código 2): argumento malformado; ``--exigir-contato`` presente mas vazio;
+captura sem quadros, sem nenhum quadro da origem, ou sem unicast do Sentinela para algum IP de
+``--exigir-contato`` (os hosts das fontes que a cena usou).
 
 Só biblioteca padrão (lê o pcap clássico com ``struct``): roda no CI sem dependência nova e não
 entra no núcleo. Tipos de enlace: Ethernet (1), Linux cooked v1 (113) e v2 (276). No cooked
@@ -127,7 +130,12 @@ def desmontar(q: Quadro) -> Enlace | None:
 
 
 def _ip_permitido(ip: ipaddress.IPv4Address, permitidos: list[Rede]) -> bool:
-    return any(ip in r for r in permitidos)
+    """IP de uma entrada permitida; num CIDR (até /30), sem o endereço de rede e o de
+    broadcast."""
+    return any(
+        ip in r and (r.prefixlen >= 31 or ip not in (r.network_address, r.broadcast_address))
+        for r in permitidos
+    )
 
 
 def analisar(
@@ -229,14 +237,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rede", default="", help="CIDR(s) da rede, para o broadcast dirigido")
     ap.add_argument(
         "--exigir-contato",
-        default="",
+        default=None,
         help="IPs (vírgula) que precisam ter recebido unicast do Sentinela: hosts das fontes",
     )
     a = ap.parse_args(argv)
-    exigidos = [ipaddress.IPv4Address(p.strip()) for p in a.exigir_contato.split(",") if p.strip()]
-    ips, macs = _origens(a.origem)
     try:
-        res = analisar(a.pcap, ips, macs, _redes(a.arp_permitido), _redes(a.rede))
+        exigidos: list[ipaddress.IPv4Address] = []
+        if a.exigir_contato is not None:
+            textos = [p.strip() for p in a.exigir_contato.split(",") if p.strip()]
+            if not textos:
+                raise ValueError("--exigir-contato vazio: a prova não teria o que conferir")
+            try:
+                exigidos = [ipaddress.IPv4Address(p) for p in textos]
+            except ValueError:
+                raise ValueError("--exigir-contato: IPv4 inválido") from None
+        ips, macs = _origens(a.origem)
+        permitidos, redes = _redes(a.arp_permitido), _redes(a.rede)
+    except (ValueError, argparse.ArgumentTypeError) as erro:
+        print(f"erro: {erro}", file=sys.stderr)
+        return 2
+    try:
+        res = analisar(a.pcap, ips, macs, permitidos, redes)
     except (ErroCaptura, OSError) as erro:
         print(f"erro: {erro}", file=sys.stderr)
         return 2

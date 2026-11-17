@@ -59,7 +59,9 @@ def pcap(caminho: Path, quadros: list[bytes], enlace: int = 1) -> Path:
 def rodar(caminho: Path, permitidos: str = "", exigir: str = "") -> int:
     args = [str(caminho), "--origem", IP_SENTINELA, "--origem", "02:00:00:fa:00:10"]
     args += ["--arp-permitido", permitidos, "--rede", "10.99.250.0/24"]
-    resultado: int = ac.main([*args, "--exigir-contato", exigir])
+    if exigir:
+        args += ["--exigir-contato", exigir]
+    resultado: int = ac.main(args)
     return resultado
 
 
@@ -200,3 +202,37 @@ def test_fontes_exigidas_com_unicast_passa(tmp_path: Path) -> None:
 def test_violacao_tem_prioridade_sobre_prova_incompleta(tmp_path: Path) -> None:
     bcast = eth(b"\xff" * 6, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "255.255.255.255"))
     assert rodar(pcap(tmp_path / "v.pcap", [bcast]), exigir="10.99.250.11") == 1
+
+
+@pytest.mark.parametrize("alvo", ["10.99.250.32", "10.99.250.47"], ids=["rede", "broadcast"])
+def test_arp_para_rede_ou_broadcast_do_cidr_permitido_reprova(tmp_path: Path, alvo: str) -> None:
+    quadro = eth(b"\xff" * 6, MAC_SENTINELA, 0x0806, arp(1, MAC_SENTINELA, IP_SENTINELA, alvo))
+    assert rodar(pcap(tmp_path / "rb.pcap", [quadro, UNICAST]), "10.99.250.32/28") == 1
+
+
+def test_broadcast_dirigido_de_qualquer_rede_declarada_reprova(tmp_path: Path) -> None:
+    # 10.99.250.31 é o broadcast do /27 declarado na cena (não do /24)
+    quadro = eth(MAC_OUTRO, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "10.99.250.31"))
+    args = [str(pcap(tmp_path / "b27.pcap", [quadro, UNICAST])), "--origem", IP_SENTINELA]
+    redes = "10.99.250.0/24,10.99.250.0/27,10.99.250.32/28"
+    assert ac.main([*args, "--rede", redes]) == 1
+    assert ac.main([*args, "--rede", "10.99.250.0/24"]) == 0  # só o /24 não pegaria
+
+
+@pytest.mark.parametrize(
+    "valor", ["10.99.250.11,lixo", "", " , "], ids=["malformado", "vazio", "so-virgulas"]
+)
+def test_exigir_contato_malformado_ou_vazio_e_invalido_sem_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], valor: str
+) -> None:
+    caminho = pcap(tmp_path / "ok.pcap", [UNICAST])
+    assert ac.main([str(caminho), "--origem", IP_SENTINELA, "--exigir-contato", valor]) == 2
+    erro = capsys.readouterr().err
+    assert "Traceback" not in erro and "--exigir-contato" in erro
+
+
+def test_rede_ou_origem_malformada_e_invalida_sem_traceback(tmp_path: Path) -> None:
+    caminho = str(pcap(tmp_path / "ok.pcap", [UNICAST]))
+    assert ac.main([caminho, "--origem", "nao-e-ip"]) == 2
+    assert ac.main([caminho, "--origem", IP_SENTINELA, "--rede", "10.99.250.0/33"]) == 2
+    assert ac.main([caminho, "--origem", IP_SENTINELA, "--arp-permitido", "x"]) == 2
