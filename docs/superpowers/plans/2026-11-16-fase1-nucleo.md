@@ -100,7 +100,7 @@ docker-compose.yml, docker-compose.demo.yml, .env.example, install.sh
   - recusa `255.255.255.255`, `10.99.0.255` (broadcast da sub-rede), `10.99.0.0` (rede), `224.0.0.251`, `239.255.255.250`, `0.0.0.0`, `127.0.0.1`, `169.254.1.1`, `10.99.1.5` (fora), `8.8.8.8`, `"abc"`, `"10.99.0.10/24"`, IPv6 `"ff02::1"` — cada um com `DestinoProibido` e `motivo` não vazio.
   - porta fora de 1–65535 → `DestinoProibido`; `protocolo="tcp"` sem porta → `DestinoProibido`.
   - `permitir_loopback=True` aceita `127.0.0.1` (usado só em testes de checagem).
-  - `validar_sub_rede("8.8.8.0/24")` e `("10.0.0.0/8")` recusam; `("192.168.1.0/24")` aceita.
+  - `validar_sub_rede("8.8.8.0/24")` e `("10.0.0.0/8")` recusam; `("10.99.1.0/24")` aceita.
   - `DestinoAutorizado(IPv4Address("10.99.0.1"), None, "icmp")` criado fora da Guarda → `TypeError`.
   - teste estático `test_nenhum_so_broadcast_no_codigo`: varre `sentinela/**/*.py` e falha se encontrar `SO_BROADCAST`, `zeroconf`, `ssdp`, `wsdiscovery`.
 - [ ] **Step 2:** `uv run pytest tests/rede -q` → FAIL.

@@ -4,7 +4,7 @@ repos:
     hooks:
       - id: gitleaks
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.0
+    rev: v0.17.5  # igual ao ruff travado em core/uv.lock
     hooks:
       - id: ruff
         args: [--fix]

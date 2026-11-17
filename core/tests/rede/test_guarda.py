@@ -78,14 +78,14 @@ def test_loopback_so_quando_permitido() -> None:
     assert g.validar("127.0.0.1", None, "icmp").ip == IPv4Address("127.0.0.1")
 
 
-@pytest.mark.parametrize("cidr", ["8.8.8.0/24", "10.0.0.0/8", "192.168.1.0/31", "abc"])
+@pytest.mark.parametrize("cidr", ["8.8.8.0/24", "10.0.0.0/8", "10.99.1.0/31", "abc"])
 def test_validar_sub_rede_recusa(cidr: str) -> None:
     with pytest.raises(DestinoProibido):
         Guarda.validar_sub_rede(cidr)
 
 
 def test_validar_sub_rede_aceita() -> None:
-    assert Guarda.validar_sub_rede("192.168.1.0/24") == IPv4Network("192.168.1.0/24")
+    assert Guarda.validar_sub_rede("10.99.1.0/24") == IPv4Network("10.99.1.0/24")
 
 
 def test_destino_nao_pode_ser_criado_fora_da_guarda() -> None:
@@ -120,7 +120,7 @@ def test_sub_redes_aninhadas_aceitam_host() -> None:
 
 
 @pytest.mark.parametrize(
-    "rede", ["0.0.0.0/0", "8.8.8.0/24", "10.0.0.0/8", "192.168.1.0/31", "192.168.1.1/32"]
+    "rede", ["0.0.0.0/0", "8.8.8.0/24", "10.0.0.0/8", "10.99.1.0/31", "10.99.1.1/32"]
 )
 def test_construtor_recusa_sub_rede_invalida(rede: str) -> None:
     with pytest.raises(DestinoProibido):

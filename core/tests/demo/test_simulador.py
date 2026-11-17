@@ -70,8 +70,12 @@ def test_gerar_rede_ips_macs_e_nomes() -> None:
 
 def test_gerar_rede_checagens_validas_na_guarda() -> None:
     guarda = Guarda(SUB_REDES)
-    for e in gerar_rede():
-        guarda.validar(e.ip, e.porta, e.checagem)  # type: ignore[arg-type]
+    rede = gerar_rede()
+    destinos = [guarda.validar(e.ip, e.porta, e.checagem) for e in rede]  # type: ignore[arg-type]
+    assert len(destinos) == len(rede) == 300
+    assert [str(d.ip) for d in destinos] == [e.ip for e in rede]
+    assert [(d.porta, d.protocolo) for d in destinos] == [(e.porta, e.checagem) for e in rede]
+    assert {d.protocolo for d in destinos} == {"icmp", "tcp", "http"}  # os três tipos exercitados
 
 
 def _destino(ip: str) -> DestinoAutorizado:
@@ -273,7 +277,7 @@ async def _app_sobre_banco_real(settings: Settings) -> None:
             agora = datetime.now(UTC)
             db.add(
                 Equipamento(
-                    nome="Real", ip="10.0.0.5", mac="aa:bb:cc:dd:ee:ff", classe_id=classe.id,
+                    nome="Real", ip="10.99.0.5", mac="02:00:00:00:00:05", classe_id=classe.id,
                     estado_desde=agora, criado_em=agora,
                 )
             )  # fmt: skip
@@ -312,7 +316,11 @@ async def test_demo_reabre_banco_marcado_como_demo(settings_demo: Settings) -> N
     for _ in range(2):  # a segunda vez o banco já é de demonstração: aceita
         app = criar_app(settings_demo, relogio=RelogioFalso(), iniciar_monitor=False)
         async with app.router.lifespan_context(app):
-            pass
+            async with app.state.sessoes() as db:
+                total = await db.scalar(select(func.count()).select_from(Equipamento))
+            assert total == 300  # semeado uma vez só: reabrir não duplica
+            assert await simulador.banco_e_demo(app.state.sessoes)
+            assert len(app.state.guarda._sub_redes) > 0
 
 
 async def test_demo_desligado_em_banco_demo_avisa_e_funciona(
