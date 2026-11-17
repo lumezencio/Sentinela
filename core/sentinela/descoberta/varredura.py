@@ -1,8 +1,9 @@
 """Varredura lenta (spec §5.2, §9.1 a): ICMP echo unicast em cada IP de uma sub-rede.
 
 - Só sub-redes com ``permite_varredura``; uma varredura por vez; cancelável.
-- Ritmo: um IP a cada ``intervalo_varredura_ips_s`` (padrão 0,5 s = 2 IPs/s), medido no
-  relógio injetado; cada IP custa 1 ficha de prioridade **baixa** no limitador.
+- Ritmo: no mínimo ``intervalo_varredura_ips_s`` (padrão 0,5 s = 2 IPs/s) entre dois envios,
+  medido no relógio injetado desde o envio anterior (atrasos nunca viram
+  rajada); cada IP custa 1 ficha de prioridade **baixa** no limitador.
 - Endereço de rede/broadcast da sub-rede varrida (e qualquer IP que a Guarda viva recuse,
   ex.: sub-rede removida no meio) é pulado sem enviar nada: o pacote só sai com um
   ``DestinoAutorizado``.
@@ -94,6 +95,8 @@ class Varredura:
         self._entregar = entregar
         self._tarefa: asyncio.Task[None] | None = None
         self._progresso: dict[str, Any] = {}
+        self._intervalo = 0.5
+        self._ultimo_envio: float | None = None
 
     def _rodando(self) -> bool:
         return self._tarefa is not None and not self._tarefa.done()
@@ -144,12 +147,10 @@ class Varredura:
 
     async def _rodar(self, rede: IPv4Network, intervalo: float) -> None:
         estado = "falhou"
-        inicio = self._relogio.agora()
+        self._intervalo = intervalo
+        self._ultimo_envio = None
         try:
-            for i, ip in enumerate(rede):
-                espera = inicio + i * intervalo - self._relogio.agora()
-                if espera > 0:
-                    await self._relogio.dormir(espera)
+            for ip in rede:
                 if ip not in (rede.network_address, rede.broadcast_address):
                     await self._um_ip(str(ip))
                 self._progresso["feitos"] += 1
@@ -169,6 +170,13 @@ class Varredura:
         except DestinoProibido:
             return  # rede/broadcast ou fora da Guarda viva: nenhum pacote
         await self._limitador.adquirir(1, prioridade="baixa")
+        # ritmo medido desde o envio anterior: atraso (ping lento, fichas, entrega) nunca
+        # vira rajada para "recuperar o tempo"
+        if self._ultimo_envio is not None:
+            espera = self._ultimo_envio + self._intervalo - self._relogio.agora()
+            if espera > 0:
+                await self._relogio.dormir(espera)
+        self._ultimo_envio = self._relogio.agora()
         try:
             vivo = await self._ping(destino)
         except Exception as e:  # noqa: BLE001 - um IP com problema não para a varredura

@@ -284,3 +284,15 @@ async def test_descoberta_so_ip_ganha_chave_do_mac(cena: Cena) -> None:
         await db.commit()
     [d] = await _descobertas(cena)
     assert d.chave == M2 and d.mac == M2
+
+
+async def test_sem_sondador_devolve_quem_sondar_fora_da_transacao(cena: Cena) -> None:
+    achados = [
+        Achado("10.99.2.20", M1, "arp", F_MK),  # sub-rede com varredura
+        Achado("10.99.1.20", M2, "arp", F_MK),  # sem varredura: nunca
+    ]
+    async with cena.sessoes() as db:
+        r = await mesclar(db, achados, cena.guarda, AGORA)
+        await db.commit()
+    d = next(d for d in await _descobertas(cena) if d.mac == M1)
+    assert r.a_sondar == [d.id] and d.sondada_em is None

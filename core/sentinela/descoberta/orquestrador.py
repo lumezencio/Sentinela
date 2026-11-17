@@ -24,9 +24,10 @@ Nenhum socket é aberto aqui: só os coletores (e a sondagem) falam com a rede, 
 """
 
 import asyncio
+import functools
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -71,6 +72,7 @@ from sentinela.descoberta.mescla import (
     mesclar,
     reclassificar,
 )
+from sentinela.descoberta.varredura import Ping, ping_icmp
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.checagens import GRAVADOR
 from sentinela.monitor.limitador import Limitador
@@ -83,6 +85,7 @@ log = logging.getLogger(__name__)
 
 TICK_S = 5.0
 COLETA_MIN_S = 30.0  # "coletar agora": no máximo 1 vez a cada 30 s por fonte
+TIMEOUT_COLETA_S = 300.0  # teto de uma coleta inteira (cada pedido já tem o seu)
 LIMITE_ERRO = 200
 LIMITE_NOME = 80
 TIPOS_GRAVADOR = ("hikvision", "dahua")
@@ -90,6 +93,7 @@ TIPOS_GRAVADOR = ("hikvision", "dahua")
 MSG_COLETA_INESPERADA = "falha inesperada na coleta"
 MSG_GRAVAR = "falha ao gravar o resultado da coleta"
 MSG_TESTE_INESPERADO = "falha inesperada ao testar a fonte"
+MSG_TEMPO = "a fonte não respondeu a tempo"
 MSG_FABRICA = "configuração da fonte inválida"
 MSG_FORA = "IP fora das sub-redes monitoradas: declare a sub-rede antes de aprovar."
 MSG_NAO_PENDENTE = "A descoberta não está pendente."
@@ -157,12 +161,17 @@ def e_canal(d: Descoberta) -> bool:
     return d.canal is not None and d.chave.startswith("nvr:")
 
 
+def _respondeu_icmp(d: Descoberta) -> bool:
+    """Respondeu ao eco da varredura lenta (ICMP comprovado)."""
+    return any(isinstance(o, dict) and o.get("origem") == "varredura" for o in d.origens or [])
+
+
 def checagem_sugerida(d: Descoberta) -> tuple[str, int | None]:
     """``gravador`` para canal; ``icmp`` se respondeu à varredura (ICMP); senão ``tcp`` na
     primeira porta aberta da lista fixa; senão ``icmp`` (spec §5.2 e §9.1)."""
     if e_canal(d):
         return GRAVADOR, None
-    if any(isinstance(o, dict) and o.get("origem") == "varredura" for o in d.origens or []):
+    if _respondeu_icmp(d):
         return "icmp", None
     abertas = (d.sinais or {}).get("portas")
     if isinstance(abertas, list):
@@ -193,6 +202,8 @@ class _Aprovacao:
 
     equipamentos: list[tuple[Equipamento, Classe]] = field(default_factory=list)
     descobertas: list[str] = field(default_factory=list)
+    # (equipamento, descoberta) cuja checagem icmp não veio de dado conhecido: §9.1 c
+    verificar: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 class Orquestrador:
@@ -208,6 +219,8 @@ class Orquestrador:
         fabrica_fontes: FabricaColetor = fabricar_coletor,
         *,
         sondar: FuncaoSondar = sondar,
+        ping: Ping = ping_icmp,
+        timeout_coleta_s: float = TIMEOUT_COLETA_S,
         oui: BaseOui | None = None,
         agora_parede: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -220,6 +233,8 @@ class Orquestrador:
         self._relogio = relogio
         self._fabrica = fabrica_fontes
         self._sondar = sondar
+        self._ping = ping
+        self._timeout_coleta = timeout_coleta_s
         self._oui = oui
         self._agora_parede = agora_parede
         # mapa vivo fonte_id -> coletor de gravador, lido pelo LeitorCanais
@@ -232,28 +247,64 @@ class Orquestrador:
         self._travas: dict[str, asyncio.Lock] = {}
         # coletas rodam em paralelo, mas a mescla é serial: duas fontes vendo o mesmo MAC
         # ao mesmo tempo não podem criar duas descobertas com a mesma chave
+        # (só a parte no banco: sondagens e coletas de rede ficam fora dela)
         self._trava_mescla = asyncio.Lock()
+        self._em_curso: dict[str, asyncio.Task[None]] = {}  # coleta agendada por fonte
+        self._fundo: set[asyncio.Task[None]] = set()  # sondagens e verificações
+        self._sondando: set[str] = set()
 
     # ---- laço -------------------------------------------------------------------------------
 
     async def executar(self) -> None:
         """Laço sem fim; nenhum ciclo ruim o derruba (cancelamento encerra as coletas)."""
-        while True:
-            try:
-                await self.ciclo()
-            except Exception as e:  # noqa: BLE001
-                log.error("ciclo do orquestrador falhou: %s", type(e).__name__)
-            await self._relogio.dormir(TICK_S)
+        try:
+            while True:
+                try:
+                    await self.ciclo()
+                except Exception as e:  # noqa: BLE001
+                    log.error("ciclo do orquestrador falhou: %s", type(e).__name__)
+                await self._relogio.dormir(TICK_S)
+        finally:
+            await self.encerrar()
 
     async def ciclo(self) -> None:
-        """Relê as fontes e coleta, em paralelo, as que venceram o intervalo."""
+        """Relê as fontes e dispara, cada uma na sua tarefa, as que venceram o intervalo.
+
+        Não espera as coletas: uma fonte lenta ou travada (limitada por ``timeout_coleta``)
+        não atrasa o agendamento das outras; a mesma fonte não roda duas vezes ao mesmo tempo.
+        """
         await self._recarregar()
         agora = self._relogio.agora()
-        devidas = [f for f in self._agenda if agora >= self._proxima.get(f, agora)]
-        for fonte_id in devidas:
-            self._proxima[fonte_id] = agora + self._agenda[fonte_id]
-        if devidas:
-            await asyncio.gather(*(self._coletar(f) for f in devidas), return_exceptions=True)
+        for fonte_id, intervalo in self._agenda.items():
+            if fonte_id in self._em_curso or agora < self._proxima.get(fonte_id, agora):
+                continue
+            self._proxima[fonte_id] = agora + intervalo
+            tarefa = asyncio.create_task(self._coletar(fonte_id), name="sentinela-coleta")
+            self._em_curso[fonte_id] = tarefa
+            tarefa.add_done_callback(functools.partial(self._fim_coleta, fonte_id))
+
+    def _fim_coleta(self, fonte_id: str, tarefa: asyncio.Task[None]) -> None:
+        if self._em_curso.get(fonte_id) is tarefa:
+            del self._em_curso[fonte_id]
+
+    def _lancar(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Tarefa de fundo (sondagem/verificação): isolada, cancelada no encerramento."""
+        tarefa = asyncio.create_task(coro, name="sentinela-descoberta-fundo")
+        self._fundo.add(tarefa)
+        tarefa.add_done_callback(self._fundo.discard)
+
+    async def ocioso(self) -> None:
+        """Espera as coletas agendadas e as tarefas de fundo terminarem (testes, demo)."""
+        while self._em_curso or self._fundo:
+            await asyncio.gather(*self._em_curso.values(), *self._fundo, return_exceptions=True)
+
+    async def encerrar(self) -> None:
+        """Cancela coletas e tarefas de fundo e espera o fim (nenhuma fica órfã)."""
+        tarefas = [*self._em_curso.values(), *self._fundo]
+        for t in tarefas:
+            t.cancel()
+        if tarefas:
+            await asyncio.gather(*tarefas, return_exceptions=True)
 
     async def coletar_todas(self) -> None:
         """Coleta todas as fontes ativas agora (demo e testes), sem o limite de 30 s."""
@@ -346,7 +397,10 @@ class Orquestrador:
             await self._registrar_erro(fonte_id, MSG_FABRICA)
             return
         try:
-            achados = await coletor.coletar()
+            async with asyncio.timeout(self._timeout_coleta):
+                achados = await coletor.coletar()
+        except TimeoutError:
+            erro = MSG_TEMPO
         except (CertificadoMudou, CertificadoNaoConfiado) as e:
             erro = str(e)
             if e_gravador(fonte) and self.leitor_canais is not None:
@@ -381,9 +435,6 @@ class Orquestrador:
         except Exception as e:  # noqa: BLE001
             log.error("falha ao registrar erro da fonte %s: %s", fonte_id, type(e).__name__)
 
-    async def _sondador(self, ip: str) -> tuple[set[int], str | None]:
-        return await self._sondar(ip, self._guarda, self._limitador)
-
     async def processar_achados(
         self, achados: list[Achado], *, fonte_id: str | None = None
     ) -> None:
@@ -393,10 +444,9 @@ class Orquestrador:
         if self._oui is None:
             self._oui = BaseOui.carregar()
         try:
+            # só banco dentro da trava; a sondagem (lenta) roda depois, em fundo
             async with self._trava_mescla, self._sessoes() as db:
-                r = await mesclar(
-                    db, achados, self._guarda, agora, oui=self._oui, sondador=self._sondador
-                )
+                r = await mesclar(db, achados, self._guarda, agora, oui=self._oui)
                 if fonte_id is not None:
                     fonte = await db.get(Fonte, fonte_id)
                     if fonte is not None:
@@ -411,6 +461,43 @@ class Orquestrador:
             await self._reagendar(eq_id)
         await self._publicar_resultado(r)
         await self._aprovar_automaticamente([*r.novas, *r.atualizadas])
+        for id in r.a_sondar:
+            if id not in self._sondando:
+                self._sondando.add(id)
+                self._lancar(self._sondar_em_fundo(id))
+
+    async def _sondar_em_fundo(self, descoberta_id: str) -> None:
+        """§9.1 a: sondagem de descoberta em sub-rede com varredura, fora da trava; o
+        resultado entra num passo curto e serial no banco."""
+        try:
+            async with self._sessoes() as db:
+                d = await db.get(Descoberta, descoberta_id)
+            if d is None or d.status != PENDENTE or not dentro_das_subredes(self._guarda, d.ip):
+                return
+            portas, titulo = await self._sondar(d.ip, self._guarda, self._limitador)
+            atual = await self._gravar_sonda(descoberta_id, portas, titulo)
+            if atual is not None:
+                self._publicar_descoberta(
+                    "atualizada", atual.id, atual.classe_sugerida, atual.confianca
+                )
+                await self._aprovar_automaticamente([descoberta_id])
+        except Exception as e:  # noqa: BLE001 - sondagem é só um sinal a mais
+            log.warning("sondagem em fundo falhou: %s", type(e).__name__)
+        finally:
+            self._sondando.discard(descoberta_id)
+
+    async def _gravar_sonda(
+        self, descoberta_id: str, portas: set[int], titulo: str | None
+    ) -> Descoberta | None:
+        async with self._trava_mescla, self._sessoes() as db:
+            atual = await db.get(Descoberta, descoberta_id)
+            if atual is None:
+                return None
+            atual.sinais = {**(atual.sinais or {}), "portas": sorted(portas), "titulo": titulo}
+            atual.sondada_em = self._agora_parede()
+            reclassificar(atual)
+            await db.commit()
+            return atual
 
     async def _reagendar(self, eq_id: str) -> None:
         async with self._sessoes() as db:
@@ -596,14 +683,9 @@ class Orquestrador:
         except Exception as e:  # noqa: BLE001
             log.warning("sondagem pedida falhou: %s", type(e).__name__)
             raise SondagemRecusada(MSG_SONDAR_FALHOU) from None
-        async with self._sessoes() as db:
-            atual = await db.get(Descoberta, descoberta_id)
-            if atual is None:
-                raise DescobertaInexistente
-            atual.sinais = {**(atual.sinais or {}), "portas": sorted(portas), "titulo": titulo}
-            atual.sondada_em = self._agora_parede()
-            reclassificar(atual)
-            await db.commit()
+        atual = await self._gravar_sonda(descoberta_id, portas, titulo)
+        if atual is None:
+            raise DescobertaInexistente
         self._publicar_descoberta("atualizada", atual.id, atual.classe_sugerida, atual.confianca)
         return atual
 
@@ -640,7 +722,56 @@ class Orquestrador:
         for id in feito.descobertas:
             self._publicar_descoberta("removida", id, None, 0.0)
         await self.publicar_pendentes()
+        for eq_id, d_id in feito.verificar:
+            self._lancar(self._verificar_checagem(eq_id, d_id))
         return eq
+
+    async def _verificar_checagem(self, eq_id: str, descoberta_id: str | None) -> None:
+        """§9.1 c (R8): depois da aprovação, 1 eco ICMP e a sondagem das portas, em fundo e
+        com fichas baixas. ICMP sem resposta e porta da lista aberta: a checagem passa a
+        ``tcp`` na primeira porta aberta (auditado, reagendado, publicado). Qualquer falha
+        deixa a checagem como está."""
+        try:
+            async with self._sessoes() as db:
+                eq = await db.get(Equipamento, eq_id)
+            if eq is None or eq.checagem != "icmp":
+                return
+            ip = eq.ip
+            destino = self._guarda.validar(ip, None, "icmp")
+            await self._limitador.adquirir(1, prioridade="baixa")
+            respondeu = await self._ping(destino)
+            portas, titulo = await self._sondar(ip, self._guarda, self._limitador)
+            if descoberta_id is not None:
+                await self._gravar_sonda(descoberta_id, portas, titulo)
+            if respondeu:
+                return
+            porta = next((p for p in PORTAS if p in portas), None)
+            if porta is not None:
+                await self._trocar_para_tcp(eq_id, ip, porta)
+        except Exception as e:  # noqa: BLE001 - verificação é só uma sugestão
+            log.warning("verificação da checagem falhou: %s", type(e).__name__)
+
+    async def _trocar_para_tcp(self, eq_id: str, ip: str, porta: int) -> None:
+        async with self._trava_mescla, self._sessoes() as db:
+            eq = await db.get(Equipamento, eq_id)
+            if eq is None or eq.checagem != "icmp" or eq.ip != ip:
+                return  # o admin (ou a mescla) mudou o equipamento nesse meio-tempo
+            classe = await db.get(Classe, eq.classe_id)
+            if classe is None:
+                return
+            eq.checagem, eq.porta = "tcp", porta
+            auditar_sistema(
+                db,
+                "equipamento.checagem_automatica",
+                eq.id,
+                self._agora_parede(),
+                {"checagem": "icmp", "porta": None},
+                {"checagem": "tcp", "porta": porta},
+            )
+            await db.commit()
+            await registrar_no_agendador(self._agendador, db, eq, classe, novo=False)
+        dados = {"acao": "atualizado", "id": eq_id, "ip": ip, "checagem": "tcp", "porta": porta}
+        self._barramento.publicar(Mensagem("equipamento", dados))
 
     async def _aprovar_uma(
         self,
@@ -693,6 +824,8 @@ class Orquestrador:
         await db.flush()
         feito.equipamentos.append((eq, classe))
         feito.descobertas.append(d.id)
+        if checagem == "icmp" and not _respondeu_icmp(d):
+            feito.verificar.append((eq.id, d.id))
         if not canal:
             await self._ligar_fontes_do_ip(db, eq)
         return eq
@@ -808,6 +941,7 @@ class Orquestrador:
         self._auditar_aprovacao(db, eq, classe, f"fonte:{fonte.id}", usuario, ip, agora)
         await db.flush()
         feito.equipamentos.append((eq, classe))
+        feito.verificar.append((eq.id, None))
         return eq
 
 

@@ -1,5 +1,6 @@
 """Orquestrador: coleta por fonte, falhas isoladas, aprovação, barramento e §9.3."""
 
+import asyncio
 import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -24,6 +25,7 @@ from sentinela.descoberta.fontes.base import (
 )
 from sentinela.descoberta.orquestrador import (
     MSG_COLETA_INESPERADA,
+    MSG_TEMPO,
     MSG_TESTE_INESPERADO,
     AprovacaoRecusada,
     ColetaRecente,
@@ -34,7 +36,7 @@ from sentinela.descoberta.orquestrador import (
 from sentinela.monitor.agendador import Alvo
 from sentinela.monitor.estados import Estado
 from sentinela.monitor.limitador import Limitador
-from sentinela.rede.guarda import Guarda
+from sentinela.rede.guarda import DestinoAutorizado, Guarda
 from sentinela.seguranca.cofre import Cofre
 from tests.descoberta.apoio import AGORA, Cena, criar_equipamento, criar_fonte, montar_cena
 
@@ -93,7 +95,9 @@ def _orquestrador(
     def fabrica(fonte: Fonte, _c: Cofre, _g: Guarda, _l: Limitador) -> ColetorFalso:
         return coletores[fonte.id]
 
-    return Orquestrador(
+    extra.setdefault("ping", _ping_responde)
+    extra.setdefault("sondar", _sondar_nada)
+    orq = Orquestrador(
         cena.sessoes,
         cena.guarda,
         cena.limitador,
@@ -105,6 +109,16 @@ def _orquestrador(
         agora_parede=lambda: AGORA,
         **extra,
     )
+    cena.finalizar.append(orq.encerrar)
+    return orq
+
+
+async def _ping_responde(_destino: DestinoAutorizado) -> bool:
+    return True
+
+
+async def _sondar_nada(_ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+    return set(), None
 
 
 async def _fonte(cena: Cena, cofre: Cofre, tipo: str = "mikrotik", **campos: Any) -> str:
@@ -135,6 +149,7 @@ async def test_falha_de_uma_fonte_nao_para_as_outras(cena: Cena, cofre: Cofre) -
     }
     orq = _orquestrador(cena, cofre, coletores)
     await orq.ciclo()
+    await orq.ocioso()
     async with cena.sessoes() as db:
         fontes = {f.id: f for f in (await db.execute(select(Fonte))).scalars()}
     assert fontes[f1].ultimo_erro == MSG_COLETA_INESPERADA
@@ -154,6 +169,7 @@ async def test_duas_fontes_com_o_mesmo_mac_em_paralelo(cena: Cena, cofre: Cofre)
     }
     orq = _orquestrador(cena, cofre, coletores)
     await orq.ciclo()  # as duas coletas terminam juntas
+    await orq.ocioso()
     [d] = await _descobertas(cena)
     assert {o["origem"] for o in d.origens} == {"arp", "snmp_arp"}
     async with cena.sessoes() as db:
@@ -165,11 +181,14 @@ async def test_coleta_segue_o_intervalo_da_fonte(cena: Cena, cofre: Cofre) -> No
     coletores = {f1: ColetorFalso()}
     orq = _orquestrador(cena, cofre, coletores)
     await orq.ciclo()
+    await orq.ocioso()
     await cena.relogio.avancar(599)
     await orq.ciclo()
+    await orq.ocioso()
     assert coletores[f1].coletas == 1
     await cena.relogio.avancar(1)
     await orq.ciclo()
+    await orq.ocioso()
     assert coletores[f1].coletas == 2
 
 
@@ -258,6 +277,7 @@ async def test_certificado_mudou_na_coleta_suspende_leitura_de_canais(
     )
     orq.leitor_canais = leitor
     await orq.ciclo()
+    await orq.ocioso()
     await leitor.ciclo()  # o próprio leitor também esbarra no certificado
     assert leitor.suspensa(f1)
     assert cena.agendador.estado_de(cam.id) is Estado.DESCONHECIDO
@@ -272,6 +292,7 @@ async def test_certificado_mudou_na_coleta_suspende_leitura_de_canais(
     coletor.erro = None
     await cena.relogio.avancar(600)
     await orq.ciclo()
+    await orq.ocioso()
     assert not leitor.suspensa(f1)
     await leitor.ciclo()
     assert cena.agendador.estado_de(cam.id) is Estado.ONLINE
@@ -510,3 +531,175 @@ async def test_sondar_descoberta_grava_portas_e_reclassifica(cena: Cena, cofre: 
         await orq.sondar_descoberta(ds["172.16.0.9"].id)
     assert chamadas == ["10.99.1.20"]
     assert cena.barramento.do_tipo("descoberta")[-1]["acao"] == "atualizada"
+
+
+# ---- isolamento: sondagem lenta e fonte travada (revisão, item 1) ---------------------------
+
+
+async def test_sondagem_lenta_nao_bloqueia_outra_fonte_nem_coletar_agora(
+    cena: Cena, cofre: Cofre
+) -> None:
+    liberar = asyncio.Event()
+    sondados: list[str] = []
+
+    async def sondar_lento(ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+        sondados.append(ip)
+        await liberar.wait()  # sondagem presa (ex.: fichas baixas sob saturação)
+        return {9100}, None
+
+    lenta = await _fonte(cena, cofre, host="10.99.1.1")
+    outra = await _fonte(cena, cofre, host="10.99.1.2")
+    coletores = {
+        lenta: ColetorFalso([Achado("10.99.2.20", M1, "arp", "a")]),  # sub-rede com varredura
+        outra: ColetorFalso([Achado("10.99.1.30", M2, "arp", "b")]),
+    }
+    orq = _orquestrador(cena, cofre, coletores, sondar=sondar_lento)
+    # "coletar agora" volta logo: a sondagem fica em fundo, fora da trava da mescla
+    await asyncio.wait_for(orq.coletar_agora(lenta), timeout=2)
+    for _ in range(200):  # a sondagem começa em fundo (lê o banco) e fica presa
+        if sondados:
+            break
+        await asyncio.sleep(0.01)
+    assert sondados == ["10.99.2.20"]
+    await asyncio.wait_for(orq.coletar_agora(outra), timeout=2)
+    assert {d.mac for d in await _descobertas(cena)} == {M1, M2}
+    liberar.set()
+    await orq.ocioso()
+    d = next(d for d in await _descobertas(cena) if d.mac == M1)
+    assert d.sinais["portas"] == [9100] and d.classe_sugerida == "impressora"
+    assert d.sondada_em == AGORA
+    assert cena.barramento.do_tipo("descoberta")[-1]["acao"] == "atualizada"
+
+
+async def test_fonte_travada_nao_atrasa_as_outras_e_tem_tempo_limite(
+    cena: Cena, cofre: Cofre
+) -> None:
+    class ColetorTravado(ColetorFalso):
+        async def coletar(self) -> list[Achado]:
+            self.coletas += 1
+            await asyncio.Event().wait()  # nunca responde
+            return []
+
+    travada = await _fonte(cena, cofre, host="10.99.1.1")
+    boa = await _fonte(cena, cofre, host="10.99.1.2")
+    coletores: dict[str, ColetorFalso] = {travada: ColetorTravado(), boa: ColetorFalso()}
+    orq = _orquestrador(cena, cofre, coletores, timeout_coleta_s=0.2)
+    await orq.ciclo()
+    await asyncio.sleep(0.05)
+    assert coletores[boa].coletas == 1  # não esperou a travada
+    await cena.relogio.avancar(600)
+    await orq.ciclo()  # a travada ainda roda: não é disparada de novo; a boa segue o ritmo
+    await asyncio.sleep(0.05)
+    assert coletores[boa].coletas == 2 and coletores[travada].coletas == 1
+    await asyncio.wait_for(orq.ocioso(), timeout=2)  # o tempo limite encerra a travada
+    async with cena.sessoes() as db:
+        fonte = await db.get(Fonte, travada)
+        assert fonte is not None and fonte.ultimo_erro == MSG_TEMPO
+
+
+# ---- checagem sugerida depois da aprovação (§9.1 c, R8) ------------------------------------
+
+
+async def _aprovada(
+    cena: Cena,
+    cofre: Cofre,
+    ping: Any,
+    sondar: Any,
+) -> tuple[Orquestrador, Equipamento]:
+    orq = _orquestrador(cena, cofre, {}, ping=ping, sondar=sondar)
+    await _coletar_um(cena, cofre, Achado("10.99.1.20", M1, "dhcp", "x", nome="cam-1"))
+    [d] = await _descobertas(cena)
+    async with cena.sessoes() as db:
+        eq = await orq.aprovar(db, d.id, "camera", None, None)
+    assert eq.checagem == "icmp"
+    await orq.ocioso()
+    return orq, eq
+
+
+async def _recarregado(cena: Cena, eq: Equipamento) -> Equipamento:
+    async with cena.sessoes() as db:
+        atual = await db.get(Equipamento, eq.id)
+        assert atual is not None
+        return atual
+
+
+async def test_verificacao_icmp_responde_mantem_icmp(cena: Cena, cofre: Cofre) -> None:
+    pings: list[str] = []
+
+    async def ping(destino: DestinoAutorizado) -> bool:
+        pings.append(str(destino.ip))
+        return True
+
+    async def sondar(ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+        return {554}, None
+
+    _, eq = await _aprovada(cena, cofre, ping, sondar)
+    assert pings == ["10.99.1.20"]
+    atual = await _recarregado(cena, eq)
+    assert (atual.checagem, atual.porta) == ("icmp", None)
+    [d] = await _descobertas(cena)
+    assert d.sondada_em == AGORA and d.sinais["portas"] == [554]
+    assert (1, "baixa") in cena.limitador.pedidos
+
+
+async def test_verificacao_icmp_mudo_e_554_aberta_vira_tcp(cena: Cena, cofre: Cofre) -> None:
+    async def ping(_destino: DestinoAutorizado) -> bool:
+        return False
+
+    async def sondar(ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+        return {8000, 554}, None
+
+    _, eq = await _aprovada(cena, cofre, ping, sondar)
+    atual = await _recarregado(cena, eq)
+    assert (atual.checagem, atual.porta) == ("tcp", 554)  # ordem da lista: 554 antes de 8000
+    reg = cena.agendador._registros[eq.id]
+    assert reg.destino is not None and (reg.destino.protocolo, reg.destino.porta) == ("tcp", 554)
+    async with cena.sessoes() as db:
+        aud = await db.scalar(
+            select(Auditoria).where(Auditoria.acao == "equipamento.checagem_automatica")
+        )
+    assert (
+        aud is not None
+        and aud.usuario_id is None
+        and aud.depois
+        == {
+            "checagem": "tcp",
+            "porta": 554,
+        }
+    )
+    assert cena.barramento.do_tipo("equipamento")[-1] == {
+        "acao": "atualizado",
+        "id": eq.id,
+        "ip": "10.99.1.20",
+        "checagem": "tcp",
+        "porta": 554,
+    }
+
+
+async def test_verificacao_com_falha_mantem_icmp(cena: Cena, cofre: Cofre) -> None:
+    async def ping(_destino: DestinoAutorizado) -> bool:
+        return False
+
+    async def sondar(ip: str, _g: Guarda, _l: Limitador) -> tuple[set[int], str | None]:
+        raise OSError("rede")
+
+    _, eq = await _aprovada(cena, cofre, ping, sondar)
+    atual = await _recarregado(cena, eq)
+    assert (atual.checagem, atual.porta) == ("icmp", None)
+    assert cena.barramento.do_tipo("equipamento") == []
+
+
+async def test_canal_e_varredura_nao_disparam_verificacao(cena: Cena, cofre: Cofre) -> None:
+    pings: list[str] = []
+
+    async def ping(destino: DestinoAutorizado) -> bool:
+        pings.append(str(destino.ip))
+        return True
+
+    orq = _orquestrador(cena, cofre, {}, ping=ping)
+    await _coletar_um(cena, cofre, Achado("10.99.1.21", None, "varredura", "varredura"))
+    [d] = await _descobertas(cena)
+    async with cena.sessoes() as db:
+        eq = await orq.aprovar(db, d.id, "computador", None, None)
+    await orq.ocioso()
+    assert eq.checagem == "icmp" and pings == []  # ICMP já comprovado pela varredura

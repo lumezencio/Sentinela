@@ -117,6 +117,7 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
         app.state.relogio,
         fabrica,
         sondar=sondador,
+        ping=ping,
     )
     leitor = LeitorCanais(
         app.state.sessoes,
@@ -179,6 +180,8 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.varredura.encerrar()
+        # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
+        await app.state.orquestrador.encerrar()
         for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, descoberta,
             # leitura de canais e agendador
             tarefa.cancel()

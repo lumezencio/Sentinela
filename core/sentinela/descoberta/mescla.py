@@ -60,6 +60,9 @@ class ResultadoMescla:
     equipamentos_atualizados: list[str] = field(default_factory=list)
     conflitos: list[str] = field(default_factory=list)
     removidas: list[str] = field(default_factory=list)  # saíram da fila (viraram equipamento)
+    # sem ``sondador``: descobertas que podem ser sondadas agora (quem chama sonda fora da
+    # transação/trava e grava o resultado depois)
+    a_sondar: list[str] = field(default_factory=list)
 
 
 def chave_de(a: Achado) -> str:
@@ -340,7 +343,9 @@ async def mesclar(
     sondador: Sondador | None = None,
 ) -> ResultadoMescla:
     """Aplica os achados ao banco (sem commit). ``sondador`` só é chamado para IPs em
-    sub-redes com ``permite_varredura`` (§9.1 a), uma vez a cada 24 h por chave."""
+    sub-redes com ``permite_varredura`` (§9.1 a), uma vez a cada 24 h por chave. Sem
+    ``sondador`` (orquestrador), essas descobertas vão em ``a_sondar`` para quem chama
+    sondar fora da transação."""
     r = ResultadoMescla()
     grupos = agrupar(achados)
     if not grupos:
@@ -363,7 +368,9 @@ async def mesclar(
     for p in planos:
         ip = p.grupo.ip
         sonda = sondas.get(ip) if p.sondar and ip is not None else None
-        await _aplicar(db, p, agora, sonda, r)
+        d = await _aplicar(db, p, agora, sonda, r)
+        if p.sondar and sondador is None and d is not None:
+            r.a_sondar.append(d.id)
     await db.flush()
     return r
 
@@ -374,7 +381,7 @@ async def _aplicar(
     agora: datetime,
     sonda: tuple[set[int], str | None] | None,
     r: ResultadoMescla,
-) -> None:
+) -> Descoberta | None:
     g = p.grupo
     if p.fonte is not None and p.fonte.equipamento_id is None and p.pai is not None:
         p.fonte.equipamento_id = p.pai  # §9.3: liga a fonte ao gravador pelo IP
@@ -392,8 +399,8 @@ async def _aplicar(
             r.removidas.append(d.id)
         elif d is not None:
             d.ultima_vez = agora
-        return
-    await _aplicar_descoberta(db, p, agora, sonda, r)
+        return None
+    return await _aplicar_descoberta(db, p, agora, sonda, r)
 
 
 async def _atualizar_conhecido(
@@ -419,21 +426,21 @@ async def _aplicar_descoberta(
     agora: datetime,
     sonda: tuple[set[int], str | None] | None,
     r: ResultadoMescla,
-) -> None:
+) -> Descoberta | None:
     g = p.grupo
     d = p.descoberta
     if d is not None and d.status == IGNORADA:
         d.ultima_vez = agora
-        return
+        return None
     if d is not None and d.status == APROVADA:
         if await _existe(db, d.equipamento_id):
             d.ultima_vez = agora
-            return
+            return None
         d.status, d.equipamento_id = PENDENTE, None  # o equipamento foi removido: volta
     nova = d is None
     if d is None:
         if not g.ip and g.canal is None:
-            return  # só MAC (ex.: tabela FDB) e ninguém conhecido: nada a monitorar ainda
+            return None  # só MAC (ex.: tabela FDB) e ninguém conhecido: nada a monitorar ainda
         d = Descoberta(
             id=str(uuid.uuid4()),
             chave=g.chave,
@@ -483,3 +490,4 @@ async def _aplicar_descoberta(
         r.atualizadas.append(d.id)
     if d.conflito_com is not None:
         r.conflitos.append(d.id)
+    return d

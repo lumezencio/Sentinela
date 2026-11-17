@@ -1,7 +1,7 @@
 """Cena comum dos testes de mescla, orquestrador e varredura (banco real em arquivo)."""
 
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -76,6 +76,8 @@ class Cena:
     barramento: BarramentoGravado
     limitador: LimitadorEspiao
     agendador: Agendador
+    # rodados no fim da cena (ex.: encerrar tarefas de fundo do orquestrador)
+    finalizar: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
 
 @asynccontextmanager
@@ -102,7 +104,10 @@ async def montar_cena(tmp_path: Path) -> AsyncIterator[Cena]:
         agora_parede=lambda: AGORA,
     )
     try:
-        yield Cena(sessoes, guarda, relogio, barramento, limitador, agendador)
+        cena = Cena(sessoes, guarda, relogio, barramento, limitador, agendador)
+        yield cena
+        for finalizar in cena.finalizar:
+            await finalizar()
         await agendador.aguardar_gravacoes()
     finally:
         await motor.dispose()

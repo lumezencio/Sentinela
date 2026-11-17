@@ -202,3 +202,33 @@ async def test_sub_rede_fora_da_guarda_nao_envia_nada(cena: Cena) -> None:
     await _ate_terminar(cena, v)
     assert ping.chamadas == []
     assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+async def test_atraso_nao_vira_rajada(cena: Cena) -> None:
+    """Ping lento e entrega lenta só deixam a varredura mais lenta, nunca acima do ritmo."""
+    envios: list[float] = []
+
+    async def ping_lento(destino: DestinoAutorizado) -> bool:
+        envios.append(cena.relogio.agora())
+        if destino.ip == IPv4Address("10.99.2.1"):
+            await cena.relogio.dormir(3.0)  # primeiro IP demora 6 intervalos
+        return destino.ip == IPv4Address("10.99.2.2")
+
+    async def entrega_lenta(_achados: list[Achado]) -> None:
+        await cena.relogio.dormir(2.0)
+
+    v = Varredura(
+        cena.sessoes,
+        cena.guarda,
+        cena.limitador,
+        cena.barramento,
+        cena.relogio,
+        ping=ping_lento,
+        entregar=entrega_lenta,
+    )
+    await v.iniciar(await _sub_rede(cena, PEQUENA))
+    await _ate_terminar(cena, v, passo=0.25)
+    assert len(envios) == 6
+    assert all(b - a >= 0.5 - 1e-9 for a, b in zip(envios, envios[1:], strict=False))
+    # em qualquer janela de 1 s, no máximo 2 envios (2 IPs/s)
+    assert all(sum(t <= e < t + 1.0 for e in envios) <= 2 for t in envios)
