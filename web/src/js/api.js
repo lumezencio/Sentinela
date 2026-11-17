@@ -76,6 +76,11 @@ export const api = {
   sair: () => requisitar("POST", "/auth/logout", { redirecionar401: false }),
   eu: () => requisitar("GET", "/auth/eu"),
   criarEquipamento: (dados) => requisitar("POST", "/equipamentos", { json: dados }),
+  eventosEquipamento: (id) =>
+    requisitar("GET", `/equipamentos/${encodeURIComponent(id)}/eventos?limit=10`),
+  pausarEquipamento: (id) => requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/pausar`),
+  retomarEquipamento: (id) =>
+    requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/retomar`),
   listarSubredes: () => requisitar("GET", "/subredes"),
   criarSubrede: (cidr) => requisitar("POST", "/subredes", { json: { cidr } }),
   removerSubrede: (id) => requisitar("DELETE", `/subredes/${encodeURIComponent(id)}`),

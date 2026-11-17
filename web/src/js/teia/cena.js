@@ -40,7 +40,8 @@ function rgba(hex, alfa) {
 
 /**
  * Monta a Teia dentro de `container` e devolve o controle da cena.
- * O container recebe data-nos (nós de equipamento na cena), data-nivel e data-movimento.
+ * O container recebe data-nos (nós de equipamento na cena), data-equipamentos (equipamentos
+ * conhecidos pela cena, em qualquer nível), data-nivel e data-movimento.
  */
 export function montarTeia(container, opcoes = {}) {
   const aoClicarEquipamento = opcoes.aoClicarEquipamento || (() => {});
@@ -392,6 +393,8 @@ export function montarTeia(container, opcoes = {}) {
 
   function atualizarAtributos() {
     container.dataset.nos = String(est.nivel === "agrupado" ? 0 : nos.size);
+    // R6: equipamentos que a cena conhece (independe do nível; agrupado não zera)
+    container.dataset.equipamentos = String(est.total);
     container.dataset.nivel = est.nivel;
     container.dataset.movimento = reduzido ? "reduzido" : "normal";
   }
@@ -755,6 +758,7 @@ export function montarTeia(container, opcoes = {}) {
     container.style.cursor = "";
     container.classList.remove("teia-cena");
     delete container.dataset.nos;
+    delete container.dataset.equipamentos;
     delete container.dataset.nivel;
     delete container.dataset.movimento;
   }

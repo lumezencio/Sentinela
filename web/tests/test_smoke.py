@@ -62,9 +62,10 @@ def test_login_mostra_total_e_contadores(page: Page, alvo: Alvo) -> None:
     )
     assert soma == TOTAL_DEMO
     expect(linhas(page)).to_have_count(POR_PAGINA)
-    # abas futuras visíveis mas desabilitadas
-    expect(page.get_by_role("tab", name="Teia")).to_be_disabled()
-    expect(page.get_by_role("tab", name="Organograma")).to_be_disabled()
+    # abas habilitadas; a Lista é a primeira tela
+    expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_role("tab", name="Teia")).to_be_enabled()
+    expect(page.get_by_role("tab", name="Organograma")).to_be_enabled()
     # estado nunca só por cor: cada linha tem rótulo de texto
     expect(linhas(page).first.locator(".estado-rotulo")).not_to_be_empty()
 
@@ -258,3 +259,205 @@ def test_bundle_teia_confere_sha256() -> None:
     assert nome == "teia-3d.bundle.js"
     assert hashlib.sha256(bundle).hexdigest() == esperado
     assert not list(VENDOR.glob("*.map"))
+
+
+# ---- Fase 2: Teia ----------------------------------------------------------------------------
+
+BUNDLE_TEIA = "teia-3d.bundle.js"
+NOMES_ESTILOS = ("Constelação", "Órbitas", "Galáxia", "Átomo", "Árvore 3D")
+CRIAR_VIA_API = """async (dados) => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('sentinela_csrf='));
+    const r = await fetch('/api/v1/equipamentos', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF': decodeURIComponent(csrf.split('=')[1]),
+        },
+        body: JSON.stringify(dados),
+    });
+    return {status: r.status, corpo: await r.json()};
+}"""
+APAGAR_VIA_API = """async (id) => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('sentinela_csrf='));
+    const r = await fetch('/api/v1/equipamentos/' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: {'X-CSRF': decodeURIComponent(csrf.split('=')[1])},
+    });
+    return r.status;
+}"""
+
+
+# Nota de desempenho do driver GL emulado (SwiftShader, headless sem GPU) quando a lib lê o
+# pixel sob o ponteiro (seleção por GPU); com GPU real (ANGLE/D3D11) não aparece. Não é erro
+# do app nem violação de CSP: é a ÚNICA mensagem tolerada.
+NOTA_DRIVER_GL = re.compile(
+    r"^\[\.WebGL-[^\]]+\]GL Driver Message \(OpenGL, Performance, .*ReadPixels"
+)
+
+
+def vigiar_console(page: Page) -> list[str]:
+    erros: list[str] = []
+
+    def anotar(m: ConsoleMessage) -> None:
+        if m.type == "warning" and NOTA_DRIVER_GL.match(m.text):
+            return
+        _anotar_erro(erros, m)
+
+    page.on("console", anotar)
+    page.on("pageerror", lambda e: erros.append(str(e)))
+    return erros
+
+
+def canvases_da_teia(page: Page) -> int:
+    total: int = page.evaluate("document.querySelectorAll('#conteudo-teia canvas').length")
+    return total
+
+
+def abrir_teia(page: Page) -> Any:
+    page.get_by_role("tab", name="Teia").click()
+    expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
+    assert page.url.endswith("#teia"), page.url
+    palco = page.locator("#conteudo-teia [data-equipamentos]")
+    # R6: equipamentos conhecidos pela cena, independente do nível (headless pode agrupar)
+    expect(palco).to_have_attribute("data-equipamentos", str(TOTAL_DEMO), timeout=20_000)
+    expect(page.locator("#conteudo-teia canvas")).to_have_count(1)
+    return palco
+
+
+def test_primeira_tela_nao_carrega_bundle_da_teia(page: Page, alvo: Alvo) -> None:
+    pedidos: list[str] = []
+    page.on("request", lambda r: pedidos.append(r.url))
+    entrar(page, alvo)
+    expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#conteudo-teia")).to_be_hidden()
+    page.wait_for_timeout(1000)
+    assert not [u for u in pedidos if BUNDLE_TEIA in u], pedidos
+
+
+def test_teia_abre_e_troca_os_5_estilos_sem_erro(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    abrir_teia(page)
+    barra = page.get_by_role("group", name="Estilo da Teia")
+    for nome in (*NOMES_ESTILOS[1:], NOMES_ESTILOS[0]):
+        botao = barra.get_by_role("button", name=nome)
+        botao.click()
+        expect(botao).to_have_attribute("aria-pressed", "true")
+        expect(barra.locator('[aria-pressed="true"]')).to_have_count(1)
+        page.wait_for_timeout(400)
+    # a escolha fica salva (localStorage com try/catch) e a aba vem do hash
+    barra.get_by_role("button", name="Galáxia").click()
+    page.reload()
+    expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
+    expect(
+        page.get_by_role("group", name="Estilo da Teia").get_by_role("button", name="Galáxia")
+    ).to_have_attribute("aria-pressed", "true")
+    expect(page.locator("#conteudo-teia canvas")).to_have_count(1, timeout=20_000)
+    page.wait_for_timeout(500)
+    assert erros == [], erros
+
+
+def test_teia_clicar_equipamento_mostra_historico(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    abrir_teia(page)
+    classes = page.locator("#teia-classes")
+    cameras = classes.get_by_role("button", name=re.compile(r"^Câmeras"))
+    cameras.focus()
+    page.keyboard.press("Enter")
+    expect(classes.get_by_role("heading", name="Câmeras")).to_be_visible()
+    equipamentos = classes.locator("ul.teia-equips").get_by_role("button")
+    expect(equipamentos).to_have_count(POR_PAGINA)
+    primeiro = equipamentos.first
+    nome = primeiro.locator(".teia-equip-nome").inner_text()
+    primeiro.click()
+    painel = page.locator("#painel-equipamento")
+    expect(painel).to_be_visible()
+    expect(painel.get_by_role("heading", level=2)).to_have_text(nome)
+    expect(painel.get_by_role("heading", name="Últimas quedas")).to_be_visible()
+    historico = painel.locator(".teia-historico li:visible, .teia-historico-vazio:visible")
+    expect(historico.first).to_be_visible(timeout=10_000)
+    expect(painel.get_by_text("Não foi possível carregar o histórico.")).to_be_hidden()
+    # admin vê os atalhos de pausar/retomar
+    expect(painel.get_by_role("button", name=re.compile("^(Pausar|Retomar)$"))).to_be_visible()
+    # Esc fecha o painel do equipamento; o 2º Esc tira o foco da classe (verTudo)
+    page.keyboard.press("Escape")
+    expect(painel).to_be_hidden()
+    expect(classes.get_by_role("heading", name="Câmeras")).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(classes.get_by_role("button", name=re.compile(r"^Câmeras"))).to_be_visible()
+    assert erros == [], erros
+
+
+def test_teia_historico_com_falha_mostra_aviso(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    page.route("**/api/v1/equipamentos/*/eventos*", lambda r: r.fulfill(status=500, body=""))
+    abrir_teia(page)
+    page.locator("#teia-classes").get_by_role("button", name=re.compile(r"^Gravadores")).click()
+    page.locator("#teia-classes ul.teia-equips").get_by_role("button").first.click()
+    painel = page.locator("#painel-equipamento")
+    expect(painel.get_by_text("Não foi possível carregar o histórico.")).to_be_visible()
+
+
+def test_trocar_abas_varias_vezes_um_renderer(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    abrir_teia(page)
+    for n in range(10):
+        page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
+    expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#conteudo-lista")).to_be_visible()
+    page.get_by_role("tab", name="Teia").click()
+    expect(page.locator("#conteudo-teia")).to_be_visible()
+    page.wait_for_timeout(500)
+    assert canvases_da_teia(page) == 1
+    # voltar/avançar do navegador também troca a aba (rota no hash)
+    page.go_back()
+    expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
+    page.go_forward()
+    expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
+    assert canvases_da_teia(page) == 1
+    assert erros == [], erros
+
+
+def test_snapshot_novo_nao_duplica_esferas(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    palco = abrir_teia(page)
+    dados = {"nome": "Sensor Smoke Teia", "ip": "10.99.60.231", "classe": "iot"}
+    criado = page.evaluate(CRIAR_VIA_API, dados)
+    assert criado["status"] == 201, criado
+    try:
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=30_000)
+        expect(palco).to_have_attribute("data-equipamentos", str(TOTAL_DEMO + 1))
+        if palco.get_attribute("data-nivel") != "agrupado":
+            expect(palco).to_have_attribute("data-nos", str(TOTAL_DEMO + 1))
+        assert canvases_da_teia(page) == 1
+    finally:
+        assert page.evaluate(APAGAR_VIA_API, criado["corpo"]["id"]) == 204
+
+
+def test_sem_webgl_abre_organograma(
+    browser_type: Any, browser_type_launch_args: dict[str, Any], alvo: Alvo
+) -> None:
+    args = [*browser_type_launch_args.get("args", []), "--disable-webgl", "--disable-3d-apis"]
+    navegador = browser_type.launch(**{**browser_type_launch_args, "args": args})
+    try:
+        contexto = navegador.new_context(ignore_https_errors=True, base_url=alvo.url)
+        page = contexto.new_page()
+        pedidos: list[str] = []
+        page.on("request", lambda r: pedidos.append(r.url))
+        entrar(page, alvo)
+        assert not page.evaluate(
+            "() => { const c = document.createElement('canvas');"
+            " return !!(c.getContext('webgl2') || c.getContext('webgl')); }"
+        )
+        page.get_by_role("tab", name="Teia").click()
+        organograma = page.get_by_role("tab", name="Organograma")
+        expect(organograma).to_have_attribute("aria-selected", "true")
+        assert page.url.endswith("#organograma"), page.url
+        aviso = page.get_by_text("Seu navegador não tem 3D; mostrando o Organograma.")
+        expect(aviso).to_be_visible()
+        expect(page.locator("#conteudo-teia")).to_be_hidden()
+        assert not [u for u in pedidos if BUNDLE_TEIA in u], pedidos
+    finally:
+        navegador.close()
