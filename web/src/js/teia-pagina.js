@@ -11,7 +11,7 @@ import {
 
 const AVISO_SEM_3D = "Seu navegador não tem 3D; mostrando o Organograma.";
 const MSG_HISTORICO = "Não foi possível carregar o histórico.";
-const MSG_CARGA = "Não foi possível abrir a Teia. Tente de novo.";
+const MSG_CARGA = "Não foi possível abrir a Teia. Tente de novo ou veja o Organograma.";
 const MSG_PAUSA = "Não foi possível pausar/retomar.";
 const TITULOS = { lista: "Lista", teia: "Teia", organograma: "Organograma" };
 
@@ -20,6 +20,15 @@ const FICHA_VAZIA = {
   estadoIcone: "#i-desconhecido", estadoRotulo: "", desde: "", desdeTitulo: "", latencia: "",
   pausado: false,
 };
+
+/** Tira do palco o que uma montagem que falhou no meio deixou (canvas, camadas, atributos). */
+function limparPalco(palco) {
+  if (!palco) return;
+  palco.replaceChildren();
+  palco.classList.remove("teia-cena");
+  palco.style.cursor = "";
+  for (const chave of Object.keys(palco.dataset)) delete palco.dataset[chave];
+}
 
 function movimentoReduzido() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -151,6 +160,7 @@ export function visoesDoPainel(store) {
         });
       } catch {
         controle = null;
+        limparPalco(this.$refs.palcoTeia);
         this.teiaCarregando = false;
         this.teiaErro = MSG_CARGA;
         return;
@@ -177,6 +187,7 @@ export function visoesDoPainel(store) {
 
     tentarTeiaDeNovo() {
       this.teiaErro = "";
+      if (!controle) limparPalco(this.$refs.palcoTeia);
       this.entrarNaTeia();
     },
 
@@ -297,7 +308,10 @@ export function visoesDoPainel(store) {
       this.equipAberto = true;
       this.acaoErro = "";
       this.carregarHistorico(id, false);
+      // aberto pelo Organograma: a Teia (oculta, pausada) não muda câmera, rotação nem foco
+      if (this.aba !== "teia") return;
       this.$nextTick(() => {
+        if (this.aba !== "teia") return;
         // painel já desenhado: a câmera desconta a largura dele (ou a folha de baixo)
         if (controle && this.equipAberto && this.equip.id === id) controle.focarEquipamento(id);
         if (this.$refs.tituloEquip) this.$refs.tituloEquip.focus();
@@ -316,7 +330,7 @@ export function visoesDoPainel(store) {
       focoAntesDoPainel = null;
       if (controle) {
         controle.limparSelecao();
-        if (devolverFoco) this.$nextTick(() => controle && controle.reenquadrar());
+        if (devolverFoco && this.aba === "teia") this.$nextTick(() => controle && controle.reenquadrar());
       }
       if (devolverFoco && voltar && voltar.isConnected && typeof voltar.focus === "function") {
         voltar.focus();

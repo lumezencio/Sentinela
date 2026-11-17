@@ -182,6 +182,10 @@ h3 {
   transition: transform 0.15s ease;
 }
 
+a.botao {
+  text-decoration: none; /* link com cara de botão (ex.: "Ver o Organograma") */
+}
+
 .botao:hover:not(:disabled) {
   transform: translateY(-1px);
 }

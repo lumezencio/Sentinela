@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Sentinela: monitor de equipamentos da rede local">
   <title>Sentinela · Lista</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="css/tokens.css">
@@ -45,11 +46,11 @@
       </nav>
 
       <div class="topo-acoes">
-        <span class="ao-vivo" x-show="aoVivo"><span class="ponto" aria-hidden="true"></span><span>Ao vivo</span></span>
-        <span class="usuario" x-text="usuario"></span>
+        <span class="ao-vivo" x-show="aoVivo" x-cloak><span class="ponto" aria-hidden="true"></span><span>Ao vivo</span></span>
+        <span class="usuario" x-text="usuario" x-cloak></span>
         <button class="botao botao-fantasma botao-icone" type="button" @click="alternarTema" :aria-label="rotuloTema" :title="rotuloTema">
-          <svg viewBox="0 0 24 24" aria-hidden="true" x-show="temaEscuro"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>
-          <svg viewBox="0 0 24 24" aria-hidden="true" x-show="!temaEscuro"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true" x-show="temaEscuro" x-cloak><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true" x-show="!temaEscuro" x-cloak><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
         </button>
         <button class="botao botao-fantasma botao-icone" type="button" @click="sair" aria-label="Sair" title="Sair">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg>
@@ -58,7 +59,9 @@
     </div>
   </header>
 
-  <main class="casca" id="conteudo-lista" role="tabpanel" aria-labelledby="aba-lista" :hidden="!abaLista">
+  <!-- um único <main>: as três abas são painéis dentro dele (a ativa é a única visível) -->
+  <main class="conteudo" id="conteudo">
+  <section class="casca" id="conteudo-lista" role="tabpanel" aria-labelledby="aba-lista" :hidden="!abaLista">
     <div id="banner-conexao" class="banner" role="status" aria-live="polite" hidden :hidden="!bannerVisivel" :class="bannerErro ? 'banner-erro' : ''">
       <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span>
       <span x-text="textoBanner">Reconectando…</span>
@@ -119,7 +122,7 @@
           <option value="aguardando">Aguardando</option>
         </select>
       </div>
-      <div class="acoes-admin" x-show="admin">
+      <div class="acoes-admin" x-show="admin" x-cloak>
         <button class="botao botao-primario" type="button" @click="abrirNovo">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Novo equipamento
         </button>
@@ -183,7 +186,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
       </button>
     </nav>
-  </main>
+  </section>
 
   <section class="teia" id="conteudo-teia" role="tabpanel" aria-labelledby="aba-teia" hidden :hidden="!abaTeia">
     <h1 class="so-leitor">Teia dos equipamentos</h1>
@@ -196,6 +199,7 @@
     <div class="teia-aviso teia-aviso-erro vidro" role="alert" x-show="teiaErro" x-cloak>
       <span x-text="teiaErro"></span>
       <button class="botao" type="button" @click="tentarTeiaDeNovo">Tentar de novo</button>
+      <a class="botao" href="#organograma">Ver o Organograma</a>
     </div>
     <div class="teia-conexao vidro" role="status" x-show="bannerVisivel" x-cloak>
       <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span><span x-text="textoBanner"></span>
@@ -392,6 +396,7 @@
     <p class="vazio" x-show="carregando">Conectando ao Sentinela…</p>
     <p class="vazio" x-show="orgVazio" x-cloak>Nenhum equipamento com esses filtros.</p>
   </section>
+  </main>
 
   <!-- painel do equipamento no Organograma: mesma ficha, histórico e pausa da Teia (sem o 3D) -->
   <dialog class="dialogo org-dialogo" x-ref="dlgEquipOrg" aria-labelledby="titulo-equip-org" @close="aoFecharDialogoOrg">

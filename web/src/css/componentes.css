@@ -5,6 +5,13 @@
   padding: 0 16px 48px;
 }
 
+/* Link direto para #teia/#organograma: o tema.js marca <html data-aba> antes da 1ª pintura e a
+   Lista não aparece até o Alpine assumir (depois o próprio :hidden das abas manda) */
+html[data-aba="teia"] #conteudo-lista,
+html[data-aba="organograma"] #conteudo-lista {
+  display: none;
+}
+
 /* ---------- cabeçalho (vidro nº 1) ---------- */
 .topo {
   position: sticky;
@@ -343,6 +350,29 @@
   background: var(--superficie-2);
 }
 
+/* Sem salto de layout (CLS) quando as linhas chegam: a lista reserva a altura da janela (a
+   paginação já nasce fora da dobra) e as colunas têm largura fixa, independente do conteúdo */
+@media (min-width: 768px) {
+  .painel-lista {
+    min-height: calc(100vh - 300px);
+  }
+  .tabela {
+    table-layout: fixed;
+  }
+  .tabela th,
+  .tabela td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tabela th:nth-child(1) { width: 24%; }
+  .tabela th:nth-child(2) { width: 14%; }
+  .tabela th:nth-child(3) { width: 13%; }
+  .tabela th:nth-child(4) { width: 17%; }
+  .tabela th:nth-child(5) { width: 12%; }
+  .tabela th:nth-child(6) { width: 10%; }
+  .tabela th:nth-child(7) { width: 10%; }
+}
+
 .ordenar {
   display: inline-flex;
   align-items: center;
@@ -646,6 +676,14 @@ html[data-aba="teia"] body {
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
+}
+
+/* o <main> único vira a coluna que ocupa o resto da altura; a seção da Teia o preenche */
+html[data-aba="teia"] .conteudo {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 html[data-aba="teia"] .campo {
@@ -1304,6 +1342,12 @@ html[data-aba="teia"] .campo {
 .org-conta .icone-status {
   width: 13px;
   height: 13px;
+}
+
+/* a cor do estado fica no ícone; o número com o texto usa a cor do texto (contraste AA no
+   cartão claro, onde os tons de estado ficam abaixo de 4,5:1 em 13 px) */
+.org-conta > span {
+  color: var(--texto);
 }
 
 .org-grade {

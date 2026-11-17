@@ -166,6 +166,62 @@ def test_movimento_reduzido_desliga_animacoes(browser: Browser, alvo: Alvo) -> N
         contexto.close()
 
 
+def test_um_unico_main_com_as_tres_abas(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    principal = page.get_by_role("main")
+    for aba, painel in (
+        ("Lista", "#conteudo-lista"),
+        ("Organograma", "#conteudo-organograma"),
+        ("Lista", "#conteudo-lista"),
+    ):
+        page.get_by_role("tab", name=aba).click()
+        expect(principal).to_have_count(1)
+        expect(principal).to_be_visible()
+        expect(principal.locator(painel)).to_be_visible()
+        expect(page.get_by_role("tabpanel")).to_have_count(1)  # só a aba ativa fica exposta
+
+
+def test_link_direto_esconde_a_lista_antes_do_alpine(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    # sem o Alpine, só o tema.js (síncrono no <head>) e o CSS decidem o que aparece
+    page.route("**/vendor/alpine-csp.min.js", lambda r: r.abort())
+    page.goto("/index.html#organograma")
+    assert page.evaluate("document.documentElement.dataset.aba") == "organograma"
+    expect(page.locator("#conteudo-lista")).to_be_hidden()
+    page.goto("/index.html#lista")
+    page.reload()
+    assert page.evaluate("document.documentElement.dataset.aba") == "lista"
+    expect(page.locator("#conteudo-lista")).to_be_visible()
+
+
+SOMA_CLS = """() => new Promise((ok) => {
+    let soma = 0;
+    new PerformanceObserver((l) => {
+        for (const e of l.getEntries()) if (!e.hadRecentInput) soma += e.value;
+    }).observe({type: 'layout-shift', buffered: true});
+    setTimeout(() => ok(soma), 300);
+})"""
+
+
+def test_lista_sem_salto_de_layout_ao_chegar_as_linhas(browser: Browser, alvo: Alvo) -> None:
+    # janela do preset desktop do Lighthouse: as 50 linhas chegam sem empurrar a página (CLS)
+    contexto = browser.new_context(
+        viewport={"width": 1350, "height": 940}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo)
+        page.reload()
+        expect(linhas(page)).to_have_count(POR_PAGINA, timeout=15_000)
+        page.wait_for_timeout(1000)
+        cls = page.evaluate(SOMA_CLS)
+        # sem a reserva de altura/colunas fixas mede ~0,075 aqui; com ela ~0,014 (teto do
+        # Lighthouse "bom": 0,1)
+        assert cls < 0.05, cls
+    finally:
+        contexto.close()
+
+
 # ---- revisão final ---------------------------------------------------------------------------
 
 
@@ -380,8 +436,16 @@ def test_teia_movimento_reduzido_sem_particulas_nem_rotacao(browser: Browser, al
         nos = int(palco.get_attribute("data-nos") or "0")
         # coerência nível x nós: agrupado só com super-nós por classe (poucos), completo até 1.000
         assert (nivel == "agrupado") == (nos < TOTAL_DEMO), (nivel, nos)
-        page.wait_for_timeout(1500)
+        # comportamento, não só o rótulo: sem rotação automática, sem partículas e câmera parada
+        expect(palco).to_have_attribute("data-girando", "nao")
+        expect(palco).to_have_attribute("data-particulas", "nao")
+        expect(palco).to_have_attribute("data-camera", re.compile(r"^-?\d+,-?\d+,-?\d+$"))
+        page.wait_for_timeout(500)
+        antes = palco.get_attribute("data-camera")
+        page.wait_for_timeout(1500)  # leitura a cada 250 ms enquanto a cena desenha
+        assert palco.get_attribute("data-camera") == antes
         expect(palco).to_have_attribute("data-movimento", "reduzido")
+        expect(palco).to_have_attribute("data-girando", "nao")
         assert canvases_da_teia(page) == 1
         assert erros == [], erros
     finally:
@@ -436,7 +500,8 @@ def test_trocar_abas_varias_vezes_um_renderer(page: Page, alvo: Alvo) -> None:
     abrir_teia(page)
     for n in range(10):
         page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
-    page.get_by_role("tab", name="Lista").click()  # o laço termina na Teia: o estado final é a Lista
+    # o laço termina na Teia: o estado final é a Lista
+    page.get_by_role("tab", name="Lista").click()
     expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
     expect(page.locator("#conteudo-lista")).to_be_visible()
     page.get_by_role("tab", name="Teia").click()
@@ -463,7 +528,23 @@ def test_snapshot_novo_nao_duplica_esferas(page: Page, alvo: Alvo) -> None:
         expect(palco).to_have_attribute("data-equipamentos", str(TOTAL_DEMO + 1))
         if palco.get_attribute("data-nivel") != "agrupado":
             expect(palco).to_have_attribute("data-nos", str(TOTAL_DEMO + 1))
+            # nenhum nó duplicado entregue ao grafo (não só no mapa interno da cena)
+            expect(palco).to_have_attribute("data-nos-grafo", str(TOTAL_DEMO + 1))
         assert canvases_da_teia(page) == 1
+        # 10 trocas de aba não acumulam geometrias/texturas na GPU (um renderer, objetos reusados)
+        page.wait_for_timeout(600)
+        nivel = palco.get_attribute("data-nivel")
+        geo = int(palco.get_attribute("data-geometrias") or "0")
+        tex = int(palco.get_attribute("data-texturas") or "0")
+        assert geo > 0, geo
+        for n in range(10):
+            page.get_by_role("tab", name="Lista" if n % 2 == 0 else "Teia").click()
+        expect(page.get_by_role("tab", name="Teia")).to_have_attribute("aria-selected", "true")
+        page.wait_for_timeout(600)
+        assert canvases_da_teia(page) == 1
+        if palco.get_attribute("data-nivel") == nivel:  # trocar de nível recria os objetos
+            assert int(palco.get_attribute("data-geometrias") or "0") <= geo
+            assert int(palco.get_attribute("data-texturas") or "0") <= tex
     finally:
         assert page.evaluate(APAGAR_VIA_API, criado["corpo"]["id"]) == 204
 
@@ -546,6 +627,115 @@ def test_historico_atrasado_de_outro_equipamento_nao_sobrescreve(page: Page, alv
     expect(painel.get_by_role("heading", level=2)).to_have_text(nome_b)
     assert "2001" not in painel.locator(".teia-historico").inner_text()
     assert painel.locator(".teia-historico").inner_text() == antes
+
+
+PAUSA_VIA_API = """async ([id, acao]) => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('sentinela_csrf='));
+    const r = await fetch('/api/v1/equipamentos/' + encodeURIComponent(id) + '/' + acao, {
+        method: 'POST',
+        headers: {'X-CSRF': decodeURIComponent(csrf.split('=')[1])},
+    });
+    return r.status;
+}"""
+GRAVADOR_NAO_PAUSADO = """async () => {
+    const r = await fetch('/api/v1/equipamentos?classe=gravador&limit=100');
+    const d = await r.json();
+    const e = d.itens.find((x) => x.estado !== 'pausado');
+    return e ? {id: e.id, nome: e.nome} : null;
+}"""
+
+
+def test_admin_pausa_e_retoma_pelo_painel_da_teia(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    gravador = page.evaluate(GRAVADOR_NAO_PAUSADO)
+    assert gravador, "a demonstração não tem gravador fora de pausa"
+    nome = gravador["nome"]
+    abrir_teia(page)
+    page.locator("#teia-classes").get_by_role("button", name=re.compile(r"^Gravadores")).click()
+    exato = re.compile(f"^{re.escape(nome)}$")
+    botoes = page.locator("#teia-classes ul.teia-equips").get_by_role("button")
+    botoes.filter(has=page.locator(".teia-equip-nome", has_text=exato)).click()
+    painel = page.locator("#painel-equipamento")
+    expect(painel.get_by_role("heading", level=2)).to_have_text(nome)
+    retomado = False
+    try:
+        painel.get_by_role("button", name="Pausar").click()
+        expect(painel.get_by_role("button", name="Retomar")).to_be_visible(timeout=10_000)
+        expect(painel.locator(".teia-ficha")).to_contain_text("Pausado")
+        # a Lista mostra o mesmo estado (store comum, sem esperar o WebSocket)
+        page.get_by_role("tab", name="Lista").click()
+        page.get_by_role("combobox", name="Classe").select_option(label="Gravadores")
+        linha = linhas(page).filter(has=page.locator(".col-nome", has_text=exato))
+        expect(linha.locator(".estado-rotulo")).to_have_text("Pausado")
+        # de volta à Teia: o painel continua aberto; Retomar devolve o estado normal
+        page.get_by_role("tab", name="Teia").click()
+        painel.get_by_role("button", name="Retomar").click()
+        expect(painel.get_by_role("button", name="Pausar")).to_be_visible(timeout=10_000)
+        retomado = True
+        expect(painel.locator(".teia-ficha")).not_to_contain_text("Pausado")
+        page.get_by_role("tab", name="Lista").click()
+        expect(linha.locator(".estado-rotulo")).not_to_have_text("Pausado")
+        assert erros == [], erros
+    finally:
+        if not retomado:  # nunca deixa a demonstração (compose) com um gravador pausado
+            page.evaluate(PAUSA_VIA_API, [gravador["id"], "retomar"])
+
+
+def test_abrir_no_organograma_nao_mexe_na_teia_oculta(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    palco = abrir_teia(page)
+    expect(palco).to_have_attribute("data-girando", "sim")
+    page.get_by_role("tab", name="Organograma").click()
+    secao = page.locator("#conteudo-organograma")
+    item = secao.locator('.org-cartao[data-slug="gravador"] .org-item').first
+    expect(item).to_be_visible(timeout=15_000)
+    nome = item.locator(".org-nome").inner_text()
+    item.click()
+    dialogo = page.get_by_role("dialog", name=nome)
+    expect(dialogo).to_be_visible()
+    # ficha completa (histórico carregado): qualquer efeito do abrir na cena já teria acontecido
+    visivel = dialogo.locator(".teia-historico li:visible, .teia-historico-vazio:visible")
+    expect(visivel.first).to_be_visible(timeout=10_000)
+    expect(palco).to_have_attribute("data-girando", "sim")
+    page.keyboard.press("Escape")
+    expect(dialogo).to_be_hidden()
+    page.get_by_role("tab", name="Teia").click()
+    expect(page.locator("#conteudo-teia")).to_be_visible()
+    # rotação automática ligada e câmera na vista geral do estilo A (órbita em y = 260, raio 520)
+    expect(palco).to_have_attribute("data-girando", "sim")
+    expect(page.locator("#painel-equipamento")).to_be_hidden()
+    page.wait_for_timeout(600)
+    x, y, z = (int(v) for v in (palco.get_attribute("data-camera") or "0,0,0").split(","))
+    assert abs(y - 260) <= 5, (x, y, z)
+    assert abs((x * x + z * z) ** 0.5 - 520) <= 10, (x, y, z)
+    assert erros == [], erros
+
+
+def test_teia_falha_na_montagem_limpa_e_oferece_organograma(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    # bundle falso: deixa um canvas e um atributo no palco e falha no meio da montagem
+    falso = (
+        "export function montarTeia(c) {"
+        " c.appendChild(document.createElement('canvas'));"
+        " c.dataset.nos = '1'; throw new Error('falha de propósito'); }"
+    )
+    page.route(
+        f"**/vendor/{BUNDLE_TEIA}",
+        lambda r: r.fulfill(status=200, content_type="text/javascript", body=falso),
+    )
+    page.get_by_role("tab", name="Teia").click()
+    aviso = page.locator("#conteudo-teia .teia-aviso-erro")
+    expect(aviso).to_be_visible(timeout=10_000)
+    expect(aviso).to_contain_text("Não foi possível abrir a Teia.")
+    assert canvases_da_teia(page) == 0  # a montagem parcial saiu do palco
+    assert page.locator("#conteudo-teia .teia-palco").get_attribute("data-nos") is None
+    aviso.get_by_role("button", name="Tentar de novo").click()
+    expect(aviso).to_be_visible()
+    assert canvases_da_teia(page) == 0  # e não acumula a cada tentativa
+    aviso.get_by_role("link", name="Ver o Organograma").click()
+    expect(page.get_by_role("tab", name="Organograma")).to_have_attribute("aria-selected", "true")
 
 
 # ---- Fase 2: Organograma --------------------------------------------------------------------
