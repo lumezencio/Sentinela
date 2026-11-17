@@ -45,3 +45,6 @@ web/dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Ledgers e rascunhos do processo de desenvolvimento (nunca no repositório público)
+.superpowers/
