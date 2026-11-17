@@ -147,6 +147,19 @@ async def test_segredos_nao_vazam(
             falsos.coletor.erro_coleta = erro
             await pedir("POST", f"{FONTES}/{id}/coletar")
             await pedir("GET", FONTES)
+        # termina com erro: o ``ultimo_erro`` gravado conteria o segredo se não fosse mascarado
+        falsos.coletor.erro_coleta = ErroColeta(f"recusado para {texto}")
+        await pedir("POST", f"{FONTES}/{id}/coletar")
+    falsos.coletor.erro_coleta = None
+    # lido ANTES de remover as fontes (depois do DELETE não sobra nada para conferir)
+    async with sessoes(app)() as db:
+        erros_gravados = {f.id: f.ultimo_erro for f in (await db.execute(select(Fonte))).scalars()}
+    assert set(erros_gravados) == set(ids)
+    for id in ids:
+        erro_gravado = erros_gravados[id]
+        assert erro_gravado is not None and "recusado para" in erro_gravado, erro_gravado
+        assert "***" in erro_gravado  # o caminho de máscara foi de fato exercitado
+    await pedir("GET", FONTES)  # e o admin lê o erro mascarado pela API
 
     # descobertas, varredura e configuração
     d = await criar_descoberta(app)
@@ -177,9 +190,7 @@ async def test_segredos_nao_vazam(
             repr((a.acao, a.alvo, a.antes, a.depois, a.ip))
             for a in (await db.execute(select(Auditoria))).scalars()
         ]
-        fontes = [
-            repr((f.nome, f.ultimo_erro)) for f in (await db.execute(select(Fonte))).scalars()
-        ]
+        fontes = [repr(e) for e in erros_gravados.values()]
     assert len(auditoria) > 10
     for marca in MARCAS:
         assert not [t for t in textos if marca in t], marca

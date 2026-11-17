@@ -3,6 +3,10 @@
 Toda saída de rede passa por um ``DestinoAutorizado`` da Guarda; restringir onde estas
 bibliotecas são importadas mantém pequeno o conjunto de arquivos a auditar. Arquivos da lista
 que ainda não existem (adaptadores de tarefas futuras) simplesmente ficam permitidos.
+
+Chaves com ponto (``urllib.request``, ``http.client``) restringem só aquele submódulo:
+``urllib.parse`` e ``http.HTTPStatus`` seguem livres. ``aiohttp`` e ``requests`` não são
+dependência e não podem aparecer em lugar nenhum.
 """
 
 import ast
@@ -24,6 +28,12 @@ PERMITIDOS: dict[str, tuple[str, ...]] = {
     "httpcore": (GRAVADOR,),  # backend de rede próprio (destino e impressão TLS conferidos)
     "icmplib": ("monitor/checagens/icmp.py", "descoberta/varredura.py"),
     "socket": (CHECAGENS, MIKROTIK, SONDAGEM),
+    # TLS próprio: impressão do certificado conferida no adaptador (RouterOS e gravadores)
+    "ssl": (MIKROTIK, GRAVADOR),
+    "urllib.request": (),
+    "http.client": (),
+    "aiohttp": (),
+    "requests": (),
 }
 # chamadas do asyncio que abrem socket diretamente
 CHAMADAS_SOCKET = frozenset(
@@ -41,14 +51,24 @@ def _raiz_modulo(nome: str) -> str:
     return nome.split(".", 1)[0]
 
 
+def _restritas(nome: str) -> set[str]:
+    """Chaves de ``PERMITIDOS`` cobertas pelo módulo ``nome`` (raiz ou submódulo exato)."""
+    return {k for k in PERMITIDOS if nome == k or nome.startswith(k + ".")} | (
+        {_raiz_modulo(nome)} & PERMITIDOS.keys()
+    )
+
+
 def usos(codigo: str) -> set[str]:
     """Bibliotecas restritas usadas no código (``socket`` cobre as chamadas do asyncio)."""
     achados: set[str] = set()
     for no in ast.walk(ast.parse(codigo)):
         if isinstance(no, ast.Import):
-            achados.update(_raiz_modulo(a.name) for a in no.names)
+            for a in no.names:
+                achados |= _restritas(a.name)
         elif isinstance(no, ast.ImportFrom) and no.module and no.level == 0:
-            achados.add(_raiz_modulo(no.module))
+            achados |= _restritas(no.module)
+            for a in no.names:  # from urllib import request
+                achados |= _restritas(f"{no.module}.{a.name}")
             if no.module == "asyncio" and any(a.name in CHAMADAS_SOCKET for a in no.names):
                 achados.add("socket")
         elif isinstance(no, ast.Attribute) and no.attr in CHAMADAS_SOCKET:
@@ -60,7 +80,7 @@ def usos(codigo: str) -> set[str]:
             alvo = no.args[0]
             if nome in {"__import__", "import_module"} and isinstance(alvo, ast.Constant):
                 if isinstance(alvo.value, str):
-                    achados.add(_raiz_modulo(alvo.value))
+                    achados |= _restritas(alvo.value)
     return achados & PERMITIDOS.keys()
 
 
@@ -101,6 +121,17 @@ def test_importacoes_restritas() -> None:
         ("import importlib\nimportlib.import_module('pysnmp.hlapi')", {"pysnmp"}),
         ("import asyncio\nimport json", set()),
         ("x = 'httpx'", set()),
+        ("import ssl", {"ssl"}),
+        ("import urllib.request", {"urllib.request"}),
+        ("from urllib import request", {"urllib.request"}),
+        ("from urllib.request import urlopen", {"urllib.request"}),
+        ("from urllib.parse import quote", set()),
+        ("import http.client", {"http.client"}),
+        ("from http import client", {"http.client"}),
+        ("from http import HTTPStatus", set()),
+        ("import aiohttp", {"aiohttp"}),
+        ("import requests.adapters", {"requests"}),
+        ("__import__('urllib.request')", {"urllib.request"}),
     ],
 )
 def test_detector_de_usos(codigo: str, esperado: set[str]) -> None:
@@ -116,3 +147,7 @@ def test_permitidos_por_prefixo_e_arquivo() -> None:
     assert not _permitido("descoberta/fontes/hikvision.py", "httpx")
     assert _permitido("descoberta/varredura.py", "icmplib")
     assert not _permitido("descoberta/fontes/mikrotik_api.py", "icmplib")
+    assert _permitido(MIKROTIK, "ssl") and _permitido(GRAVADOR, "ssl")
+    assert not _permitido(SONDAGEM, "ssl")
+    for nenhum in ("urllib.request", "http.client", "aiohttp", "requests"):
+        assert not _permitido("main.py", nenhum)
