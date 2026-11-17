@@ -450,6 +450,8 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
         assert [t.get_name() for t in vistas] == [
             "sentinela-limpeza",
             "sentinela-descarga",
+            "sentinela-descoberta",
+            "sentinela-canais",
             "sentinela-agendador",
         ]
         assert not any(t.done() for t in vistas)

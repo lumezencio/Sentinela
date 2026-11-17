@@ -83,20 +83,20 @@ class LeitorCanais:
         self._timeout = timeout_s
         self._filhos: dict[str, Filhos] = {}
         self._intervalo = INTERVALO_MIN_S
-        self._suspensas: set[str] = set()
+        self._suspensas: dict[str, str] = {}  # fonte -> causa
 
     def suspensa(self, fonte_id: str) -> bool:
         return fonte_id in self._suspensas
 
     def suspender(self, fonte_id: str, causa: str) -> None:
         """Para de ler o gravador e leva os filhos conhecidos a ``desconhecido`` com ``causa``."""
-        self._suspensas.add(fonte_id)
+        self._suspensas[fonte_id] = causa
         filhos = self._filhos.get(fonte_id, [])
         self._agendador.forcar_desconhecido([eq for eq, _ in filhos], causa)
 
     def retomar(self, fonte_id: str) -> None:
         """O admin confiou de novo no certificado (ou a fonte mudou): volta a ler."""
-        self._suspensas.discard(fonte_id)
+        self._suspensas.pop(fonte_id, None)
 
     async def executar(self) -> None:
         """Laço sem fim: um ciclo agora e depois a cada intervalo (sem acumular atraso)."""
@@ -112,6 +112,10 @@ class LeitorCanais:
     async def ciclo(self) -> float:
         """Relê o mapa do banco, lê todos os gravadores em paralelo; devolve o intervalo."""
         await self._recarregar()
+        for fonte_id, causa in self._suspensas.items():
+            # filhos que só apareceram depois da suspensão (já desconhecidos: nada muda)
+            filhos = self._filhos.get(fonte_id, [])
+            self._agendador.forcar_desconhecido([eq for eq, _ in filhos], causa)
         leituras = [
             self._ler(fonte_id, filhos)
             for fonte_id, filhos in self._filhos.items()

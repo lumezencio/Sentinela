@@ -1,0 +1,826 @@
+"""Orquestrador da descoberta: roda cada fonte no seu intervalo, mescla, classifica e aprova.
+
+- **Coleta**: a cada ``TICK_S`` relê as fontes do banco e coleta as vencidas (cada uma no
+  seu ``intervalo_s``), em paralelo e cada uma isolada: falha de uma grava ``ultimo_erro``
+  (texto genérico, credencial mascarada) e não para as outras. Exceção que não é
+  ``ErroColeta`` vira ``MSG_COLETA_INESPERADA`` (nunca texto do aparelho nem traceback).
+  "Coletar agora" no máximo 1 vez a cada 30 s por fonte.
+- **Coletores**: um por fonte, recriado quando os campos de conexão mudam (host, porta, TLS,
+  credencial, impressão). Fontes de gravador entram em ``gravadores`` (mapa vivo lido pelo
+  ``LeitorCanais``). Certificado não confiado/trocado suspende a leitura de canais daquele
+  gravador; quando a impressão confiada muda, o coletor é recriado e a leitura volta.
+- **Aprovação**: cria o ``Equipamento`` (checagem sugerida: ``gravador`` para canal; ``icmp``
+  se respondeu à varredura; ``tcp`` na primeira porta aberta da lista; senão ``icmp``) e o
+  registra no agendador vivo pelo mesmo caminho do cadastro manual. Câmera cujo gravador
+  ainda não foi aprovado aprova o gravador junto, na mesma transação, auditado (§9.3).
+  Aprovação automática (desligada por padrão) só para pendentes dentro das sub-redes, sem
+  conflito de IP, com classe conhecida e confiança ≥ limiar.
+- **Barramento**: ``descoberta`` (``acao`` nova/atualizada/removida, ``id``,
+  ``classe_sugerida``, ``confianca``), ``pendentes`` (``total``) e ``equipamento``
+  (IP mudado automaticamente).
+
+Nenhum socket é aberto aqui: só os coletores (e a sondagem) falam com a rede, sempre por um
+``DestinoAutorizado`` da Guarda.
+"""
+
+import asyncio
+import logging
+import uuid
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, cast
+
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from sentinela.barramento import Barramento, Mensagem
+from sentinela.db.modelos import Auditoria, Classe, Descoberta, Equipamento, Fonte, Usuario
+from sentinela.descoberta.ajustes import ler_ajustes
+from sentinela.descoberta.canais import (
+    CAUSA_CERTIFICADO_MUDOU,
+    CAUSA_CERTIFICADO_NAO_CONFIADO,
+    LeitorCanais,
+    LeitorStatus,
+)
+from sentinela.descoberta.classificador.oui import BaseOui
+from sentinela.descoberta.classificador.regras import CLASSE_DESCONHECIDA
+from sentinela.descoberta.classificador.sondagem import PORTAS, sondar
+from sentinela.descoberta.fontes.base import (
+    Achado,
+    CertificadoMudou,
+    CertificadoNaoConfiado,
+    Coletor,
+    ErroColeta,
+    ResultadoTeste,
+)
+from sentinela.descoberta.fontes.dahua import FonteDahua
+from sentinela.descoberta.fontes.hikvision import FonteHikvision
+from sentinela.descoberta.fontes.mikrotik import FonteMikrotik
+from sentinela.descoberta.fontes.simulada import ColetorSimulado, perfil_simulado
+from sentinela.descoberta.fontes.snmp import FonteSnmp
+from sentinela.descoberta.mescla import (
+    APROVADA,
+    FONTE_VARREDURA,
+    PENDENTE,
+    ResultadoMescla,
+    auditar_sistema,
+    dentro_das_subredes,
+    equipamento_por_ip,
+    mesclar,
+    reclassificar,
+)
+from sentinela.monitor.agendador import Agendador
+from sentinela.monitor.checagens import GRAVADOR
+from sentinela.monitor.limitador import Limitador
+from sentinela.monitor.montagem import registrar_no_agendador
+from sentinela.rede.guarda import DestinoProibido, Guarda
+from sentinela.relogio import Relogio
+from sentinela.seguranca.cofre import Cofre, ErroCofre
+
+log = logging.getLogger(__name__)
+
+TICK_S = 5.0
+COLETA_MIN_S = 30.0  # "coletar agora": no máximo 1 vez a cada 30 s por fonte
+LIMITE_ERRO = 200
+LIMITE_NOME = 80
+TIPOS_GRAVADOR = ("hikvision", "dahua")
+
+MSG_COLETA_INESPERADA = "falha inesperada na coleta"
+MSG_GRAVAR = "falha ao gravar o resultado da coleta"
+MSG_TESTE_INESPERADO = "falha inesperada ao testar a fonte"
+MSG_FABRICA = "configuração da fonte inválida"
+MSG_FORA = "IP fora das sub-redes monitoradas: declare a sub-rede antes de aprovar."
+MSG_NAO_PENDENTE = "A descoberta não está pendente."
+MSG_IP_EM_USO = "Já existe um equipamento com este IP."
+MSG_MAC_EM_USO = "Já existe um equipamento com este MAC."
+MSG_CLASSE = "Classe inexistente."
+MSG_CONFLITO = "Conflito com outro equipamento."
+MSG_SEM_GRAVADOR = "O gravador desta câmera não está mais cadastrado como fonte."
+MSG_SONDAR_CANAL = "Câmera atrás de gravador não é sondada: o estado vem do gravador."
+MSG_SONDAR_FALHOU = "Não foi possível sondar o aparelho."
+
+FabricaColetor = Callable[[Fonte, Cofre, Guarda, Limitador], Coletor]
+FuncaoSondar = Callable[[str, Guarda, Limitador], Awaitable[tuple[set[int], str | None]]]
+
+
+class ErroDescoberta(Exception):
+    """Recusa de uma ação da descoberta; a mensagem é fixa e pode ir ao cliente."""
+
+
+class ColetaRecente(ErroDescoberta):
+    def __init__(self) -> None:
+        super().__init__("Coleta feita há menos de 30 s; aguarde.")
+
+
+class FonteInexistente(ErroDescoberta):
+    def __init__(self) -> None:
+        super().__init__("Fonte não encontrada.")
+
+
+class DescobertaInexistente(ErroDescoberta):
+    def __init__(self) -> None:
+        super().__init__("Descoberta não encontrada.")
+
+
+class AprovacaoRecusada(ErroDescoberta):
+    pass
+
+
+class SondagemRecusada(ErroDescoberta):
+    pass
+
+
+def fabricar_coletor(fonte: Fonte, cofre: Cofre, guarda: Guarda, limitador: Limitador) -> Coletor:
+    """Fábrica real: um coletor por tipo (``simulada`` nunca abre socket)."""
+    tipos: dict[str, FabricaColetor] = {
+        "mikrotik": FonteMikrotik,
+        "snmp": FonteSnmp,
+        "hikvision": FonteHikvision,
+        "dahua": FonteDahua,
+        "simulada": ColetorSimulado,
+    }
+    fabrica = tipos.get(fonte.tipo)
+    if fabrica is None:
+        raise ValueError("tipo de fonte desconhecido")
+    return fabrica(fonte, cofre, guarda, limitador)
+
+
+def e_gravador(fonte: Fonte) -> bool:
+    if fonte.tipo in TIPOS_GRAVADOR:
+        return True
+    return fonte.tipo == "simulada" and perfil_simulado(fonte.tipo, fonte.porta) == "gravador"
+
+
+def e_canal(d: Descoberta) -> bool:
+    return d.canal is not None and d.chave.startswith("nvr:")
+
+
+def checagem_sugerida(d: Descoberta) -> tuple[str, int | None]:
+    """``gravador`` para canal; ``icmp`` se respondeu à varredura (ICMP); senão ``tcp`` na
+    primeira porta aberta da lista fixa; senão ``icmp`` (spec §5.2 e §9.1)."""
+    if e_canal(d):
+        return GRAVADOR, None
+    if any(isinstance(o, dict) and o.get("origem") == "varredura" for o in d.origens or []):
+        return "icmp", None
+    abertas = (d.sinais or {}).get("portas")
+    if isinstance(abertas, list):
+        for porta in PORTAS:
+            if porta in abertas:
+                return "tcp", porta
+    return "icmp", None
+
+
+async def _existe(db: AsyncSession, equipamento_id: str | None) -> bool:
+    return equipamento_id is not None and await db.get(Equipamento, equipamento_id) is not None
+
+
+def _assinatura(fonte: Fonte) -> tuple[Any, ...]:
+    return (
+        fonte.tipo,
+        fonte.host,
+        fonte.porta,
+        fonte.tls,
+        fonte.credencial_cifrada,
+        fonte.impressao_tls,
+    )
+
+
+@dataclass
+class _Aprovacao:
+    """O que aplicar depois do commit de uma aprovação."""
+
+    equipamentos: list[tuple[Equipamento, Classe]] = field(default_factory=list)
+    descobertas: list[str] = field(default_factory=list)
+
+
+class Orquestrador:
+    def __init__(
+        self,
+        sessoes: async_sessionmaker[AsyncSession],
+        guarda: Guarda,
+        limitador: Limitador,
+        barramento: Barramento,
+        agendador: Agendador,
+        cofre: Cofre,
+        relogio: Relogio,
+        fabrica_fontes: FabricaColetor = fabricar_coletor,
+        *,
+        sondar: FuncaoSondar = sondar,
+        oui: BaseOui | None = None,
+        agora_parede: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._sessoes = sessoes
+        self._guarda = guarda
+        self._limitador = limitador
+        self._barramento = barramento
+        self._agendador = agendador
+        self._cofre = cofre
+        self._relogio = relogio
+        self._fabrica = fabrica_fontes
+        self._sondar = sondar
+        self._oui = oui
+        self._agora_parede = agora_parede
+        # mapa vivo fonte_id -> coletor de gravador, lido pelo LeitorCanais
+        self.gravadores: dict[str, LeitorStatus] = {}
+        self.leitor_canais: LeitorCanais | None = None
+        self._coletores: dict[str, tuple[tuple[Any, ...], Coletor]] = {}
+        self._agenda: dict[str, float] = {}  # fonte ativa -> intervalo_s
+        self._proxima: dict[str, float] = {}
+        self._inicio: dict[str, float] = {}  # início da última coleta (relógio monotônico)
+        self._travas: dict[str, asyncio.Lock] = {}
+        # coletas rodam em paralelo, mas a mescla é serial: duas fontes vendo o mesmo MAC
+        # ao mesmo tempo não podem criar duas descobertas com a mesma chave
+        self._trava_mescla = asyncio.Lock()
+
+    # ---- laço -------------------------------------------------------------------------------
+
+    async def executar(self) -> None:
+        """Laço sem fim; nenhum ciclo ruim o derruba (cancelamento encerra as coletas)."""
+        while True:
+            try:
+                await self.ciclo()
+            except Exception as e:  # noqa: BLE001
+                log.error("ciclo do orquestrador falhou: %s", type(e).__name__)
+            await self._relogio.dormir(TICK_S)
+
+    async def ciclo(self) -> None:
+        """Relê as fontes e coleta, em paralelo, as que venceram o intervalo."""
+        await self._recarregar()
+        agora = self._relogio.agora()
+        devidas = [f for f in self._agenda if agora >= self._proxima.get(f, agora)]
+        for fonte_id in devidas:
+            self._proxima[fonte_id] = agora + self._agenda[fonte_id]
+        if devidas:
+            await asyncio.gather(*(self._coletar(f) for f in devidas), return_exceptions=True)
+
+    async def coletar_todas(self) -> None:
+        """Coleta todas as fontes ativas agora (demo e testes), sem o limite de 30 s."""
+        await self._recarregar()
+        await asyncio.gather(*(self._coletar(f) for f in list(self._agenda)))
+
+    async def _recarregar(self) -> None:
+        async with self._sessoes() as db:
+            fontes = list((await db.execute(select(Fonte))).scalars())
+        vivas = {f.id for f in fontes}
+        for fonte_id in list(self._coletores):
+            if fonte_id not in vivas:
+                self._esquecer(fonte_id)
+        self._agenda = {}
+        for fonte in fontes:
+            if not fonte.ativa:
+                self.gravadores.pop(fonte.id, None)
+                continue
+            self._agenda[fonte.id] = float(fonte.intervalo_s)
+            try:
+                self._coletor_para(fonte)
+            except Exception as e:  # noqa: BLE001 - fonte com configuração inválida
+                log.warning("fonte %s não instanciada: %s", fonte.id, type(e).__name__)
+
+    def _esquecer(self, fonte_id: str) -> None:
+        self._coletores.pop(fonte_id, None)
+        self.gravadores.pop(fonte_id, None)
+        self._agenda.pop(fonte_id, None)
+        self._proxima.pop(fonte_id, None)
+
+    def fonte_alterada(self, fonte_id: str) -> None:
+        """A API mudou/removeu a fonte (ex.: confiou na impressão): recria o coletor na
+        próxima coleta e retoma a leitura de canais suspensa."""
+        self._coletores.pop(fonte_id, None)
+        self.gravadores.pop(fonte_id, None)
+        if self.leitor_canais is not None:
+            self.leitor_canais.retomar(fonte_id)
+
+    def _coletor_para(self, fonte: Fonte) -> Coletor:
+        assinatura = _assinatura(fonte)
+        atual = self._coletores.get(fonte.id)
+        if atual is not None and atual[0] == assinatura:
+            return atual[1]
+        coletor = self._fabrica(fonte, self._cofre, self._guarda, self._limitador)
+        self._coletores[fonte.id] = (assinatura, coletor)
+        if atual is not None and self.leitor_canais is not None:
+            self.leitor_canais.retomar(fonte.id)  # conexão/impressão mudou: tenta de novo
+        if e_gravador(fonte) and callable(getattr(coletor, "status_canais", None)):
+            self.gravadores[fonte.id] = cast(LeitorStatus, coletor)
+        else:
+            self.gravadores.pop(fonte.id, None)
+        return coletor
+
+    def _trava(self, fonte_id: str) -> asyncio.Lock:
+        return self._travas.setdefault(fonte_id, asyncio.Lock())
+
+    # ---- coleta -----------------------------------------------------------------------------
+
+    async def coletar_agora(self, fonte_id: str) -> None:
+        """Coleta já (rota "coletar"); ``ColetaRecente`` se a última começou há < 30 s."""
+        ultimo = self._inicio.get(fonte_id)
+        if ultimo is not None and self._relogio.agora() - ultimo < COLETA_MIN_S:
+            raise ColetaRecente
+        async with self._sessoes() as db:
+            if await db.get(Fonte, fonte_id) is None:
+                raise FonteInexistente
+        self._inicio[fonte_id] = self._relogio.agora()
+        await self._coletar(fonte_id)
+
+    async def _coletar(self, fonte_id: str) -> None:
+        try:
+            async with self._trava(fonte_id):
+                self._inicio[fonte_id] = self._relogio.agora()
+                await self._coletar_fonte(fonte_id)
+        except Exception as e:  # noqa: BLE001 - uma fonte nunca derruba as outras
+            log.error("coleta da fonte %s falhou: %s", fonte_id, type(e).__name__)
+
+    async def _coletar_fonte(self, fonte_id: str) -> None:
+        async with self._sessoes() as db:
+            fonte = await db.get(Fonte, fonte_id)
+        if fonte is None:
+            self._esquecer(fonte_id)
+            return
+        erro: str | None = None
+        achados: list[Achado] = []
+        try:
+            coletor = self._coletor_para(fonte)
+        except Exception as e:  # noqa: BLE001
+            log.warning("fonte %s não instanciada: %s", fonte_id, type(e).__name__)
+            await self._registrar_erro(fonte_id, MSG_FABRICA)
+            return
+        try:
+            achados = await coletor.coletar()
+        except (CertificadoMudou, CertificadoNaoConfiado) as e:
+            erro = str(e)
+            if e_gravador(fonte) and self.leitor_canais is not None:
+                mudou = isinstance(e, CertificadoMudou)
+                causa = CAUSA_CERTIFICADO_MUDOU if mudou else CAUSA_CERTIFICADO_NAO_CONFIADO
+                self.leitor_canais.suspender(fonte_id, causa)
+        except ErroColeta as e:
+            erro = self._mascarar(fonte, str(e))
+        except Exception as e:  # noqa: BLE001 - texto do aparelho/traceback nunca sai
+            log.error("coleta da fonte %s falhou: %s", fonte_id, type(e).__name__)
+            erro = MSG_COLETA_INESPERADA
+        if erro is not None:
+            log.warning("coleta da fonte %s sem sucesso", fonte_id)
+            await self._registrar_erro(fonte_id, erro)
+            return
+        await self.processar_achados(achados, fonte_id=fonte_id)
+
+    def _mascarar(self, fonte: Fonte, texto: str) -> str:
+        try:
+            segredos = list(self._cofre.decifrar(fonte.credencial_cifrada).values())
+        except ErroCofre:
+            segredos = []
+        return Cofre.mascarar(texto, segredos)[:LIMITE_ERRO]
+
+    async def _registrar_erro(self, fonte_id: str, erro: str) -> None:
+        try:
+            async with self._sessoes() as db:
+                await db.execute(
+                    update(Fonte).where(Fonte.id == fonte_id).values(ultimo_erro=erro[:LIMITE_ERRO])
+                )
+                await db.commit()
+        except Exception as e:  # noqa: BLE001
+            log.error("falha ao registrar erro da fonte %s: %s", fonte_id, type(e).__name__)
+
+    async def _sondador(self, ip: str) -> tuple[set[int], str | None]:
+        return await self._sondar(ip, self._guarda, self._limitador)
+
+    async def processar_achados(
+        self, achados: list[Achado], *, fonte_id: str | None = None
+    ) -> None:
+        """Mescla, grava, reagenda equipamentos com IP novo, publica e aprova automaticamente.
+        Usado pela coleta das fontes e pela varredura lenta (``fonte_id`` None)."""
+        agora = self._agora_parede()
+        if self._oui is None:
+            self._oui = BaseOui.carregar()
+        try:
+            async with self._trava_mescla, self._sessoes() as db:
+                r = await mesclar(
+                    db, achados, self._guarda, agora, oui=self._oui, sondador=self._sondador
+                )
+                if fonte_id is not None:
+                    fonte = await db.get(Fonte, fonte_id)
+                    if fonte is not None:
+                        fonte.ultima_coleta, fonte.ultimo_erro = agora, None
+                await db.commit()
+        except Exception as e:  # noqa: BLE001
+            log.error("falha ao gravar achados: %s", type(e).__name__)
+            if fonte_id is not None:
+                await self._registrar_erro(fonte_id, MSG_GRAVAR)
+            return
+        for eq_id in r.equipamentos_atualizados:
+            await self._reagendar(eq_id)
+        await self._publicar_resultado(r)
+        await self._aprovar_automaticamente([*r.novas, *r.atualizadas])
+
+    async def _reagendar(self, eq_id: str) -> None:
+        async with self._sessoes() as db:
+            eq = await db.get(Equipamento, eq_id)
+            classe = await db.get(Classe, eq.classe_id) if eq is not None else None
+            if eq is None or classe is None:
+                return
+            await registrar_no_agendador(self._agendador, db, eq, classe, novo=False)
+            ip = eq.ip
+        self._barramento.publicar(
+            Mensagem("equipamento", {"acao": "atualizado", "id": eq_id, "ip": ip})
+        )
+
+    async def _publicar_resultado(self, r: ResultadoMescla) -> None:
+        mudadas = [(i, "nova") for i in r.novas] + [(i, "atualizada") for i in r.atualizadas]
+        if mudadas:
+            async with self._sessoes() as db:
+                linhas = await db.execute(
+                    select(Descoberta.id, Descoberta.classe_sugerida, Descoberta.confianca).where(
+                        Descoberta.id.in_([i for i, _ in mudadas])
+                    )
+                )
+                resumo = {id: (classe, conf) for id, classe, conf in linhas}
+            for id, acao in mudadas:
+                classe, conf = resumo.get(id, (None, 0.0))
+                self._publicar_descoberta(acao, id, classe, conf)
+        for id in r.removidas:
+            self._publicar_descoberta("removida", id, None, 0.0)
+        if mudadas or r.removidas:
+            await self.publicar_pendentes()
+
+    def _publicar_descoberta(
+        self, acao: str, id: str, classe: str | None, confianca: float
+    ) -> None:
+        dados = {"acao": acao, "id": id, "classe_sugerida": classe, "confianca": confianca}
+        self._barramento.publicar(Mensagem("descoberta", dados))
+
+    async def total_pendentes(self) -> int:
+        async with self._sessoes() as db:
+            consulta = select(func.count()).select_from(Descoberta)
+            return int(await db.scalar(consulta.where(Descoberta.status == PENDENTE)) or 0)
+
+    async def publicar_pendentes(self) -> None:
+        total = await self.total_pendentes()
+        self._barramento.publicar(Mensagem("pendentes", {"total": total}))
+
+    async def _aprovar_automaticamente(self, ids: Iterable[str]) -> None:
+        ids = list(ids)
+        if not ids:
+            return
+        async with self._sessoes() as db:
+            ajustes = await ler_ajustes(db)
+        if not ajustes.aprovacao_automatica:
+            return
+        for id in ids:
+            try:
+                async with self._sessoes() as db:
+                    d = await db.get(Descoberta, id)
+                    if d is None or not self._aprovavel_sozinha(d, ajustes.limiar_aprovacao):
+                        continue
+                    await self.aprovar(db, id, None, None, None)
+            except ErroDescoberta:
+                continue  # fica pendente para o admin
+            except Exception as e:  # noqa: BLE001
+                log.error("aprovação automática falhou: %s", type(e).__name__)
+
+    @staticmethod
+    def _aprovavel_sozinha(d: Descoberta, limiar: float) -> bool:
+        return (
+            d.status == PENDENTE
+            and not d.fora_das_subredes
+            and d.conflito_com is None
+            and d.classe_sugerida not in (None, CLASSE_DESCONHECIDA)
+            and d.confianca >= limiar
+        )
+
+    # ---- teste de fonte (§9.3) --------------------------------------------------------------
+
+    async def testar(self, fonte_id: str) -> ResultadoTeste:
+        """Testa com um coletor novo; qualquer exceção vira erro genérico (credencial
+        mascarada). Sucesso numa fonte de gravador liga/cria o gravador (``apos_teste``)."""
+        async with self._sessoes() as db:
+            fonte = await db.get(Fonte, fonte_id)
+        if fonte is None:
+            raise FonteInexistente
+        try:
+            coletor = self._fabrica(fonte, self._cofre, self._guarda, self._limitador)
+            resultado = await coletor.testar()
+        except ErroColeta as e:
+            resultado = ResultadoTeste(
+                ok=False, erro=str(e), impressao_tls=getattr(e, "impressao", None)
+            )
+        except Exception as e:  # noqa: BLE001 - texto do aparelho/traceback nunca sai
+            log.error("teste da fonte %s falhou: %s", fonte_id, type(e).__name__)
+            resultado = ResultadoTeste(ok=False, erro=MSG_TESTE_INESPERADO)
+        if resultado.erro is not None:
+            resultado.erro = self._mascarar(fonte, resultado.erro)
+        try:
+            await self.apos_teste(fonte_id, resultado)
+        except Exception as e:  # noqa: BLE001
+            log.error("pós-teste da fonte %s falhou: %s", fonte_id, type(e).__name__)
+        return resultado
+
+    async def apos_teste(self, fonte_id: str, resultado: ResultadoTeste) -> None:
+        """§9.3: teste OK de gravador liga ``fonte.equipamento_id`` ao equipamento com o IP
+        do gravador; sem ele, cria (ou atualiza) a descoberta do próprio gravador."""
+        if not resultado.ok:
+            return
+        agora = self._agora_parede()
+        publicar: tuple[str, Descoberta] | None = None
+        async with self._sessoes() as db:
+            fonte = await db.get(Fonte, fonte_id)
+            if fonte is None or not e_gravador(fonte):
+                return
+            if await _existe(db, fonte.equipamento_id):
+                return
+            eq = await equipamento_por_ip(db, fonte.host)
+            if eq is not None:
+                await self._ligar_fonte(db, fonte, eq.id)
+                await db.commit()
+                return
+            d = await db.scalar(
+                select(Descoberta)
+                .where(Descoberta.ip == fonte.host, Descoberta.chave.not_like("nvr:%"))
+                .limit(1)
+            )
+            origem = {"fonte_id": fonte.id, "origem": "gravador"}
+            if d is None:
+                d = Descoberta(
+                    id=str(uuid.uuid4()),
+                    chave=f"ip:{fonte.host}",
+                    ip=fonte.host,
+                    status=PENDENTE,
+                    sinais={},
+                    origens=[origem],
+                    primeira_vez=agora,
+                    ultima_vez=agora,
+                    fora_das_subredes=not dentro_das_subredes(self._guarda, fonte.host),
+                )
+                db.add(d)
+                publicar = ("nova", d)
+            elif d.status == PENDENTE:
+                if origem not in d.origens:
+                    d.origens = [*d.origens, origem]
+                publicar = ("atualizada", d)
+            else:
+                return
+            d.nome_sugerido = (resultado.identidade or d.nome_sugerido or fonte.nome)[:120]
+            d.ultima_vez = agora
+            reclassificar(d)
+            await db.commit()
+        if publicar is not None:
+            acao, d = publicar
+            self._publicar_descoberta(acao, d.id, d.classe_sugerida, d.confianca)
+            await self.publicar_pendentes()
+
+    @staticmethod
+    async def _ligar_fonte(db: AsyncSession, fonte: Fonte, equipamento_id: str) -> None:
+        """A fonte passa a representar o equipamento; as câmeras dela ganham o pai."""
+        fonte.equipamento_id = equipamento_id
+        await db.execute(
+            update(Descoberta)
+            .where(Descoberta.chave.like(f"nvr:{fonte.id}:%"))
+            .values(pai_equipamento_id=equipamento_id)
+        )
+
+    # ---- sondagem pelo admin (§9.1 b) -------------------------------------------------------
+
+    async def sondar_descoberta(self, descoberta_id: str) -> Descoberta:
+        """Botão "Sondar" (a rota audita): portas + título, grava e reclassifica."""
+        async with self._sessoes() as db:
+            d = await db.get(Descoberta, descoberta_id)
+        if d is None:
+            raise DescobertaInexistente
+        if e_canal(d):
+            raise SondagemRecusada(MSG_SONDAR_CANAL)
+        if not dentro_das_subredes(self._guarda, d.ip):
+            raise SondagemRecusada(MSG_FORA)
+        try:
+            portas, titulo = await self._sondar(d.ip, self._guarda, self._limitador)
+        except DestinoProibido:
+            raise SondagemRecusada(MSG_FORA) from None
+        except Exception as e:  # noqa: BLE001
+            log.warning("sondagem pedida falhou: %s", type(e).__name__)
+            raise SondagemRecusada(MSG_SONDAR_FALHOU) from None
+        async with self._sessoes() as db:
+            atual = await db.get(Descoberta, descoberta_id)
+            if atual is None:
+                raise DescobertaInexistente
+            atual.sinais = {**(atual.sinais or {}), "portas": sorted(portas), "titulo": titulo}
+            atual.sondada_em = self._agora_parede()
+            reclassificar(atual)
+            await db.commit()
+        self._publicar_descoberta("atualizada", atual.id, atual.classe_sugerida, atual.confianca)
+        return atual
+
+    # ---- aprovação --------------------------------------------------------------------------
+
+    async def aprovar(
+        self,
+        db: AsyncSession,
+        descoberta_id: str,
+        classe_slug: str | None,
+        nome: str | None,
+        usuario: Usuario | None,
+        *,
+        ip: str | None = None,
+    ) -> Equipamento:
+        """Aprova (com commit próprio) e registra no agendador vivo. ``usuario`` None é a
+        aprovação automática. ``ip`` é o do cliente, para a auditoria."""
+        agora = self._agora_parede()
+        d = await db.get(Descoberta, descoberta_id)
+        if d is None:
+            raise DescobertaInexistente
+        feito = _Aprovacao()
+        try:
+            eq = await self._aprovar_uma(db, d, classe_slug, nome, usuario, ip, agora, feito)
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise AprovacaoRecusada(MSG_CONFLITO) from None
+        except ErroDescoberta:
+            await db.rollback()
+            raise
+        for equipamento, classe in feito.equipamentos:
+            await registrar_no_agendador(self._agendador, db, equipamento, classe, novo=True)
+        for id in feito.descobertas:
+            self._publicar_descoberta("removida", id, None, 0.0)
+        await self.publicar_pendentes()
+        return eq
+
+    async def _aprovar_uma(
+        self,
+        db: AsyncSession,
+        d: Descoberta,
+        classe_slug: str | None,
+        nome: str | None,
+        usuario: Usuario | None,
+        ip: str | None,
+        agora: datetime,
+        feito: _Aprovacao,
+    ) -> Equipamento:
+        if d.status != PENDENTE:
+            raise AprovacaoRecusada(MSG_NAO_PENDENTE)
+        canal = e_canal(d)
+        if not canal:
+            if not dentro_das_subredes(self._guarda, d.ip):
+                raise AprovacaoRecusada(MSG_FORA)
+            if await equipamento_por_ip(db, d.ip) is not None:
+                raise AprovacaoRecusada(MSG_IP_EM_USO)
+        if d.mac and await db.scalar(select(Equipamento.id).where(Equipamento.mac == d.mac)):
+            raise AprovacaoRecusada(MSG_MAC_EM_USO)
+        slug = classe_slug or d.classe_sugerida or CLASSE_DESCONHECIDA
+        classe = await db.scalar(select(Classe).where(Classe.slug == slug))
+        if classe is None:
+            raise AprovacaoRecusada(MSG_CLASSE)
+        pai = await self._gravador_do_canal(db, d, usuario, ip, agora, feito) if canal else None
+        checagem, porta = checagem_sugerida(d)
+        eq = Equipamento(
+            id=str(uuid.uuid4()),
+            nome=(nome or d.nome_sugerido or f"{classe.nome} {d.ip}")[:LIMITE_NOME],
+            ip=d.ip,
+            mac=d.mac,
+            fabricante=d.fabricante,
+            classe_id=classe.id,
+            classe_origem="auto" if classe_slug in (None, d.classe_sugerida) else "manual",
+            checagem=checagem,
+            porta=porta,
+            estado="desconhecido",
+            estado_desde=agora,
+            pausado=False,
+            criado_em=agora,
+            pai_id=pai,
+            canal=d.canal if canal else None,
+        )
+        db.add(eq)
+        await db.flush()  # o equipamento existe antes de a descoberta apontar para ele
+        d.status, d.equipamento_id, d.conflito_com = APROVADA, eq.id, None
+        self._auditar_aprovacao(db, eq, classe, d.id, usuario, ip, agora)
+        await db.flush()
+        feito.equipamentos.append((eq, classe))
+        feito.descobertas.append(d.id)
+        if not canal:
+            await self._ligar_fontes_do_ip(db, eq)
+        return eq
+
+    @staticmethod
+    def _auditar_aprovacao(
+        db: AsyncSession,
+        eq: Equipamento,
+        classe: Classe,
+        descoberta_id: str,
+        usuario: Usuario | None,
+        ip: str | None,
+        agora: datetime,
+    ) -> None:
+        depois = {
+            "descoberta": descoberta_id,
+            "nome": eq.nome,
+            "ip": eq.ip,
+            "mac": eq.mac,
+            "classe": classe.slug,
+            "checagem": eq.checagem,
+            "porta": eq.porta,
+            "pai_id": eq.pai_id,
+            "canal": eq.canal,
+        }
+        acao = "descoberta.aprovar" if usuario is not None else "descoberta.aprovar_automatica"
+        db.add(
+            Auditoria(
+                usuario_id=usuario.id if usuario is not None else None,
+                acao=acao,
+                alvo=eq.id,
+                depois=depois,
+                ip=ip,
+                em=agora,
+            )
+        )
+
+    async def _ligar_fontes_do_ip(self, db: AsyncSession, eq: Equipamento) -> None:
+        """Gravador aprovado: as fontes de gravador nesse host passam a apontar para ele."""
+        fontes = (
+            await db.execute(
+                select(Fonte).where(Fonte.host == eq.ip, Fonte.equipamento_id.is_(None))
+            )
+        ).scalars()
+        for fonte in fontes:
+            if e_gravador(fonte):
+                await self._ligar_fonte(db, fonte, eq.id)
+
+    async def _gravador_do_canal(
+        self,
+        db: AsyncSession,
+        d: Descoberta,
+        usuario: Usuario | None,
+        ip: str | None,
+        agora: datetime,
+        feito: _Aprovacao,
+    ) -> str:
+        """Id do equipamento do gravador da câmera; aprova/cria o gravador se preciso."""
+        fonte = await db.get(Fonte, d.chave.split(":", 2)[1])
+        if fonte is None:
+            raise AprovacaoRecusada(MSG_SEM_GRAVADOR)
+        if fonte.equipamento_id is not None and await _existe(db, fonte.equipamento_id):
+            return fonte.equipamento_id
+        existente = await equipamento_por_ip(db, fonte.host)
+        if existente is not None:
+            await self._ligar_fonte(db, fonte, existente.id)
+            return existente.id
+        d_gravador = await db.scalar(
+            select(Descoberta)
+            .where(
+                Descoberta.ip == fonte.host,
+                Descoberta.status == PENDENTE,
+                Descoberta.chave.not_like("nvr:%"),
+            )
+            .limit(1)
+        )
+        if d_gravador is not None:
+            gravador = await self._aprovar_uma(
+                db, d_gravador, "gravador", None, usuario, ip, agora, feito
+            )
+        else:
+            gravador = await self._gravador_pela_fonte(db, fonte, usuario, ip, agora, feito)
+        await self._ligar_fonte(db, fonte, gravador.id)
+        return gravador.id
+
+    async def _gravador_pela_fonte(
+        self,
+        db: AsyncSession,
+        fonte: Fonte,
+        usuario: Usuario | None,
+        ip: str | None,
+        agora: datetime,
+        feito: _Aprovacao,
+    ) -> Equipamento:
+        if not dentro_das_subredes(self._guarda, fonte.host):
+            raise AprovacaoRecusada(MSG_FORA)
+        classe = await db.scalar(select(Classe).where(Classe.slug == "gravador"))
+        if classe is None:
+            raise AprovacaoRecusada(MSG_CLASSE)
+        eq = Equipamento(
+            id=str(uuid.uuid4()),
+            nome=fonte.nome[:LIMITE_NOME],
+            ip=fonte.host,
+            classe_id=classe.id,
+            classe_origem="auto",
+            checagem="icmp",
+            estado="desconhecido",
+            estado_desde=agora,
+            pausado=False,
+            criado_em=agora,
+        )
+        db.add(eq)
+        self._auditar_aprovacao(db, eq, classe, f"fonte:{fonte.id}", usuario, ip, agora)
+        await db.flush()
+        feito.equipamentos.append((eq, classe))
+        return eq
+
+
+__all__ = [
+    "FONTE_VARREDURA",
+    "AprovacaoRecusada",
+    "ColetaRecente",
+    "DescobertaInexistente",
+    "ErroDescoberta",
+    "FonteInexistente",
+    "Orquestrador",
+    "SondagemRecusada",
+    "auditar_sistema",
+    "checagem_sugerida",
+    "fabricar_coletor",
+]

@@ -15,13 +15,30 @@ from sentinela.api.deps import verificar_csrf
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
-from sentinela.demo.simulador import ChecagemSimulada, banco_e_demo, semear_demo, tem_equipamentos
+from sentinela.demo.simulador import (
+    ChecagemSimulada,
+    banco_e_demo,
+    semear_demo,
+    semear_fontes_demo,
+    tem_equipamentos,
+)
+from sentinela.descoberta.canais import LeitorCanais
+from sentinela.descoberta.classificador.sondagem import sondar
+from sentinela.descoberta.fontes.simulada import fabricar_simulado, ping_simulado, sondar_simulado
+from sentinela.descoberta.orquestrador import (
+    FabricaColetor,
+    FuncaoSondar,
+    Orquestrador,
+    fabricar_coletor,
+)
+from sentinela.descoberta.varredura import Ping, Varredura, ping_icmp
 from sentinela.monitor.gravador import GravadorAmostras
 from sentinela.monitor.limpeza import limpar_periodicamente
-from sentinela.monitor.montagem import montar_monitor
+from sentinela.monitor.montagem import Monitor, montar_monitor
 from sentinela.registro import configurar_logs
 from sentinela.relogio import Relogio, RelogioReal
 from sentinela.seguranca.bloqueio import BloqueioFantasma, LimitadorIP
+from sentinela.seguranca.cofre import Cofre
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +83,7 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
             )
         log.warning("modo demonstração: as checagens são simuladas, nenhum pacote é enviado")
         await semear_demo(app.state.sessoes)
+        await semear_fontes_demo(app.state.sessoes)
         simulada = ChecagemSimulada(relogio=app.state.relogio)  # uma por app, para todo tipo
         monitor = await montar_monitor(
             app.state.sessoes, settings, lambda _tipo: simulada, app.state.relogio
@@ -79,11 +97,53 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     app.state.limitador = monitor.limitador
     app.state.gravador = monitor.gravador
     app.state.agendador = monitor.agendador
+    _montar_descoberta(app, settings, monitor)
+
+
+def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
+    """Orquestrador, leitura de canais e varredura (laços não iniciados). No modo
+    demonstração toda fonte, sondagem e ping são simulados: nenhum pacote sai."""
+    cofre = Cofre(settings.chave_credenciais)
+    fabrica: FabricaColetor = fabricar_simulado if settings.demo else fabricar_coletor
+    sondador: FuncaoSondar = sondar_simulado if settings.demo else sondar
+    ping: Ping = ping_simulado if settings.demo else ping_icmp
+    orquestrador = Orquestrador(
+        app.state.sessoes,
+        monitor.guarda,
+        monitor.limitador,
+        monitor.barramento,
+        monitor.agendador,
+        cofre,
+        app.state.relogio,
+        fabrica,
+        sondar=sondador,
+    )
+    leitor = LeitorCanais(
+        app.state.sessoes,
+        monitor.agendador,
+        orquestrador.gravadores,
+        monitor.limitador,
+        app.state.relogio,
+    )
+    orquestrador.leitor_canais = leitor
+    app.state.cofre = cofre
+    app.state.orquestrador = orquestrador
+    app.state.leitor_canais = leitor
+    app.state.varredura = Varredura(
+        app.state.sessoes,
+        monitor.guarda,
+        monitor.limitador,
+        monitor.barramento,
+        app.state.relogio,
+        ping=ping,
+        entregar=orquestrador.processar_achados,
+    )
 
 
 @asynccontextmanager
 async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
-    """Inicia a limpeza diária, a descarga periódica e ``agendador.executar``; no shutdown,
+    """Inicia a limpeza diária, a descarga periódica, a descoberta (orquestrador e leitura de
+    canais) e ``agendador.executar``; no shutdown, cancela a varredura e
     encerra e espera, nessa ordem (o agendador cancelado drena as transições e descarrega).
     """
     tarefas: list[asyncio.Task[None]] = []
@@ -104,6 +164,13 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
             )
         )
         tarefas.append(
+            asyncio.create_task(app.state.orquestrador.executar(), name="sentinela-descoberta")
+        )
+        tarefas.append(
+            asyncio.create_task(app.state.leitor_canais.executar(), name="sentinela-canais")
+        )
+        # o agendador por último: os laços da descoberta o usam e param antes dele
+        tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
         )
         for tarefa in tarefas:
@@ -111,7 +178,9 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, agendador
+        await app.state.varredura.encerrar()
+        for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, descoberta,
+            # leitura de canais e agendador
             tarefa.cancel()
             # falha já registrada por ``_laco_terminou``; aqui só espera o fim
             await asyncio.gather(tarefa, return_exceptions=True)
