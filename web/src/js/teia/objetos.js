@@ -94,11 +94,12 @@ function texBrilho(acervo) {
 /**
  * Com bloom a cena é composta em espaço linear e só depois convertida para sRGB: a cauda
  * fraca do brilho aditivo ficaria amplificada (halo vira disco chapado). Redesenha o brilho
- * com a queda "linearizada" (alfa^2.2); chamado uma vez, quando o bloom liga.
+ * com a queda "linearizada" (alfa^2.2); chamado uma vez, quando o bloom liga;
+ * com `linear = false` (bloom desligado) volta ao brilho normal.
  */
-export function brilhoParaComposicaoLinear(acervo) {
+export function brilhoParaComposicaoLinear(acervo, linear = true) {
   const t = texBrilho(acervo);
-  desenharBrilho(t.userData.canvas, 2.2);
+  desenharBrilho(t.userData.canvas, linear ? 2.2 : 1);
   t.needsUpdate = true;
 }
 
@@ -191,14 +192,16 @@ const geoEsfera = (acervo, raio, seg) =>
   acervo.obter(`geo:esfera:${raio.toFixed(2)}:${seg}`, () => new SphereGeometry(raio, seg, seg));
 
 // ---------- equipamento / super-nó (mesma estrutura, tamanhos diferentes) ----------
-function criarCorpo(acervo, raio, resolucao) {
+// A esfera usa sempre a geometria do equipamento (uma por resolução) e cresce por escala:
+// super-nós de tamanhos diferentes não criam geometrias novas.
+function criarCorpo(acervo, escala, resolucao) {
   const grupo = new Group();
   const halo = new Sprite();
-  const esfera = new Mesh(geoEsfera(acervo, raio, resolucao));
+  const esfera = new Mesh(geoEsfera(acervo, TAMANHO.equipamento, resolucao));
   const marca = new Sprite();
   marca.renderOrder = 10;
   grupo.add(halo, esfera, marca);
-  grupo.userData = { halo, esfera, marca, raio, aparencia: null, semente: Math.random() * 100 };
+  grupo.userData = { halo, esfera, marca, escala, aparencia: null, semente: Math.random() * 100 };
   return grupo;
 }
 
@@ -206,15 +209,16 @@ function criarCorpo(acervo, raio, resolucao) {
  * Reaplica a aparência do estado: cor, opacidade e marca ("anel" ou "×"). Pulso e tremor
  * ficam a cargo do laço de render (escala/posição), lidos de userData.aparencia.
  */
-export function vestirCorpo(grupo, acervo, estado, esmaecido, escala = 1) {
+export function vestirCorpo(grupo, acervo, estado, esmaecido) {
   const ap = aparenciaDe(estado);
   const u = grupo.userData;
+  const escala = u.escala;
   u.aparencia = ap;
   u.esfera.material = matSolido(acervo, ap.cor, ap.opacidade, esmaecido);
   u.halo.material = matHalo(acervo, ap.cor, 0.55 * ap.opacidade, esmaecido);
   const lado = TAMANHO.haloEquipamento * escala;
   u.halo.scale.set(lado, lado, 1);
-  u.esfera.scale.setScalar(1);
+  u.esfera.scale.setScalar(escala);
   u.esfera.position.set(0, 0, 0);
   const temMarca = ap.forma === "anel" || ap.forma === "cruz";
   u.marca.visible = temMarca;
@@ -227,33 +231,33 @@ export function vestirCorpo(grupo, acervo, estado, esmaecido, escala = 1) {
 }
 
 export function criarObjetoEquipamento(acervo, estado, { esmaecido = false, resolucao = 16 } = {}) {
-  const g = criarCorpo(acervo, TAMANHO.equipamento, resolucao);
+  const g = criarCorpo(acervo, 1, resolucao);
   vestirCorpo(g, acervo, estado, esmaecido);
   return g;
 }
 
 /** Super-nó do nível "agrupado": tamanho pela contagem, cor/marca pelo pior estado. */
-export function criarObjetoGrupo(acervo, { raio, estado, texto, corClasse, esmaecido = false }) {
-  const g = criarCorpo(acervo, raio, 24);
-  const escala = raio / TAMANHO.equipamento;
-  g.userData.escala = escala;
-  vestirCorpo(g, acervo, estado, esmaecido, escala);
+export function criarObjetoGrupo(acervo, opcoes) {
+  const { raio, estado, texto, corClasse, esmaecido = false, abaixo = false } = opcoes;
+  const g = criarCorpo(acervo, raio / TAMANHO.equipamento, 24);
+  vestirCorpo(g, acervo, estado, esmaecido);
   const rot = criarRotulo(texto, corClasse);
-  rot.position.y = raio + 8;
+  rot.position.y = abaixo ? -(raio + 8) : raio + 8;
   g.add(rot);
   g.userData.rotulo = rot;
   return g;
 }
 
 // ---------- classe ----------
-export function criarObjetoClasse(acervo, { cor, texto, esmaecido = false }) {
+/** `abaixo`: rótulo sob o hub (vagas ímpares, ver rotuloAbaixo) para não colidir com o vizinho. */
+export function criarObjetoClasse(acervo, { cor, texto, esmaecido = false, abaixo = false }) {
   const g = new Group();
   const halo = new Sprite();
   halo.raycast = naoRaycast; // o halo grande não rouba o clique dos equipamentos perto
   halo.scale.set(TAMANHO.haloClasse, TAMANHO.haloClasse, 1);
   const esfera = new Mesh(geoEsfera(acervo, TAMANHO.classe, 32));
   const rot = criarRotulo(texto, cor);
-  rot.position.y = 14;
+  rot.position.y = abaixo ? -14 : 14;
   g.add(halo, esfera, rot);
   g.userData = { halo, esfera, rotulo: rot };
   vestirClasse(g, acervo, cor, esmaecido);

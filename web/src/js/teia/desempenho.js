@@ -69,3 +69,37 @@ export function criarMedidorFps(agora = () => performance.now()) {
 export function bloomPermitido(fpsInicial, movimentoReduzido) {
   return fpsInicial !== null && fpsInicial !== undefined && fpsInicial >= 50 && !movimentoReduzido;
 }
+
+/** Queda de FPS que agrupa (R5): média de 3 s abaixo de 24 fps por 5 s seguidos. */
+export const FPS_AGRUPAR = 24;
+export const SEGUNDOS_AGRUPAR = 5;
+/** Intervalo mínimo entre duas entradas em "agrupado" por FPS (sem vaivém). */
+export const INTERVALO_REAGRUPAR_MS = 60000;
+
+/** true se o medidor registra a queda sustentada que agrupa. */
+export function quedaSustentada(medidor) {
+  return medidor.abaixoDe(FPS_AGRUPAR, SEGUNDOS_AGRUPAR);
+}
+
+/**
+ * Decide o nível de detalhe. Puro: recebe e devolve o estado da decisão.
+ * - total: nº de equipamentos; se ele já implica "agrupado", o caminho de FPS é ignorado.
+ * - agrupadoPorFps: a cena está agrupada por FPS (fica até ser limpo por limparAgrupadoPorFps).
+ * - queda: quedaSustentada(medidor) agora.
+ * - agora / ultimaEntrada: ms; reentrar em "agrupado" por FPS só 60 s após a última entrada.
+ * Devolve {nivel, agrupadoPorFps, ultimaEntrada}.
+ */
+export function decidirNivel({ total, agrupadoPorFps = false, queda = false, agora = 0, ultimaEntrada = -Infinity }) {
+  const porContagem = nivelDeDetalhe(total, null);
+  if (porContagem === "agrupado") return { nivel: "agrupado", agrupadoPorFps: false, ultimaEntrada };
+  if (agrupadoPorFps) return { nivel: "agrupado", agrupadoPorFps: true, ultimaEntrada };
+  if (queda && agora - ultimaEntrada >= INTERVALO_REAGRUPAR_MS) {
+    return { nivel: "agrupado", agrupadoPorFps: true, ultimaEntrada: agora };
+  }
+  return { nivel: porContagem, agrupadoPorFps: false, ultimaEntrada };
+}
+
+/** Pedido do usuário (retomar, trocar estilo, ver tudo): volta à vista completa possível. */
+export function limparAgrupadoPorFps(decisao) {
+  return { ...decisao, agrupadoPorFps: false };
+}

@@ -7,7 +7,9 @@ import { AmbientLight, Color, FogExp2, PointLight, Vector2 } from "three";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { aparenciaDe, corDaClasse } from "./aparencia.js";
-import { bloomPermitido, criarMedidorFps, nivelDeDetalhe } from "./desempenho.js";
+import {
+  bloomPermitido, criarMedidorFps, decidirNivel, limparAgrupadoPorFps, quedaSustentada,
+} from "./desempenho.js";
 import { calcularPosicoes, ESTILOS, RAIO_CLASSES } from "./estilos.js";
 import {
   atualizarRotulo, brilhoParaComposicaoLinear, criarAcervo, criarEstrelas, criarObjetoClasse,
@@ -15,8 +17,8 @@ import {
   TAMANHO, vestirClasse, vestirCorpo,
 } from "./objetos.js";
 import {
-  assinaturas, CLASSE_SERVIDOR, classesDaCena, diferencaNos, raioSuperNo, resumoPorClasse,
-  textoRotuloClasse,
+  assinaturas, CLASSE_SERVIDOR, classesDaCena, diferencaNos, posicaoDeAproximacao, raioSuperNo,
+  resumoPorClasse, rotuloAbaixo, textoRotuloClasse,
 } from "./reconciliar.js";
 
 const CAMERA_PADRAO = { x: 0, y: 260, z: 520 };
@@ -48,7 +50,11 @@ export function montarTeia(container, opcoes = {}) {
   const est = {
     estilo: estiloValido(opcoes.estilo),
     nivel: "completo",
-    agrupadoPorFps: false, // queda sustentada de FPS: fica agrupado até destruir (sem vaivém)
+    total: 0, // equipamentos da cena no store (base do nível por contagem)
+    // R5: queda sustentada (< 24 fps por 5 s) agrupa até retomar/definirEstilo/verTudo;
+    // reentrar por FPS no máximo 1 vez por minuto
+    agrupadoPorFps: false,
+    ultimaEntradaFps: -Infinity,
     foco: null,
     girando: !reduzido,
     store: null,
@@ -72,6 +78,7 @@ export function montarTeia(container, opcoes = {}) {
   let assin = new Map();
 
   // ---------- grafo ----------
+  container.classList.add("teia-cena"); // foco visível pelo CSS (componentes.css)
   const dica = document.createElement("div"); // conteúdo da dica: só textContent
 
   const G = new ForceGraph3D(container, {
@@ -141,12 +148,13 @@ export function montarTeia(container, opcoes = {}) {
     if (no.tipo === "classe") {
       return criarObjetoClasse(acervo, {
         cor: no.cor, texto: textoRotuloClasse(no.nome, no.total), esmaecido: esmaecidoClasse(no.slug),
+        abaixo: rotuloAbaixo(no.ordem),
       });
     }
     if (no.tipo === "grupo") {
       const obj = criarObjetoGrupo(acervo, {
         raio: raioSuperNo(no.total), estado: no.estado, texto: textoRotuloClasse(no.nome, no.total),
-        corClasse: no.cor, esmaecido: esmaecidoClasse(no.slug),
+        corClasse: no.cor, esmaecido: esmaecidoClasse(no.slug), abaixo: rotuloAbaixo(no.ordem),
       });
       registrarAnimacao(no, obj);
       return obj;
@@ -171,7 +179,7 @@ export function montarTeia(container, opcoes = {}) {
       vestirClasse(obj, acervo, no.cor, esmaecidoClasse(no.slug));
       atualizarRotulo(obj.userData.rotulo, textoRotuloClasse(no.nome, no.total), no.cor);
     } else if (no.tipo === "grupo") {
-      vestirCorpo(obj, acervo, no.estado, esmaecidoClasse(no.slug), obj.userData.escala);
+      vestirCorpo(obj, acervo, no.estado, esmaecidoClasse(no.slug));
       atualizarRotulo(obj.userData.rotulo, textoRotuloClasse(no.nome, no.total), no.cor);
       registrarAnimacao(no, obj);
     } else if (no.tipo === "equip") {
@@ -226,11 +234,6 @@ export function montarTeia(container, opcoes = {}) {
     return lista;
   }
 
-  function nivelAlvo() {
-    if (est.agrupadoPorFps) return "agrupado";
-    return nivelDeDetalhe(assin.size, null);
-  }
-
   function atualizarHubs(classes) {
     const vistos = new Set();
     for (const c of classes) {
@@ -238,7 +241,10 @@ export function montarTeia(container, opcoes = {}) {
       const cor = corDaClasse(c);
       let h = hubs.get(c.slug);
       if (!h) {
-        h = { id: `h-${c.slug}`, tipo: "classe", slug: c.slug, nome: c.nome, cor, total: c.total };
+        h = {
+          id: `h-${c.slug}`, tipo: "classe", slug: c.slug, ordem: c.ordem, nome: c.nome, cor,
+          total: c.total,
+        };
         hubs.set(c.slug, h);
       } else if (h.nome !== c.nome || h.cor !== cor || h.total !== c.total) {
         Object.assign(h, { nome: c.nome, cor, total: c.total });
@@ -258,7 +264,10 @@ export function montarTeia(container, opcoes = {}) {
       const cor = corDaClasse(c);
       let g = grupos.get(c.slug);
       if (!g) {
-        g = { id: `g-${c.slug}`, tipo: "grupo", slug: c.slug, nome: c.nome, cor, total: r.total, estado: r.pior };
+        g = {
+          id: `g-${c.slug}`, tipo: "grupo", slug: c.slug, ordem: c.ordem, nome: c.nome, cor,
+          total: r.total, estado: r.pior,
+        };
         grupos.set(c.slug, g);
       } else if (g.total !== r.total) {
         // o raio depende da contagem: recria o objeto (nó novo, mesmo id lógico)
@@ -409,9 +418,12 @@ export function montarTeia(container, opcoes = {}) {
   function sincronizar(store) {
     if (est.destruido) return;
     est.store = store;
-    const totalAlvo = assinaturas(store.itens).size;
-    const alvo = est.agrupadoPorFps ? "agrupado" : nivelDeDetalhe(totalAlvo, null);
-    if (alvo !== est.nivel) trocarNivel(alvo);
+    est.total = assinaturas(store.itens).size;
+    const d = decidirNivel({
+      total: est.total, agrupadoPorFps: est.agrupadoPorFps, ultimaEntrada: est.ultimaEntradaFps,
+    });
+    est.agrupadoPorFps = d.agrupadoPorFps;
+    if (d.nivel !== est.nivel) trocarNivel(d.nivel);
 
     const classes = classesDaCena(store);
     atualizarHubs(classes);
@@ -459,13 +471,7 @@ export function montarTeia(container, opcoes = {}) {
 
   function aproximar(no, distancia) {
     const p = posicaoDe(no);
-    const r = Math.hypot(p.x, p.y, p.z);
-    if (r < 1) {
-      G.cameraPosition(CAMERA_PADRAO, p, reduzido ? 0 : CAMERA_MS);
-      return;
-    }
-    const k = 1 + distancia / r;
-    G.cameraPosition({ x: p.x * k, y: p.y * k + 60, z: p.z * k }, p, reduzido ? 0 : CAMERA_MS);
+    G.cameraPosition(posicaoDeAproximacao(p, distancia) ?? CAMERA_PADRAO, p, reduzido ? 0 : CAMERA_MS);
   }
 
   function girar(ligado) {
@@ -475,8 +481,7 @@ export function montarTeia(container, opcoes = {}) {
 
   function clicar(no) {
     if (no.tipo === "equip") {
-      girar(false); // painel aberto: sem rotação
-      aproximar(no, 160);
+      focarEquipamento(no.id);
       aoClicarEquipamento(no.id);
     } else if (no.tipo === "classe" || no.tipo === "grupo") {
       aoClicarClasse(no.slug);
@@ -510,13 +515,41 @@ export function montarTeia(container, opcoes = {}) {
     if (alvo) aproximar(alvo, 200);
   }
 
+  /**
+   * Câmera vai suavemente até o equipamento e a rotação para (painel aberto). No nível
+   * agrupado o equipamento não está na cena: foca a classe dele. verTudo() desfaz.
+   */
+  function focarEquipamento(id) {
+    if (est.destruido || !est.store) return;
+    const it = est.store.itens.get(id);
+    if (!it) return;
+    if (est.nivel === "agrupado") {
+      if (grupos.has(it.classe)) focarClasse(it.classe);
+      return;
+    }
+    const no = nos.get(id);
+    if (!no) return;
+    girar(false);
+    aproximar(no, 160);
+  }
+
+  // Pedido explícito do usuário: devolve a vista completa se o FPS a tinha agrupado.
+  function liberarAgrupadoPorFps() {
+    reiniciarMedicao();
+    if (!est.agrupadoPorFps) return;
+    est.agrupadoPorFps = limparAgrupadoPorFps({ agrupadoPorFps: true }).agrupadoPorFps;
+    if (est.store) sincronizar(est.store);
+  }
+
   function cameraGeral() {
     const e = est.estilo === "e";
     G.cameraPosition(e ? CAMERA_E : CAMERA_PADRAO, e ? ALVO_E : { x: 0, y: 0, z: 0 }, reduzido ? 0 : CAMERA_MS);
   }
 
+  /** Tira o foco, volta a câmera à vista geral do estilo e retoma a rotação automática. */
   function verTudo() {
     if (est.destruido) return;
+    liberarAgrupadoPorFps();
     if (est.foco !== null) {
       est.foco = null;
       reaplicarEsmaecimento();
@@ -530,6 +563,7 @@ export function montarTeia(container, opcoes = {}) {
     const novo = estiloValido(estilo);
     if (novo === est.estilo) return;
     est.estilo = novo;
+    liberarAgrupadoPorFps();
     if (est.store) {
       posicionar({ todos: true, animar: novo !== "a" });
       configurarForcas();
@@ -553,7 +587,7 @@ export function montarTeia(container, opcoes = {}) {
     const saida = new OutputPass();
     comp.addPass(passe);
     comp.addPass(saida);
-    brilhoParaComposicaoLinear(acervo);
+    brilhoParaComposicaoLinear(acervo, true);
     est.bloom = { passe, saida };
   }
 
@@ -564,6 +598,7 @@ export function montarTeia(container, opcoes = {}) {
       comp.removePass(est.bloom.saida);
       est.bloom.passe.dispose();
       est.bloom.saida.dispose();
+      brilhoParaComposicaoLinear(acervo, false); // halos normais de novo
     }
     if (est.bloom !== null) est.bloom = false; // só desliga; nunca religa
   }
@@ -576,10 +611,17 @@ export function montarTeia(container, opcoes = {}) {
     if (est.bloom === null && agora - est.inicioRender >= AVALIAR_BLOOM_MS) decidirBloom();
     if (agora - est.ultimoCheque >= 1000) {
       est.ultimoCheque = agora;
-      if (!est.agrupadoPorFps && est.store && medidor.abaixoDe(30, 3)
-          && nivelDeDetalhe(assin.size, medidor.media()) === "agrupado") {
-        est.agrupadoPorFps = true;
-        sincronizar(est.store);
+      // R5: com a contagem já agrupando, decidirNivel nem consulta o FPS
+      if (est.store && !est.agrupadoPorFps) {
+        const d = decidirNivel({
+          total: est.total, agrupadoPorFps: false, queda: quedaSustentada(medidor), agora,
+          ultimaEntrada: est.ultimaEntradaFps,
+        });
+        if (d.agrupadoPorFps) {
+          est.agrupadoPorFps = true;
+          est.ultimaEntradaFps = d.ultimaEntrada;
+          sincronizar(est.store);
+        }
       }
     }
 
@@ -620,7 +662,7 @@ export function montarTeia(container, opcoes = {}) {
         const amp = esc > 1 ? 0.25 : 0.55, base = esc > 1 ? 1 : 1.4;
         const s = TAMANHO.haloEquipamento * esc * (1 + amp * onda) * base;
         u.halo.scale.set(s, s, 1);
-        u.esfera.scale.setScalar(esc > 1 ? 0.95 + 0.1 * onda : 0.85 + 0.3 * onda);
+        u.esfera.scale.setScalar(esc * (esc > 1 ? 0.95 + 0.1 * onda : 0.85 + 0.3 * onda));
       } else if (u.aparencia.treme) {
         u.esfera.position.set(Math.sin(t * 37 + u.semente) * 0.35, Math.cos(t * 41 + u.semente) * 0.35, 0);
       }
@@ -649,8 +691,8 @@ export function montarTeia(container, opcoes = {}) {
   function retomar() {
     if (est.destruido || !est.pausado) return;
     est.pausado = false;
-    reiniciarMedicao();
     G.resumeAnimation();
+    liberarAgrupadoPorFps(); // também zera o medidor
     iniciarLaco();
   }
 
@@ -711,6 +753,7 @@ export function montarTeia(container, opcoes = {}) {
     nos.clear(); hubs.clear(); grupos.clear(); ligacoes.clear();
     container.replaceChildren();
     container.style.cursor = "";
+    container.classList.remove("teia-cena");
     delete container.dataset.nos;
     delete container.dataset.nivel;
     delete container.dataset.movimento;
@@ -724,6 +767,7 @@ export function montarTeia(container, opcoes = {}) {
     atualizarEstado,
     definirEstilo,
     focarClasse,
+    focarEquipamento,
     verTudo,
     pausar,
     retomar,

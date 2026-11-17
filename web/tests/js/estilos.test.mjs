@@ -161,3 +161,23 @@ test("estilos diferentes produzem posições diferentes", () => {
   const chaves = ESTILOS.map((s) => JSON.stringify(calcularPosicoes(s, CLASSES, eqs).get(eqs[0].id)));
   assert.equal(new Set(chaves).size, 5);
 });
+
+function menorDistanciaEntreHubs(estilo) {
+  const pos = calcularPosicoes(estilo, CLASSES.map((c, i) => ({ ...c, slug: `c${i}` })), []);
+  const hubs = [...pos].filter(([k]) => k.startsWith("h-")).map(([, p]) => p);
+  assert.equal(hubs.length, VAGAS);
+  let menor = Infinity;
+  for (let i = 0; i < hubs.length; i++) {
+    for (let j = i + 1; j < hubs.length; j++) {
+      const p = hubs[i], q = hubs[j];
+      menor = Math.min(menor, Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z));
+    }
+  }
+  return menor;
+}
+
+test("hubs afastados: D >= 120 entre quaisquer 2 vagas; A e B >= 100", () => {
+  assert.ok(menorDistanciaEntreHubs("d") >= 120, `D: ${menorDistanciaEntreHubs("d")}`);
+  assert.ok(menorDistanciaEntreHubs("a") >= 100, `A: ${menorDistanciaEntreHubs("a")}`);
+  assert.ok(menorDistanciaEntreHubs("b") >= 100, `B: ${menorDistanciaEntreHubs("b")}`);
+});

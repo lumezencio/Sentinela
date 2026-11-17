@@ -629,3 +629,11 @@
     justify-content: space-between;
   }
 }
+
+/* Teia 3D: o contêiner/canvas da cena mantém foco visível para quem navega por teclado
+   (a lib trazia "canvas:focus { outline: none }"; aqui fica explícito o contrário) */
+.teia-cena:focus-visible,
+.teia-cena canvas:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: -2px;
+}

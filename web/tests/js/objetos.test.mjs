@@ -39,3 +39,22 @@ test("estrelas: 1500 pontos determinísticos, finitos e longe do centro", () => 
   }
   assert.equal(e1.material.fog, false);
 });
+
+test("acervo: super-nós de qualquer tamanho reutilizam a mesma geometria (escala por nó)", async () => {
+  const { criarObjetoGrupo } = await import("../../src/js/teia/objetos.js");
+  // rótulo usa canvas: um document mínimo só para este teste
+  const ctx = new Proxy({}, { get: (_, k) => (k === "measureText" ? () => ({ width: 10 }) : () => ({ addColorStop() {} })) });
+  globalThis.document = { createElement: () => ({ getContext: () => ctx, width: 0, height: 0 }) };
+  try {
+    const acervo = criarAcervo();
+    const g1 = criarObjetoGrupo(acervo, { raio: 6, estado: "online", texto: "A · 1", corClasse: "#8793E8" });
+    const g2 = criarObjetoGrupo(acervo, { raio: 22, estado: "offline", texto: "B · 900", corClasse: "#8793E8" });
+    assert.equal(g1.userData.esfera.geometry, g2.userData.esfera.geometry);
+    assert.ok(g2.userData.esfera.scale.x > g1.userData.esfera.scale.x);
+    const g3 = criarObjetoGrupo(acervo, { raio: 9, estado: "online", texto: "C · 3", corClasse: "#8793E8", abaixo: true });
+    assert.ok(g3.userData.rotulo.position.y < 0);
+    assert.ok(g1.userData.rotulo.position.y > 0);
+  } finally {
+    delete globalThis.document;
+  }
+});

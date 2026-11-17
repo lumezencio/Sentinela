@@ -83,8 +83,11 @@ function estiloC(v, id, slot) {
   return { x: Math.cos(a) * rr, y: Math.floor(faixa / 8) * FAIXA, z: Math.sin(a) * rr };
 }
 
+// o hub de cada classe avança ~3,17 rad na sua órbita por vaga: hubs alternam de lado e
+// ficam >= 120 de distância entre si (o ângulo fixo de antes encostava hubs vizinhos)
+const PASSO_HUB_D = 3.17;
 function hubD(v) {
-  return orbita(v, Math.PI / 2, 0, 0);
+  return orbita(v, Math.PI / 2 + v * PASSO_HUB_D, 0, 0);
 }
 function orbita(v, a, rExtra, yLocal) {
   // órbita circular inclinada e girada, uma por vaga

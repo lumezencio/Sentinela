@@ -12,8 +12,7 @@ node build/empacotar-teia.mjs
 mv src/vendor/teia-3d.bundle.js.LEGAL.txt src/vendor/LICENSES-teia.txt
 # formato fixo "<hash>  <arquivo>" (o sha256sum do Git Bash marca "*" no modo binário)
 hash="$(sha256sum src/vendor/teia-3d.bundle.js | cut -c1-64)"
-printf '%s  %s
-' "$hash" teia-3d.bundle.js > src/vendor/teia-3d.bundle.js.sha256
+printf '%s  %s\n' "$hash" teia-3d.bundle.js > src/vendor/teia-3d.bundle.js.sha256
 
 if find src/vendor -name '*.map' | grep -q .; then
   echo "sourcemap encontrado em src/vendor" >&2
