@@ -15,11 +15,13 @@ RAIZ = Path(__file__).resolve().parents[2] / "sentinela"
 CHECAGENS = "monitor/checagens/"  # prefixo: qualquer módulo de checagem
 MIKROTIK = "descoberta/fontes/mikrotik_api.py"
 SONDAGEM = "descoberta/classificador/sondagem.py"
+GRAVADOR = "descoberta/fontes/gravador_http.py"
 
 # biblioteca -> arquivos (relativos a ``sentinela/``) ou prefixos terminados em "/"
 PERMITIDOS: dict[str, tuple[str, ...]] = {
     "pysnmp": ("descoberta/fontes/snmp.py",),
-    "httpx": ("monitor/checagens/http.py", "descoberta/fontes/gravador_http.py", SONDAGEM),
+    "httpx": ("monitor/checagens/http.py", GRAVADOR, SONDAGEM),
+    "httpcore": (GRAVADOR,),  # backend de rede próprio (destino e impressão TLS conferidos)
     "icmplib": ("monitor/checagens/icmp.py", "descoberta/varredura.py"),
     "socket": (CHECAGENS, MIKROTIK, SONDAGEM),
 }
@@ -110,5 +112,7 @@ def test_permitidos_por_prefixo_e_arquivo() -> None:
     assert _permitido(SONDAGEM, "socket")
     assert not _permitido("monitor/agendador.py", "socket")
     assert not _permitido("descoberta/fontes/snmp.py", "httpx")
+    assert _permitido(GRAVADOR, "httpcore")
+    assert not _permitido("descoberta/fontes/hikvision.py", "httpx")
     assert _permitido("descoberta/varredura.py", "icmplib")
     assert not _permitido("descoberta/fontes/mikrotik_api.py", "icmplib")

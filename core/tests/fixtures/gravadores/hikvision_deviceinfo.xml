@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DeviceInfo version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<deviceName>NVR Portaria</deviceName>
+<deviceID>00000000-0000-0000-0000-000000000000</deviceID>
+<model>DS-7608NI-TESTE</model>
+<serialNumber>DS-7608NI-TESTE0000000000AAAA</serialNumber>
+<macAddress>02:00:00:BB:00:01</macAddress>
+<firmwareVersion>V4.99.000</firmwareVersion>
+<firmwareReleasedDate>build 990101</firmwareReleasedDate>
+<deviceType>NVR</deviceType>
+</DeviceInfo>

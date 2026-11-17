@@ -17,7 +17,8 @@ import hashlib
 import hmac
 import ssl
 
-from sentinela.descoberta.fontes.base import ErroColeta
+# exceções de TLS compartilhadas com o gravador HTTPS (reexportadas aqui por compatibilidade)
+from sentinela.descoberta.fontes.base import CertificadoMudou, CertificadoNaoConfiado, ErroColeta
 from sentinela.rede.guarda import DestinoAutorizado
 
 LIMITE_SENTENCA = 1024 * 1024  # bytes por sentença (soma das palavras e cabeçalhos)
@@ -39,8 +40,6 @@ MSG_RECUSADO = "o RouterOS recusou o comando"
 MSG_LOGIN = "usuário ou senha recusados pelo RouterOS"
 MSG_ANTIGO = "RouterOS anterior a 6.43 não suportado"
 MSG_SEM_CERT = "o RouterOS não apresentou certificado TLS"
-MSG_NAO_CONFIADO = "certificado do aparelho ainda não confiado"
-MSG_MUDOU = "certificado do aparelho mudou"
 
 
 class ErroRouterOS(ErroColeta):
@@ -55,22 +54,6 @@ class ErroComandoRouterOS(ErroRouterOS):
 
     def __init__(self) -> None:
         super().__init__(MSG_RECUSADO)
-
-
-class CertificadoNaoConfiado(ErroRouterOS):
-    """Nenhuma impressão confiada ainda; ``impressao`` é a apresentada pelo aparelho."""
-
-    def __init__(self, impressao: str) -> None:
-        super().__init__(MSG_NAO_CONFIADO)
-        self.impressao = impressao
-
-
-class CertificadoMudou(ErroRouterOS):
-    """A impressão apresentada difere da confiada; exige nova confirmação do admin."""
-
-    def __init__(self, impressao: str) -> None:
-        super().__init__(MSG_MUDOU)
-        self.impressao = impressao
 
 
 def codificar_tamanho(n: int) -> bytes:

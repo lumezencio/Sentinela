@@ -10,13 +10,15 @@ from contextlib import asynccontextmanager
 from ipaddress import IPv4Address
 
 from sentinela.db.modelos import Fonte
-from sentinela.descoberta.fontes.base import Achado, ErroColeta, Origem, ResultadoTeste
-from sentinela.descoberta.fontes.mikrotik_api import (
+from sentinela.descoberta.fontes.base import (
+    Achado,
     CertificadoMudou,
     CertificadoNaoConfiado,
-    ClienteRouterOS,
-    ErroComandoRouterOS,
+    ErroColeta,
+    Origem,
+    ResultadoTeste,
 )
+from sentinela.descoberta.fontes.mikrotik_api import ClienteRouterOS, ErroComandoRouterOS
 from sentinela.descoberta.texto import limpar
 from sentinela.monitor.limitador import Limitador
 from sentinela.rede.guarda import DestinoAutorizado, DestinoProibido, Guarda

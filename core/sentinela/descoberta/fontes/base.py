@@ -23,6 +23,27 @@ class ErroColeta(Exception):
     ``fonte.ultimo_erro``: nunca carrega usuário, senha nem resposta bruta do aparelho."""
 
 
+MSG_NAO_CONFIADO = "certificado do aparelho ainda não confiado"
+MSG_MUDOU = "certificado do aparelho mudou"
+
+
+class CertificadoNaoConfiado(ErroColeta):
+    """TLS sem impressão confiada ainda (spec §9.4): ``impressao`` é a SHA-256 (hex) do
+    certificado apresentado, para o admin conferir e confiar. Nenhuma credencial saiu."""
+
+    def __init__(self, impressao: str) -> None:
+        super().__init__(MSG_NAO_CONFIADO)
+        self.impressao = impressao
+
+
+class CertificadoMudou(ErroColeta):
+    """A impressão apresentada difere da confiada: coleta bloqueada até nova confirmação."""
+
+    def __init__(self, impressao: str) -> None:
+        super().__init__(MSG_MUDOU)
+        self.impressao = impressao
+
+
 @dataclass(frozen=True)
 class Achado:
     """Um aparelho visto por uma fonte. Textos já passaram por ``texto.limpar``; o MAC, se

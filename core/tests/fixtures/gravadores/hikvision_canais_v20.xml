@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<InputProxyChannelList version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<InputProxyChannel version="2.0">
+<id>1</id>
+<name>Entrada</name>
+<sourceInputPortDescriptor>
+<proxyProtocol>HIKVISION</proxyProtocol>
+<addressingFormatType>ipaddress</addressingFormatType>
+<ipAddress>192.168.254.11</ipAddress>
+<managePortNo>8000</managePortNo>
+<srcInputPort>1</srcInputPort>
+<userName>usuario-camera</userName>
+<streamType>auto</streamType>
+<model>DS-2CD-TESTE</model>
+<serialNumber>DS-2CD-TESTE0000000000BBBB</serialNumber>
+<firmwareVersion>V5.99.000</firmwareVersion>
+</sourceInputPortDescriptor>
+<enableAnr>false</enableAnr>
+</InputProxyChannel>
+<InputProxyChannel version="2.0">
+<id>2</id>
+<name>Garagem</name>
+<sourceInputPortDescriptor>
+<proxyProtocol>ONVIF</proxyProtocol>
+<addressingFormatType>ipaddress</addressingFormatType>
+<ipAddress>192.168.254.12</ipAddress>
+<managePortNo>80</managePortNo>
+<srcInputPort>1</srcInputPort>
+<userName>usuario-camera</userName>
+<streamType>auto</streamType>
+</sourceInputPortDescriptor>
+<enableAnr>false</enableAnr>
+</InputProxyChannel>
+</InputProxyChannelList>
