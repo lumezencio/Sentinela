@@ -9,6 +9,8 @@ gravador, que aprova o gravador junto); sonda 1; varre o /28. No fim grava em ``
 - ``arp_permitido.txt``: os IPs para os quais o Sentinela PODE ter emitido ARP request (spec
   §9.1): hosts das fontes cadastradas pelo admin, aprovados (exceto câmeras atrás do
   gravador, que nunca recebem socket), o sondado e o /28 varrido;
+- ``contato_exigido.txt``: os hosts das fontes, que precisam aparecer com unicast do
+  Sentinela na captura (prova de que o pcap viu o trabalho real);
 - ``cena.json``: o resumo (contagens) para o relatório.
 
 A senha do admin vem de ``SENTINELA_CENA_SENHA`` (gerada pelo rodar.sh; nunca impressa).
@@ -221,6 +223,10 @@ def main() -> int:
     permitidos.append(SUB_VARREDURA)
     SAIDA.mkdir(parents=True, exist_ok=True)
     (SAIDA / "arp_permitido.txt").write_text(",".join(permitidos) + "\n", encoding="utf-8")
+    # hosts das fontes: a captura TEM de mostrar unicast do Sentinela para cada um (senão o
+    # pcap não viu o trabalho real e a ausência de broadcast não prova nada)
+    contato = ",".join((IP_ROUTEROS, IP_SNMP, IP_GRAVADOR))
+    (SAIDA / "contato_exigido.txt").write_text(contato + "\n", encoding="utf-8")
     resumo = {
         "descobertas_pendentes_apos_coleta": len(fila),
         "aprovados_com_socket": aprovados,

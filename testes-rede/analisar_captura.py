@@ -3,13 +3,17 @@
 Uso::
 
     python analisar_captura.py captura.pcap --origem 10.99.250.10 --origem 02:00:00:fa:00:10 \
-        --arp-permitido 10.99.250.11,10.99.250.20,10.99.250.32/28 [--rede 10.99.250.0/24]
+        --arp-permitido 10.99.250.11,10.99.250.20,10.99.250.32/28 [--rede 10.99.250.0/24] \
+        [--exigir-contato 10.99.250.11,10.99.250.12]
 
 Reprova (código 1) todo quadro emitido pela origem (o Sentinela: IP e/ou MAC) cujo destino seja
 broadcast ou multicast: MAC ``ff:ff:ff:ff:ff:ff``, ``01:00:5e:*``, ``33:33:*`` ou qualquer MAC de
 grupo; IPv4 multicast, ``255.255.255.255`` ou o broadcast dirigido de ``--rede``; IPv6
 multicast. A única exceção é o ARP request (operação 1) para um IP de ``--arp-permitido``
 (IPs ou CIDRs: hosts das fontes, aprovados, sondados e a faixa varrida), contado e relatado.
+
+Prova inválida (código 2): captura sem quadros, sem nenhum quadro da origem, ou sem unicast
+do Sentinela para algum IP de ``--exigir-contato`` (os hosts das fontes que a cena usou).
 
 Só biblioteca padrão (lê o pcap clássico com ``struct``): roda no CI sem dependência nova e não
 entra no núcleo. Tipos de enlace: Ethernet (1), Linux cooked v1 (113) e v2 (276). No cooked
@@ -58,6 +62,8 @@ class Resultado:
     difusao_da_origem: int = 0
     arp_permitido: Counter[str] = field(default_factory=Counter)
     proibidos: int = 0
+    # destino IPv4 dos quadros unicast do Sentinela: prova de que a captura viu o trabalho real
+    unicast_para: Counter[str] = field(default_factory=Counter)
     violacoes: list[str] = field(default_factory=list)  # as primeiras, para o relatório
 
     @property
@@ -177,6 +183,8 @@ def analisar(
         if e.destino_mac is None and arp_op == 1:
             motivos.append("ARP request (enlace sem MAC de destino)")
         if not motivos:
+            if isinstance(ip_destino, ipaddress.IPv4Address):
+                res.unicast_para[str(ip_destino)] += 1
             continue
         res.difusao_da_origem += 1
 
@@ -219,7 +227,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--origem", action="append", required=True, help="IP e/ou MAC do Sentinela")
     ap.add_argument("--arp-permitido", default="", help="IPs/CIDRs separados por vírgula")
     ap.add_argument("--rede", default="", help="CIDR(s) da rede, para o broadcast dirigido")
+    ap.add_argument(
+        "--exigir-contato",
+        default="",
+        help="IPs (vírgula) que precisam ter recebido unicast do Sentinela: hosts das fontes",
+    )
     a = ap.parse_args(argv)
+    exigidos = [ipaddress.IPv4Address(p.strip()) for p in a.exigir_contato.split(",") if p.strip()]
     ips, macs = _origens(a.origem)
     try:
         res = analisar(a.pcap, ips, macs, _redes(a.arp_permitido), _redes(a.rede))
@@ -233,11 +247,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"ARP request permitidos: {total_arp} para {len(res.arp_permitido)} IP(s)")
     for ip, n in sorted(res.arp_permitido.items(), key=lambda x: ipaddress.IPv4Address(x[0])):
         print(f"  {ip}: {n}")
+    sem_contato = [str(ip) for ip in exigidos if res.unicast_para[str(ip)] == 0]
+    for exigido in exigidos:
+        print(f"  unicast do Sentinela para {exigido}: {res.unicast_para[str(exigido)]}")
     if not res.aprovado:
         print(f"REPROVADO: {res.proibidos} quadro(s) proibido(s); os primeiros:")
         for v in res.violacoes:
             print(f"  {v}")
         return 1
+    # captura que não viu o trabalho do Sentinela não prova nada: interface ou MAC errados,
+    # tcpdump que perdeu o buffer, cena que não rodou. Código 2 = prova inválida.
+    if res.quadros == 0 or res.da_origem == 0:
+        print("INVÁLIDO: nenhum quadro emitido pelo Sentinela na captura")
+        return 2
+    if sem_contato:
+        print(f"INVÁLIDO: sem unicast do Sentinela para {', '.join(sem_contato)}")
+        return 2
     print("APROVADO: nenhum broadcast/multicast além do ARP permitido")
     return 0
 

@@ -59,7 +59,8 @@ Dois ajustes de ambiente, ambos sobre quadros que **não** são do Sentinela:
 ```bash
 python analisar_captura.py saida/captura.pcap \
   --origem 10.99.250.10 --origem 02:00:00:fa:00:10 \
-  --arp-permitido "$(cat saida/arp_permitido.txt)" --rede 10.99.250.0/24
+  --arp-permitido "$(cat saida/arp_permitido.txt)" --rede 10.99.250.0/24 \
+  --exigir-contato "$(cat saida/contato_exigido.txt)"
 ```
 
 Só biblioteca padrão (lê o pcap com `struct`). Reprova todo quadro do Sentinela (IP ou MAC de
@@ -73,9 +74,18 @@ o **ARP request** para um IP da lista permitida, que a cena monta a partir do qu
 - o IP sondado (`.21`);
 - a faixa varrida (`10.99.250.32/28`).
 
-ARP gratuito (anúncio do próprio IP) também reprova. O teste negativo do analisador
-(`core/tests/rede/test_analisar_captura.py`, roda com a suíte do núcleo) usa pcaps sintéticos:
-um quadro mDNS reprova; ARP para IP permitido passa e é contado.
+ARP gratuito (anúncio do próprio IP) também reprova.
+
+Ausência de broadcast só prova algo se a captura viu o trabalho real. Por isso a prova é
+**inválida** (código 2) quando o pcap não tem quadros, não tem nenhum quadro do Sentinela
+(interface ou MAC errados, tcpdump que perdeu o buffer) ou não mostra unicast do Sentinela
+para algum host de `--exigir-contato` (os hosts das três fontes, gravados pela cena em
+`saida/contato_exigido.txt`). Código 1 = quadro proibido; 0 = aprovado.
+
+O teste negativo do analisador (`core/tests/rede/test_analisar_captura.py`, roda com a suíte
+do núcleo) usa pcaps sintéticos: um quadro mDNS reprova; ARP para IP permitido passa e é
+contado; pcap só com cabeçalho, pcap só com quadros de outros hosts e fonte exigida sem
+unicast dão prova inválida.
 
 ## Resultado de referência
 

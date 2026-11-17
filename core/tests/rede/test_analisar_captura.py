@@ -2,7 +2,8 @@
 
 pcaps sintéticos montados aqui (só 10.99.x e MACs ``02:00:00:…``): um quadro mDNS do Sentinela
 reprova; ARP request para IP permitido passa e é contado; o resto cobre as outras formas de
-difusão e o enlace Linux cooked.
+difusão, o enlace Linux cooked e a prova inválida (pcap vazio, sem quadros do Sentinela ou sem
+unicast para um host de fonte exigido).
 """
 
 import importlib.util
@@ -55,9 +56,10 @@ def pcap(caminho: Path, quadros: list[bytes], enlace: int = 1) -> Path:
     return caminho
 
 
-def rodar(caminho: Path, permitidos: str = "") -> int:
+def rodar(caminho: Path, permitidos: str = "", exigir: str = "") -> int:
     args = [str(caminho), "--origem", IP_SENTINELA, "--origem", "02:00:00:fa:00:10"]
-    resultado: int = ac.main([*args, "--arp-permitido", permitidos, "--rede", "10.99.250.0/24"])
+    args += ["--arp-permitido", permitidos, "--rede", "10.99.250.0/24"]
+    resultado: int = ac.main([*args, "--exigir-contato", exigir])
     return resultado
 
 
@@ -138,7 +140,7 @@ def test_difusao_de_outro_host_nao_conta(tmp_path: Path) -> None:
         0x0800,
         ipv4("10.99.250.11", "224.0.0.251"),
     )
-    assert rodar(pcap(tmp_path / "o.pcap", [outro])) == 0
+    assert rodar(pcap(tmp_path / "o.pcap", [outro, UNICAST])) == 0
 
 
 def test_linux_cooked_arp_fora_da_lista_reprova(tmp_path: Path) -> None:
@@ -154,3 +156,47 @@ def test_arquivo_que_nao_e_pcap(tmp_path: Path) -> None:
     lixo = tmp_path / "lixo.pcap"
     lixo.write_bytes(b"\x0a\x0d\x0d\x0a" + b"\x00" * 40)  # pcapng
     assert rodar(lixo) == 2
+
+
+# ---- prova inválida (código 2): a captura não viu o trabalho do Sentinela ------------------
+
+
+def test_pcap_so_com_cabecalho_e_invalido(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert rodar(pcap(tmp_path / "vazio.pcap", []), "10.99.250.20") == 2
+    assert "INVÁLIDO: nenhum quadro emitido pelo Sentinela" in capsys.readouterr().out
+
+
+def test_pcap_so_com_quadros_de_outros_hosts_e_invalido(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    alheio = eth(MAC_SENTINELA, MAC_OUTRO, 0x0800, ipv4("10.99.250.11", IP_SENTINELA, 6))
+    bcast_alheio = eth(
+        b"\xff" * 6, MAC_OUTRO, 0x0806, arp(1, MAC_OUTRO, "10.99.250.11", IP_SENTINELA)
+    )
+    assert rodar(pcap(tmp_path / "alheio.pcap", [alheio, bcast_alheio])) == 2
+    assert "INVÁLIDO: nenhum quadro emitido pelo Sentinela" in capsys.readouterr().out
+
+
+def test_fonte_exigida_sem_unicast_e_invalida(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # .11 recebeu unicast; .12 só um ARP request (permitido), nunca unicast
+    arp_12 = eth(
+        b"\xff" * 6, MAC_SENTINELA, 0x0806, arp(1, MAC_SENTINELA, IP_SENTINELA, "10.99.250.12")
+    )
+    caminho = pcap(tmp_path / "falta.pcap", [UNICAST, arp_12])
+    assert rodar(caminho, "10.99.250.11,10.99.250.12", exigir="10.99.250.11,10.99.250.12") == 2
+    assert "INVÁLIDO: sem unicast do Sentinela para 10.99.250.12" in capsys.readouterr().out
+
+
+def test_fontes_exigidas_com_unicast_passa(tmp_path: Path) -> None:
+    para_12 = eth(MAC_OUTRO, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "10.99.250.12", 17))
+    caminho = pcap(tmp_path / "ok.pcap", [UNICAST, para_12])
+    assert rodar(caminho, exigir="10.99.250.11,10.99.250.12") == 0
+
+
+def test_violacao_tem_prioridade_sobre_prova_incompleta(tmp_path: Path) -> None:
+    bcast = eth(b"\xff" * 6, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "255.255.255.255"))
+    assert rodar(pcap(tmp_path / "v.pcap", [bcast]), exigir="10.99.250.11") == 1
