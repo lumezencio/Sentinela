@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinela.config import Settings
 from sentinela.db.modelos import Auditoria, Equipamento, Evento
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.estados import Estado
@@ -71,6 +72,19 @@ async def test_lifespan_carrega_equipamentos_existentes(
         assert _agendador(app).estado_de(eid) is Estado.DESCONHECIDO
         assert _agendador(app).estado_de(pausado) is Estado.PAUSADO
         assert app.state.guarda.validar("10.99.0.7", None, "icmp")
+
+
+async def test_lifespan_repassa_latencia_instavel_ao_agendador(settings: Settings) -> None:
+    from sentinela.main import criar_app
+    from tests.conftest import criar_esquema
+
+    app = criar_app(
+        settings.model_copy(update={"latencia_instavel_ms": 50.0}), iniciar_monitor=False
+    )
+    await criar_esquema(settings.banco_url)
+    async with app.router.lifespan_context(app):
+        # o comportamento (100 ms vira instável com limite 50) está em test_agendador
+        assert _agendador(app)._latencia_instavel_ms == 50.0
 
 
 # ---- sub-redes ------------------------------------------------------------------------------
@@ -160,10 +174,73 @@ async def test_recusado_na_carga_entra_no_agendador_ao_adicionar_subrede(
     async with app.router.lifespan_context(app):
         assert _agendador(app).estado_de(eid) is None  # fora de toda sub-rede: recusado
         await _subrede(cliente_admin, "10.99.0.0/24")
-        assert _agendador(app).estado_de(eid) is Estado.PAUSADO
-        r = await cliente_admin.post(f"{EQUIP}/{eid}/retomar")
-        assert r.status_code == 200 and r.json()["estado"] == "desconhecido"
+        # pausado só por estar fora: volta sozinho quando a sub-rede volta
         assert _agendador(app).estado_de(eid) is Estado.DESCONHECIDO
+        r = await cliente_admin.get(f"{EQUIP}/{eid}")
+        assert r.json()["pausado"] is False and r.json()["estado"] == "desconhecido"
+
+
+async def test_readicionar_subrede_retoma_so_os_pausados_por_ela(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    s = await _subrede(cliente_admin, "10.99.0.0/24")
+    auto = (await _equip(cliente_admin)).json()["id"]
+    manual = (await _equip(cliente_admin, ip="10.99.0.11", nome="manual")).json()["id"]
+    assert (await cliente_admin.post(f"{EQUIP}/{manual}/pausar")).status_code == 200
+    await cliente_admin.delete(f"{SUBREDES}/{s['id']}")
+    assert _agendador(app).estado_de(auto) is Estado.PAUSADO
+
+    await _subrede(cliente_admin, "10.99.0.0/24")
+
+    assert _agendador(app).estado_de(auto) is Estado.DESCONHECIDO
+    corpo = (await cliente_admin.get(f"{EQUIP}/{auto}")).json()
+    assert (corpo["pausado"], corpo["estado"]) == (False, "desconhecido")
+    eventos = (await cliente_admin.get(f"{EQUIP}/{auto}/eventos")).json()
+    assert (eventos[0]["de"], eventos[0]["para"]) == ("pausado", "desconhecido")
+    assert eventos[0]["causa"] == "dentro_das_subredes"
+    # pausado à mão continua pausado
+    assert _agendador(app).estado_de(manual) is Estado.PAUSADO
+    assert (await cliente_admin.get(f"{EQUIP}/{manual}")).json()["pausado"] is True
+
+
+async def test_recusado_na_carga_fica_pausado_fora_das_subredes(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    """Fora das sub-redes na carga (ex.: linha editada à mão): pausado, nunca "aguardando"."""
+    await _subrede(cliente_admin, "10.99.0.0/24")
+    eid = (await _equip(cliente_admin)).json()["id"]
+    async with _sessoes(app)() as db:
+        eq = await db.get(Equipamento, eid)
+        assert eq is not None
+        eq.ip = "10.99.5.10"  # fora da sub-rede declarada, sem passar pela API
+        await db.commit()
+    async with app.router.lifespan_context(app):
+        assert _agendador(app).estado_de(eid) is None
+        corpo = (await cliente_admin.get(f"{EQUIP}/{eid}")).json()
+        assert (corpo["pausado"], corpo["estado"]) == (True, "pausado")
+        eventos = (await cliente_admin.get(f"{EQUIP}/{eid}/eventos")).json()
+        assert eventos[0]["causa"] == "fora_das_subredes"
+
+
+async def test_criar_recusado_pelo_agendador_fica_pausado(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corrida: a rota validou, mas a Guarda mudou antes de o agendador registrar."""
+    await _subrede(cliente_admin, "10.99.0.0/24")
+    agendador = _agendador(app)
+    original = agendador.adicionar_lote
+
+    def adicionar_com_guarda_vazia(alvos: Any) -> None:
+        app.state.guarda.atualizar([])
+        original(alvos)
+
+    monkeypatch.setattr(agendador, "adicionar_lote", adicionar_com_guarda_vazia)
+    r = await _equip(cliente_admin)
+    assert r.status_code == 201
+    assert (r.json()["pausado"], r.json()["estado"]) == (True, "pausado")
+    async with _sessoes(app)() as db:
+        ev = (await db.execute(select(Evento))).scalars().one()
+        assert (ev.para, ev.causa) == ("pausado", "fora_das_subredes")
 
 
 # ---- classes --------------------------------------------------------------------------------
@@ -300,7 +377,7 @@ async def test_id_inexistente_404(
         ("8.8.8.8", "Destino fora das sub-redes declaradas."),
         ("10.99.0.255", "Endereço de rede ou broadcast de sub-rede não é permitido."),
         ("224.0.0.1", "Multicast não é permitido."),
-        ("10.98.0.5", "Destino fora das sub-redes declaradas."),
+        ("10.99.5.5", "Destino fora das sub-redes declaradas."),
         ("10.99.0.300", "Endereço IPv4 inválido."),
     ],
 )

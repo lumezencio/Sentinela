@@ -1,6 +1,7 @@
 """Peças comuns da API de cadastro: auditoria, validação de destino e MAC, pausa/retomada."""
 
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
 
@@ -10,13 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinela.api.deps import agora_utc
 from sentinela.db.modelos import Auditoria, Classe, Equipamento, Evento, Usuario
-from sentinela.monitor.agendador import Agendador, Alvo
+from sentinela.monitor.agendador import CAUSA_FORA, Agendador, Alvo
 from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de
 from sentinela.rede.guarda import DestinoProibido, Guarda, Protocolo
 
-CAUSA_FORA = "fora_das_subredes"
+__all__ = ["CAUSA_FORA"]  # reexportada: a mesma causa do agendador
+
 CAUSA_MANUAL = "manual"
+CAUSA_DENTRO = "dentro_das_subredes"  # retomada automática: a sub-rede voltou
 MSG_MAC = "MAC inválido."
 MSG_CLASSE = "Classe inexistente."
 MSG_IP_DUPLICADO = "Já existe um equipamento com este IP."
@@ -34,7 +37,8 @@ def nao_encontrado() -> HTTPException:
 
 
 def normalizar_mac(mac: str) -> str:
-    """``AA-BB-...`` ou ``aa:bb:...`` → ``aa:bb:cc:dd:ee:ff``; ValueError se inválido."""
+    """``02-00-00-0A-0B-0C`` ou ``02:00:00:0a:0b:0c`` → ``02:00:00:0a:0b:0c``; ValueError
+    se inválido."""
     valor = mac.strip().lower()
     if not _MAC.fullmatch(valor):
         raise ValueError(MSG_MAC)
@@ -109,20 +113,29 @@ def _evento_direto(
     eq.estado_desde = agora
 
 
-def marcar_pausa(db: AsyncSession, agendador: Agendador, eq: Equipamento, causa: str) -> bool:
+def _registrado(agendador: Agendador | None, eq: Equipamento) -> bool:
+    return agendador is not None and agendador.estado_de(eq.id) is not None
+
+
+def marcar_pausa(
+    db: AsyncSession, agendador: Agendador | None, eq: Equipamento, causa: str
+) -> bool:
     """Parte transacional da pausa. True: chamar ``agendador.pausar`` DEPOIS do commit
-    (o gravador escreve em outra sessão; antes do commit ele esperaria o nosso bloqueio)."""
+    (o gravador escreve em outra sessão; antes do commit ele esperaria o nosso bloqueio).
+    Sem agendador (CLI com o core parado) o evento é sempre gravado aqui."""
     eq.pausado = True
-    if agendador.estado_de(eq.id) is not None:
+    if _registrado(agendador, eq):
         return True
     _evento_direto(db, eq, Estado.PAUSADO, causa, agora_utc())
     return False
 
 
-def marcar_retomada(db: AsyncSession, agendador: Agendador, eq: Equipamento, causa: str) -> bool:
+def marcar_retomada(
+    db: AsyncSession, agendador: Agendador | None, eq: Equipamento, causa: str
+) -> bool:
     """Parte transacional da retomada; True: chamar ``agendador.retomar`` após o commit."""
     eq.pausado = False
-    if agendador.estado_de(eq.id) is not None:
+    if _registrado(agendador, eq):
         return True
     _evento_direto(db, eq, Estado.DESCONHECIDO, causa, agora_utc())
     return False
@@ -135,17 +148,37 @@ async def classe_de(db: AsyncSession, eq: Equipamento) -> Classe:
     return classe
 
 
+async def ultima_causa_de_pausa(db: AsyncSession, equipamento_id: str) -> str | None:
+    consulta = (
+        select(Evento.causa)
+        .where(Evento.equipamento_id == equipamento_id, Evento.para == Estado.PAUSADO.value)
+        .order_by(Evento.em.desc(), Evento.id.desc())
+        .limit(1)
+    )
+    causa: str | None = await db.scalar(consulta)
+    return causa
+
+
+@dataclass
+class Sincronizacao:
+    """O que aplicar no agendador DEPOIS do commit e de ``guarda.atualizar``, nesta ordem."""
+
+    pausar: list[str] = field(default_factory=list)
+    retomar: list[str] = field(default_factory=list)
+    adicionar: list[Alvo] = field(default_factory=list)
+
+
 async def sincronizar(
-    db: AsyncSession, agendador: Agendador, candidata: Guarda
-) -> tuple[list[str], list[Alvo]]:
+    db: AsyncSession, agendador: Agendador | None, candidata: Guarda
+) -> Sincronizacao:
     """Classifica os equipamentos pelas sub-redes ``candidata`` (ainda não aplicadas).
 
-    Os que ficam de fora (e não estavam pausados) recebem ``marcar_pausa`` nesta transação.
-    Devolve (ids a pausar no agendador, alvos a registrar) para aplicar DEPOIS do commit e de
-    ``guarda.atualizar``, na ordem: atualizar a guarda, pausar, adicionar.
+    - fora (e não pausado): ``marcar_pausa`` com causa ``fora_das_subredes``;
+    - dentro e pausado SÓ por estar fora (última causa de pausa ``fora_das_subredes``):
+      ``marcar_retomada`` com causa ``dentro_das_subredes``; pausa manual continua;
+    - dentro e ainda não registrado no agendador: vira alvo a adicionar.
     """
-    pausar: list[str] = []
-    adicionar: list[Alvo] = []
+    r = Sincronizacao()
     linhas = await db.execute(
         select(Equipamento, Classe).join(Classe, Equipamento.classe_id == Classe.id)
     )
@@ -154,11 +187,15 @@ async def sincronizar(
             validar_destino(candidata, eq.ip, eq.porta, eq.checagem)
         except DestinoProibido:
             if not eq.pausado and marcar_pausa(db, agendador, eq, CAUSA_FORA):
-                pausar.append(eq.id)
+                r.pausar.append(eq.id)
             continue
-        if agendador.estado_de(eq.id) is None:
-            adicionar.append(alvo_de(eq, classe))
-    return pausar, adicionar
+        if eq.pausado and await ultima_causa_de_pausa(db, eq.id) == CAUSA_FORA:
+            if marcar_retomada(db, agendador, eq, CAUSA_DENTRO):
+                r.retomar.append(eq.id)
+                continue
+        if not _registrado(agendador, eq):
+            r.adicionar.append(alvo_de(eq, classe))
+    return r
 
 
 async def mapa_classes(db: AsyncSession) -> dict[str, Classe]:

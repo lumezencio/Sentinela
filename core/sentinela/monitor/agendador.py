@@ -11,6 +11,10 @@ fator.
 
 Transições são publicadas na hora e gravadas por um único escritor serial (ordem garantida
 por equipamento); o encerramento drena esse escritor antes de ``descarregar``.
+
+Destino recusado pela Guarda (no cadastro, numa atualização ou na revalidação feita antes de
+cada sonda) não fica registrado: o equipamento passa a ``pausado`` com causa
+``fora_das_subredes`` (publicado e gravado), em vez de ficar "aguardando" para sempre.
 """
 
 import asyncio
@@ -44,6 +48,7 @@ LOTE_LATENCIAS_S = 5.0
 FOLGA_DETECCAO = 1.2  # pior caso do jitter
 ESTICAMENTO_MAX_NAO_CRITICOS = 10.0  # 60 s -> 10 min antes de esticar também os críticos
 PRIMEIRA_RAPIDA_S = 5.0  # alvo novo com o laço rodando: primeira checagem em até 5 s
+CAUSA_FORA = "fora_das_subredes"
 
 
 @dataclass
@@ -88,6 +93,7 @@ class Agendador:
         checagens: Callable[[str], Checagem] = checagem_para,
         rng: random.Random | None = None,
         agora_parede: Callable[[], datetime] = lambda: datetime.now(UTC),
+        latencia_instavel_ms: float = 200.0,
     ) -> None:
         self._guarda = guarda
         self._limitador = limitador
@@ -97,6 +103,7 @@ class Agendador:
         self._checagens = checagens
         self._rng = rng or random.Random()  # noqa: S311 - jitter de agendamento, sem uso criptográfico  # nosec B311
         self._agora_parede = agora_parede
+        self._latencia_instavel_ms = latencia_instavel_ms
         self._registros: dict[str, _Registro] = {}
         self._heap: list[tuple[float, int, str]] = []
         self._vigente: dict[str, int] = {}  # id -> seq da entrada válida no heap
@@ -120,8 +127,8 @@ class Agendador:
         """Registra vários alvos com um único ``recalcular`` (carga inicial, CSV, sub-redes).
 
         Cada alvo segue as regras de ``adicionar``: id já conhecido vira atualização, destino
-        proibido é recusado (``alvo_recusado``) e, com o laço rodando, a primeira checagem
-        acontece em até 5 s.
+        proibido é recusado (``alvo_recusado`` e pausa com causa ``fora_das_subredes``) e, com
+        o laço rodando, a primeira checagem acontece em até 5 s.
         """
         novos: list[_Registro] = []
         conhecidos: list[Alvo] = []
@@ -129,12 +136,13 @@ class Agendador:
             if alvo.id in self._registros:
                 conhecidos.append(alvo)
                 continue
-            autorizado = self._autorizar(alvo)
+            autorizado = self._autorizar(alvo, alvo.estado)
             if autorizado is None:
                 continue
             destino, checagem = autorizado
             inicial = Estado.ONLINE if alvo.estado is Estado.SUSPEITO else alvo.estado
-            reg = _Registro(replace(alvo), destino, checagem, MaquinaEstados(inicial))
+            maquina = MaquinaEstados(inicial, self._latencia_instavel_ms)
+            reg = _Registro(replace(alvo), destino, checagem, maquina)
             self._registros[alvo.id] = reg
             novos.append(reg)
         if novos:
@@ -155,7 +163,7 @@ class Agendador:
 
     def atualizar_lote(self, alvos: Iterable[Alvo]) -> None:
         """Atualiza vários alvos com um único ``recalcular``; desconhecidos são adicionados e
-        os que passam a ter destino proibido são removidos."""
+        os que passam a ter destino proibido são removidos e pausados (ver ``_recusar``)."""
         desconhecidos: list[Alvo] = []
         alterados: list[_Registro] = []
         mudou = False
@@ -165,10 +173,11 @@ class Agendador:
                 desconhecidos.append(alvo)
                 continue
             mudou = True
-            autorizado = self._autorizar(alvo)
+            autorizado = self._autorizar(alvo, reg.maquina.estado)
             if autorizado is None:
                 del self._registros[alvo.id]
                 self._vigente.pop(alvo.id, None)
+                reg.versao += 1  # resultado em voo é descartado
                 continue
             reg.destino, reg.checagem = autorizado
             reg.alvo = replace(alvo, estado=reg.maquina.estado)
@@ -220,16 +229,34 @@ class Agendador:
         reg = self._registros.get(id)
         return None if reg is None else reg.maquina.estado
 
-    def _autorizar(self, alvo: Alvo) -> tuple[DestinoAutorizado, Checagem] | None:
+    def _autorizar(
+        self, alvo: Alvo, estado_atual: Estado
+    ) -> tuple[DestinoAutorizado, Checagem] | None:
         try:
             destino = self._guarda.validar(alvo.ip, alvo.porta, cast(Protocolo, alvo.checagem))
-            if not math.isfinite(alvo.intervalo_s) or alvo.intervalo_s <= 0:
-                raise DestinoProibido("Intervalo de checagem inválido.")
-            return destino, self._checagens(alvo.checagem)
-        except (DestinoProibido, ValueError) as e:
-            motivo = e.motivo if isinstance(e, DestinoProibido) else "Checagem inválida."
-            self._barramento.publicar(Mensagem("alvo_recusado", {"id": alvo.id, "motivo": motivo}))
+        except DestinoProibido as e:
+            self._recusar(alvo.id, e.motivo, estado_atual)
             return None
+        try:
+            if not math.isfinite(alvo.intervalo_s) or alvo.intervalo_s <= 0:
+                raise ValueError("Intervalo de checagem inválido.")
+            return destino, self._checagens(alvo.checagem)
+        except ValueError:
+            # configuração inválida (não é questão de rede): recusa sem pausar
+            self._barramento.publicar(
+                Mensagem("alvo_recusado", {"id": alvo.id, "motivo": "Checagem inválida."})
+            )
+            return None
+
+    def _recusar(self, id: str, motivo: str, estado_atual: Estado) -> None:
+        """Destino barrado pela Guarda: avisa (interno) e pausa com causa ``fora_das_subredes``.
+
+        O equipamento não fica registrado; a gravação da transição marca ``pausado`` no banco
+        e a retomada passa de novo pela Guarda (API ou sub-rede readicionada).
+        """
+        self._barramento.publicar(Mensagem("alvo_recusado", {"id": id, "motivo": motivo}))
+        if estado_atual is not Estado.PAUSADO:
+            self._transicao(id, Transicao(estado_atual, Estado.PAUSADO), causa=CAUSA_FORA)
 
     # ---- orçamento ----------------------------------------------------------------------------
 
@@ -388,7 +415,10 @@ class Agendador:
             await self._limitador.adquirir(reg.checagem.custo, prioritario=prioritario)
             if reg.versao != versao:  # pausado/alterado enquanto esperava token
                 return
-            r = await self._checar(reg)
+            destino = self._revalidar(reg)
+            if destino is None:
+                return
+            r = await self._checar(reg, destino)
             if reg.versao == versao and self._registros.get(reg.alvo.id) is reg:
                 self._registrar(reg, r)
         except Exception:
@@ -399,9 +429,30 @@ class Agendador:
             if self._registros.get(reg.alvo.id) is reg and reg.ativo:
                 self._agendar_proxima(reg)
 
-    async def _checar(self, reg: _Registro) -> ResultadoChecagem:
+    def _revalidar(self, reg: _Registro) -> DestinoAutorizado | None:
+        """Defesa em profundidade: confere o destino na Guarda VIVA logo antes da sonda.
+
+        Recusado (ex.: sub-rede removida por um caminho que não pausou o equipamento):
+        nenhuma sonda, o registro sai do agendador e o equipamento é pausado.
+        """
+        d = reg.destino
         try:
-            return await reg.checagem.executar(reg.destino)
+            destino = self._guarda.validar(d.ip, d.porta, d.protocolo)
+        except DestinoProibido as e:
+            id = reg.alvo.id
+            if self._registros.get(id) is reg:
+                del self._registros[id]
+                self._vigente.pop(id, None)
+                reg.versao += 1
+                self._recusar(id, e.motivo, reg.maquina.estado)
+                self.recalcular()
+            return None
+        reg.destino = destino
+        return destino
+
+    async def _checar(self, reg: _Registro, destino: DestinoAutorizado) -> ResultadoChecagem:
+        try:
+            return await reg.checagem.executar(destino)
         except Exception:
             log.exception("checagem falhou de forma inesperada (equipamento %s)", reg.alvo.id)
             return ResultadoChecagem(ok=False, latencia_ms=None, erro="erro interno")

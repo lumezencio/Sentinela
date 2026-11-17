@@ -15,7 +15,8 @@ from sentinela.monitor.limitador import Limitador
 from sentinela.rede.guarda import DestinoAutorizado, Guarda
 from sentinela.relogio import RelogioFalso
 
-REDE = IPv4Network("10.99.0.0/16")
+REDE = IPv4Network("10.99.0.0/17")
+FORA = "10.99.200.10"  # dentro do exemplo 10.99/16, fora da sub-rede declarada
 OK = ResultadoChecagem(ok=True, latencia_ms=1.0)
 FALHA = ResultadoChecagem(ok=False, latencia_ms=None, erro="sem resposta")
 INICIO_PAREDE = datetime(2026, 1, 1, tzinfo=UTC)
@@ -93,6 +94,7 @@ class GravadorFalso:
 
 @dataclass
 class Cena:
+    guarda: Guarda
     relogio: RelogioFalso
     barramento: BarramentoGravado
     limitador: LimitadorEspiao
@@ -105,14 +107,16 @@ def _cena(
     taxa: float = 20.0,
     agora_parede: Callable[[], datetime] | None = None,
     semente: int = 7,
+    latencia_instavel_ms: float = 200.0,
 ) -> Cena:
+    guarda = Guarda([REDE])
     relogio = RelogioFalso()
     barramento = BarramentoGravado(relogio)
     limitador = LimitadorEspiao(taxa, relogio)
     checagem = ChecagemFalsa(relogio)
     gravador = GravadorFalso()
     agendador = Agendador(
-        guarda=Guarda([REDE]),
+        guarda=guarda,
         limitador=limitador,
         relogio=relogio,
         barramento=barramento,
@@ -120,8 +124,9 @@ def _cena(
         checagens=lambda _tipo: checagem,
         rng=random.Random(semente),  # noqa: S311 - jitter determinístico no teste
         agora_parede=agora_parede or (lambda: INICIO_PAREDE),
+        latencia_instavel_ms=latencia_instavel_ms,
     )
-    return Cena(relogio, barramento, limitador, checagem, gravador, agendador)
+    return Cena(guarda, relogio, barramento, limitador, checagem, gravador, agendador)
 
 
 def _alvo(
@@ -356,7 +361,7 @@ async def test_guarda_recusa_alvo_e_nao_agenda(rodando: Callable[[Cena], None]) 
     cena = _cena()
     fora = Alvo(
         id="fora",
-        ip="192.168.77.10",
+        ip=FORA,
         porta=None,
         checagem="icmp",
         intervalo_s=15,
@@ -381,7 +386,7 @@ async def test_atualizar_para_destino_proibido_remove(rodando: Callable[[Cena], 
     rodando(cena)
     await cena.relogio.avancar_ate(30)
     feitas = len(cena.checagem.execucoes)
-    alvo.ip = "10.99.255.255"  # broadcast da sub-rede
+    alvo.ip = "10.99.127.255"  # broadcast da sub-rede
     cena.agendador.atualizar(alvo)
     await cena.relogio.avancar_ate(120)
     assert len(cena.checagem.execucoes) == feitas
@@ -695,7 +700,10 @@ async def test_pausar_e_retomar_com_causa_e_aguardar_gravacoes() -> None:
 
 
 async def test_aguardar_gravacoes_sem_nada_pendente_retorna() -> None:
-    await _cena().agendador.aguardar_gravacoes()
+    cena = _cena()
+    await asyncio.wait_for(cena.agendador.aguardar_gravacoes(), timeout=1.0)
+    assert cena.gravador.transicoes == []
+    assert cena.agendador._escritor is None  # nada foi enfileirado: nenhum escritor criado
 
 
 # ---- Task 10: lotes (R17) e retomada rápida (R13) ------------------------------------------
@@ -745,7 +753,7 @@ async def test_adicionar_lote_de_5000_rapido_e_com_um_recalcular() -> None:
 async def test_adicionar_lote_recusa_e_atualiza_como_adicionar() -> None:
     cena = _cena()
     cena.agendador.adicionar(_alvo(1, intervalo=30.0))
-    fora = replace(_alvo(2), ip="192.168.200.1")
+    fora = replace(_alvo(2), ip=FORA)
     cena.agendador.adicionar_lote([_alvo(1, intervalo=45.0), fora, _alvo(3)])
     assert cena.agendador.intervalo_efetivo("eq1") == 45.0
     assert cena.agendador.estado_de("eq2") is None
@@ -801,3 +809,101 @@ async def test_pausar_lote_recalcula_uma_vez_e_publica_cada_pausa() -> None:
     assert estados == [Estado.PAUSADO] * 5 + [Estado.ONLINE] * 5
     assert cena.gravador.causas == ["fora_das_subredes"] * 5
     assert [m.dados["id"] for _, m in cena.barramento.do_tipo("estado")] == ids
+
+
+# ---- Revisão final: latência configurável, recusa vira pausa, revalidação por sonda --------
+
+
+async def test_latencia_instavel_configuravel(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena(latencia_instavel_ms=50.0)
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [ResultadoChecagem(ok=True, latencia_ms=100.0)]
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    await cena.relogio.avancar_ate(30)
+    assert cena.agendador.estado_de(alvo.id) is Estado.INSTAVEL
+
+
+async def test_latencia_abaixo_do_limite_padrao_fica_online(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.checagem.roteiros[alvo.ip] = [ResultadoChecagem(ok=True, latencia_ms=100.0)]
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    await cena.relogio.avancar_ate(30)
+    assert cena.agendador.estado_de(alvo.id) is Estado.ONLINE
+
+
+async def test_recusado_ao_adicionar_vira_pausado_fora_das_subredes() -> None:
+    cena = _cena()
+    cena.agendador.adicionar(replace(_alvo(1), ip=FORA, estado=Estado.DESCONHECIDO))
+    await cena.agendador.aguardar_gravacoes()
+    assert [(i, t.de, t.para) for i, t, _ in cena.gravador.transicoes] == [
+        ("eq1", Estado.DESCONHECIDO, Estado.PAUSADO)
+    ]
+    assert cena.gravador.causas == ["fora_das_subredes"]
+    estados = [m.dados for _, m in cena.barramento.do_tipo("estado")]
+    assert [(d["id"], d["estado"]) for d in estados] == [("eq1", "pausado")]
+    assert cena.agendador.estado_de("eq1") is None
+
+
+async def test_recusado_ja_pausado_nao_gera_transicao() -> None:
+    cena = _cena()
+    cena.agendador.adicionar(replace(_alvo(1), ip=FORA, estado=Estado.PAUSADO))
+    await cena.agendador.aguardar_gravacoes()
+    assert cena.gravador.transicoes == []
+    assert cena.barramento.do_tipo("estado") == []
+    assert len(cena.barramento.do_tipo("alvo_recusado")) == 1
+
+
+async def test_atualizar_para_destino_proibido_pausa_com_causa() -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.agendador.adicionar(alvo)
+    cena.agendador.atualizar(replace(alvo, ip=FORA))
+    await cena.agendador.aguardar_gravacoes()
+    assert [(t.de, t.para) for _, t, _ in cena.gravador.transicoes] == [
+        (Estado.ONLINE, Estado.PAUSADO)
+    ]
+    assert cena.gravador.causas == ["fora_das_subredes"]
+    assert cena.agendador.estado_de("eq1") is None
+
+
+async def test_sonda_revalida_na_guarda_viva_e_pausa_sem_sondar(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    await cena.relogio.avancar_ate(30)
+    feitas = len(cena.checagem.execucoes)
+    assert feitas >= 1
+    # a sub-rede sai da Guarda viva sem passar pela API (corrida): a próxima sonda é barrada
+    cena.guarda.atualizar([IPv4Network("10.99.128.0/17")])
+    await cena.relogio.avancar_ate(120)
+    await cena.agendador.aguardar_gravacoes()
+    assert len(cena.checagem.execucoes) == feitas
+    assert [t.para for _, t, _ in cena.gravador.transicoes][-1] is Estado.PAUSADO
+    assert cena.gravador.causas[-1] == "fora_das_subredes"
+    assert cena.agendador.estado_de(alvo.id) is None
+
+
+async def test_sonda_usa_destino_revalidado(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    alvo = _alvo(1)
+    validados: list[str] = []
+    original = cena.guarda.validar
+
+    def espiao(ip: object, porta: int | None, protocolo: str) -> DestinoAutorizado:
+        validados.append(str(ip))
+        return original(ip, porta, protocolo)  # type: ignore[arg-type]
+
+    cena.guarda.validar = espiao  # type: ignore[method-assign]
+    cena.agendador.adicionar(alvo)
+    rodando(cena)
+    await cena.relogio.avancar_ate(40)
+    # uma validação no cadastro + uma antes de cada sonda
+    assert len(validados) == 1 + len(cena.checagem.execucoes)

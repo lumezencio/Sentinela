@@ -34,6 +34,8 @@ WORKDIR /app
 COPY --from=construcao /app/.venv /app/.venv
 COPY alembic.ini ./
 COPY alembic ./alembic
+# laço do monitor morto: o processo sai com código != 0 e o compose (restart: unless-stopped) reinicia
+ENV SENTINELA_SAIR_SE_MONITOR_MORRER=true
 ENV PATH=/app/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

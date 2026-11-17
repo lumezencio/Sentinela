@@ -169,4 +169,5 @@ async def importar(request: Request, db: SessaoDB, admin: Admin) -> ResultadoImp
 
     agendador: Agendador = request.app.state.agendador
     agendador.adicionar_lote(alvo_de(eq, classe) for eq, classe in novos)
-    return ResultadoImportacao(importados=len(novos), erros=erros)
+    await agendador.aguardar_gravacoes()  # recusa por corrida com sub-rede: pausa já gravada
+    return ResultadoImportacao(importados=len(novos), erros=erros, total_erros=total_erros)

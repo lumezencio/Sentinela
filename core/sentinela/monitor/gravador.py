@@ -9,7 +9,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.modelos import Amostra, Equipamento, Evento
-from sentinela.monitor.estados import ResultadoChecagem, Transicao
+from sentinela.monitor.estados import Estado, ResultadoChecagem, Transicao
 
 MAX_PENDENTES = 100_000  # teto de memória se o banco ficar fora do ar (descarta as mais antigas)
 
@@ -52,6 +52,12 @@ class GravadorSql:
             )
             eq.estado = t.para.value
             eq.estado_desde = em
+            # ``pausado`` acompanha a transição: a pausa decidida pelo próprio agendador
+            # (destino recusado pela Guarda) também fica persistida
+            if t.para is Estado.PAUSADO:
+                eq.pausado = True
+            elif t.de is Estado.PAUSADO:
+                eq.pausado = False
 
     def acumular_amostra(self, id: str, r: ResultadoChecagem, em: datetime) -> None:
         self._pendentes.append((id, r, em))

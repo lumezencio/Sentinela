@@ -51,6 +51,7 @@ async def test_importa_excel_br(app: FastAPI, cliente_admin: httpx.AsyncClient) 
     corpo = r.json()
     assert corpo["importados"] == 5
     assert [e["linha"] for e in corpo["erros"]] == [6, 7, 8]
+    assert corpo["total_erros"] == 3
     motivos = [e["motivo"] for e in corpo["erros"]]
     assert "repetido" in motivos[0]
     assert motivos[1] == "Endereço IPv4 inválido."
@@ -94,7 +95,7 @@ async def test_virgula_utf8_e_padroes(app: FastAPI, cliente_admin: httpx.AsyncCl
     await _preparar(cliente_admin)
     csv = "Nome,IP,Classe\nCâmera,10.99.0.40,camera\nPC,10.99.0.41,Computadores\n"
     r = await _importar(cliente_admin, csv.encode("utf-8"))
-    assert r.json() == {"importados": 2, "erros": []}
+    assert r.json() == {"importados": 2, "erros": [], "total_erros": 0}
     itens = (await cliente_admin.get("/api/v1/equipamentos")).json()["itens"]
     assert {(i["nome"], i["checagem"], i["porta"]) for i in itens} == {
         ("Câmera", "icmp", None),
@@ -176,6 +177,7 @@ async def test_erros_limitados_a_200(cliente_admin: httpx.AsyncClient) -> None:
     corpo = r.json()
     assert corpo["importados"] == 0
     assert len(corpo["erros"]) == 200
+    assert corpo["total_erros"] == 300  # a tela mostra "300 linha(s) com erro (as primeiras 200)"
 
 
 async def test_visualizador_nao_importa(cliente_visualizador: httpx.AsyncClient) -> None:

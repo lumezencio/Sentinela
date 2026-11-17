@@ -105,4 +105,5 @@ class ErroLinha(BaseModel):
 
 class ResultadoImportacao(BaseModel):
     importados: int
-    erros: list[ErroLinha] = Field(default_factory=list)
+    erros: list[ErroLinha] = Field(default_factory=list)  # só as primeiras ``MAX_ERROS``
+    total_erros: int = 0  # todas as linhas com erro, inclusive as que não vieram em ``erros``

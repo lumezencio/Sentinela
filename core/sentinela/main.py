@@ -1,7 +1,8 @@
 import asyncio
 import functools
 import logging
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -16,13 +17,22 @@ from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.demo.simulador import ChecagemSimulada, banco_e_demo, semear_demo, tem_equipamentos
 from sentinela.monitor.gravador import GravadorAmostras
+from sentinela.monitor.limpeza import limpar_periodicamente
 from sentinela.monitor.montagem import montar_monitor
+from sentinela.registro import configurar_logs
 from sentinela.relogio import Relogio, RelogioReal
 from sentinela.seguranca.bloqueio import BloqueioFantasma, LimitadorIP
 
 log = logging.getLogger(__name__)
 
 DESCARGA_S = 60.0  # amostras gravadas em lote a cada 60 s
+GRACA_SAIDA_S = 5.0  # monitor morto: tempo para o log sair antes de encerrar o processo
+CODIGO_MONITOR_MORTO = 3
+
+
+def _sair_do_processo() -> None:
+    """Encerra na hora com código != 0; o ``restart: unless-stopped`` do compose reinicia."""
+    os._exit(CODIGO_MONITOR_MORTO)
 
 
 @asynccontextmanager
@@ -73,15 +83,20 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
 
 @asynccontextmanager
 async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
-    """Inicia ``agendador.executar`` e a descarga periódica; no shutdown, encerra e espera.
-
-    A descarga para primeiro; o agendador cancelado drena as transições e descarrega o resto.
+    """Inicia a limpeza diária, a descarga periódica e ``agendador.executar``; no shutdown,
+    encerra e espera, nessa ordem (o agendador cancelado drena as transições e descarrega).
     """
     tarefas: list[asyncio.Task[None]] = []
     app.state.tarefas_monitor = tarefas
     app.state.monitor_falhou = False
     app.state.monitor_motivo = None
     if app.state.iniciar_monitor:
+        tarefas.append(
+            asyncio.create_task(
+                limpar_periodicamente(app.state.sessoes, app.state.relogio),
+                name="sentinela-limpeza",
+            )
+        )
         tarefas.append(
             asyncio.create_task(
                 _descarregar_periodicamente(app.state.gravador, app.state.relogio, DESCARGA_S),
@@ -96,19 +111,27 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        for tarefa in tarefas:  # uma de cada vez, na ordem: descarga, agendador
+        for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, agendador
             tarefa.cancel()
             # falha já registrada por ``_laco_terminou``; aqui só espera o fim
             await asyncio.gather(tarefa, return_exceptions=True)
 
 
 def _laco_terminou(app: FastAPI, tarefa: asyncio.Task[None]) -> None:
-    """Laço que termina sem ser cancelado parou o monitor: log de erro e /saude em 503."""
+    """Laço que termina sem ser cancelado parou o monitor: log de erro e /saude em 503.
+
+    Com ``SENTINELA_SAIR_SE_MONITOR_MORRER=true`` (imagem Docker), o processo também é
+    encerrado depois de ``GRACA_SAIDA_S`` para o compose reiniciar o core.
+    """
     if tarefa.cancelled():
         return
     app.state.monitor_falhou = True
     app.state.monitor_motivo = tarefa.get_name()
     log.error("laço do monitor parou: %s", tarefa.get_name(), exc_info=tarefa.exception())
+    settings: Settings = app.state.settings
+    if settings.sair_se_monitor_morrer:
+        log.critical("encerrando o processo em %.0f s para reinício automático", GRACA_SAIDA_S)
+        asyncio.get_running_loop().call_later(GRACA_SAIDA_S, app.state.terminar)
 
 
 async def _descarregar_periodicamente(
@@ -138,8 +161,13 @@ def criar_app(
     *,
     relogio: Relogio | None = None,
     iniciar_monitor: bool = True,
+    terminar: Callable[[], None] = _sair_do_processo,
 ) -> FastAPI:
-    """``iniciar_monitor=False`` monta o monitor sem iniciar os laços (testes sem sondas)."""
+    """``iniciar_monitor=False`` monta o monitor sem iniciar os laços (testes sem sondas).
+
+    ``terminar`` só é chamado se ``settings.sair_se_monitor_morrer`` (testes injetam um falso).
+    """
+    configurar_logs()
     settings = settings or obter_settings()
     relogio = relogio or RelogioReal()
     producao = settings.ambiente == "producao"
@@ -156,6 +184,7 @@ def criar_app(
     app.state.settings = settings
     app.state.relogio = relogio
     app.state.iniciar_monitor = iniciar_monitor
+    app.state.terminar = terminar
     app.state.config_ws = ws.ConfigWs()
     app.state.falhas_ip = LimitadorIP(relogio)
     app.state.falhas_fantasma = BloqueioFantasma(relogio)

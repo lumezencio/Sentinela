@@ -84,10 +84,12 @@ async def montar_monitor(
             barramento=barramento,
             gravador=gravador,
             checagens=checagens,
+            latencia_instavel_ms=settings.latencia_instavel_ms,
         )
         linhas = await db.execute(
             select(Equipamento, Classe).join(Classe, Equipamento.classe_id == Classe.id)
         )
-        # um único recalcular para todos; fora das sub-redes: recusado
+        # um único recalcular para todos; fora das sub-redes: recusado e pausado
         agendador.adicionar_lote(alvo_de(eq, classe) for eq, classe in linhas)
+    await agendador.aguardar_gravacoes()  # pausas por recusa já gravadas ao subir
     return Monitor(guarda, barramento, limitador, gravador, agendador)

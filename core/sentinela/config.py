@@ -15,7 +15,9 @@ class Settings(BaseSettings):
     chave_sessao: SecretStr
     demo: bool = False
     teto_pps: int = Field(default=20, ge=1, le=100)
-    latencia_instavel_ms: float = 200.0
+    latencia_instavel_ms: float = Field(default=200.0, gt=0)
+    # laço do monitor morreu: encerra o processo para o Docker reiniciar (ligado na imagem)
+    sair_se_monitor_morrer: bool = False
 
 
 @lru_cache

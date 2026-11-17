@@ -56,6 +56,21 @@ async def checar_unicos(db: AsyncSession, ip: str, mac: str | None, ignorar: str
             raise erro(status.HTTP_409_CONFLICT, comum.MSG_MAC_DUPLICADO)
 
 
+async def _registrar_no_agendador(
+    agendador: Agendador, db: AsyncSession, eq: Equipamento, classe: Classe, *, novo: bool
+) -> None:
+    """Depois do commit. Se o agendador recusar (Guarda mudou no meio), ele pausa com causa
+    ``fora_das_subredes``; a resposta já sai com esse estado gravado."""
+    alvo = alvo_de(eq, classe)
+    if novo:
+        agendador.adicionar(alvo)
+    else:
+        agendador.atualizar(alvo)
+    if agendador.estado_de(eq.id) is None and not eq.pausado:
+        await agendador.aguardar_gravacoes()
+        await db.refresh(eq)
+
+
 async def _commit(db: AsyncSession) -> None:
     try:
         await db.commit()
@@ -126,7 +141,7 @@ async def criar(
     db.add(eq)
     auditar(db, request, admin, "equipamento.criar", eq.id, depois=retrato(eq, classe.slug))
     await _commit(db)
-    _agendador(request).adicionar(alvo_de(eq, classe))
+    await _registrar_no_agendador(_agendador(request), db, eq, classe, novo=True)
     return EquipamentoSaida.de(eq, classe.slug)
 
 
@@ -152,7 +167,7 @@ async def editar(
         eq.nome = dados["nome"]
     auditar(db, request, admin, "equipamento.editar", eq.id, antes, retrato(eq, classe.slug))
     await _commit(db)
-    _agendador(request).atualizar(alvo_de(eq, classe))
+    await _registrar_no_agendador(_agendador(request), db, eq, classe, novo=False)
     return EquipamentoSaida.de(eq, classe.slug)
 
 

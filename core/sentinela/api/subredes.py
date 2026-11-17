@@ -7,7 +7,14 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
-from sentinela.api.comum import auditar, erro, nao_encontrado, sincronizar
+from sentinela.api.comum import (
+    CAUSA_DENTRO,
+    CAUSA_FORA,
+    auditar,
+    erro,
+    nao_encontrado,
+    sincronizar,
+)
 from sentinela.api.deps import SessaoDB, exigir_admin
 from sentinela.db.modelos import SubRede, Usuario
 from sentinela.monitor.agendador import Agendador
@@ -17,6 +24,22 @@ from sentinela.rede.guarda import DestinoProibido, Guarda
 router = APIRouter(prefix="/api/v1/subredes", tags=["subredes"])
 Admin = Annotated[Usuario, Depends(exigir_admin)]
 MAX_SUB_REDES = 64
+
+
+MSG_CIDR = "Sub-rede inválida: use a notação CIDR da rede, ex. 10.99.0.0/24."
+MSG_DUPLICADA = "Sub-rede já cadastrada."
+MSG_LIMITE = "Limite de sub-redes atingido."
+
+
+def normalizar_cidr(texto: str) -> str:
+    """Mesma validação para a API e a CLI; ``DestinoProibido`` com motivo fixo (sem eco)."""
+    try:
+        # o motivo de parse da Guarda repete a entrada; este texto é fixo
+        IPv4Network(texto.strip(), strict=True)
+    except ValueError:
+        raise DestinoProibido(MSG_CIDR) from None
+    # privada? prefixo /16–/30? (motivos sem eco da entrada)
+    return str(Guarda.validar_sub_rede(texto.strip()))
 
 
 class SubRedeEntrada(BaseModel):
@@ -41,11 +64,13 @@ async def _aplicar(request: Request, db: SessaoDB) -> None:
     agendador: Agendador = request.app.state.agendador
     guarda: Guarda = request.app.state.guarda
     redes = await sub_redes_do_banco(db)
-    pausar, adicionar = await sincronizar(db, agendador, Guarda(redes))
+    mudancas = await sincronizar(db, agendador, Guarda(redes))
     await db.commit()
     guarda.atualizar(redes)
-    agendador.pausar_lote(pausar, causa="fora_das_subredes")
-    agendador.adicionar_lote(adicionar)
+    agendador.pausar_lote(mudancas.pausar, causa=CAUSA_FORA)
+    for id in mudancas.retomar:
+        agendador.retomar(id, causa=CAUSA_DENTRO)
+    agendador.adicionar_lote(mudancas.adicionar)
     await agendador.aguardar_gravacoes()
 
 
@@ -54,22 +79,13 @@ async def criar(
     entrada: SubRedeEntrada, request: Request, db: SessaoDB, admin: Admin
 ) -> SubRedeSaida:
     try:
-        # o motivo de parse da Guarda repete a entrada; este texto é fixo
-        IPv4Network(entrada.cidr.strip(), strict=True)
-    except ValueError:
-        raise erro(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "Sub-rede inválida: use a notação CIDR da rede, ex. 10.99.0.0/24.",
-        ) from None
-    try:
-        rede = Guarda.validar_sub_rede(entrada.cidr.strip())
-    except DestinoProibido as e:  # privada? prefixo /16–/30? (motivos sem eco da entrada)
+        cidr = normalizar_cidr(entrada.cidr)
+    except DestinoProibido as e:
         raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, e.motivo) from None
-    cidr = str(rede)
     if await db.scalar(select(SubRede.id).where(SubRede.cidr == cidr)) is not None:
-        raise erro(status.HTTP_409_CONFLICT, "Sub-rede já cadastrada.")
+        raise erro(status.HTTP_409_CONFLICT, MSG_DUPLICADA)
     if (await db.scalar(select(func.count()).select_from(SubRede)) or 0) >= MAX_SUB_REDES:
-        raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, "Limite de sub-redes atingido.")
+        raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_LIMITE)
     sub = SubRede(cidr=cidr)
     db.add(sub)
     await db.flush()

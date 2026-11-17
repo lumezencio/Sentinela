@@ -70,7 +70,13 @@ def _muitas(espera_s: float) -> HTTPException:
 
 
 def _registrar(rotulo: str, resultado: str) -> None:
-    log.info("tentativa de login: %s resultado=%s", rotulo, resultado)
+    # nunca a senha; login desconhecido só como prefixo de hash (ver _rotulo_desconhecido)
+    log.info(
+        "tentativa de login: %s resultado=%s",
+        rotulo,
+        resultado,
+        extra={"evento": "login", "rotulo": rotulo, "resultado": resultado},
+    )
 
 
 def _rotulo_conhecido(login: str) -> str:

@@ -447,7 +447,11 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
     async def corpo() -> None:
         await asyncio.sleep(0)
         vistas.extend(app.state.tarefas_monitor)
-        assert len(vistas) == 2
+        assert [t.get_name() for t in vistas] == [
+            "sentinela-limpeza",
+            "sentinela-descarga",
+            "sentinela-agendador",
+        ]
         assert not any(t.done() for t in vistas)
 
     await _rodar_lifespan(app, settings, corpo)
@@ -578,3 +582,58 @@ async def test_saude_503_se_laco_terminou_sem_excecao(
 async def test_saude_ok_sem_monitor(cliente: httpx.AsyncClient) -> None:
     r = await cliente.get("/api/v1/saude")
     assert (r.status_code, r.json()) == (200, {"status": "ok"})
+
+
+# ---- revisão final: monitor morto encerra o processo (só com a flag) ------------------------
+
+
+async def _monitor_quebrado(
+    settings: Settings, relogio: RelogioFalso, monkeypatch: pytest.MonkeyPatch, sair: bool
+) -> list[str]:
+    async def executar_quebrado(self: Agendador) -> None:
+        raise RuntimeError("defeito simulado")
+
+    monkeypatch.setattr(Agendador, "executar", executar_quebrado)
+    monkeypatch.setattr("sentinela.main.GRACA_SAIDA_S", 0.01)
+    chamadas: list[str] = []
+    app = criar_app(
+        settings.model_copy(update={"sair_se_monitor_morrer": sair}),
+        relogio=relogio,
+        terminar=lambda: chamadas.append("terminar"),
+    )
+
+    async def corpo() -> None:
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert app.state.monitor_falhou is True
+        await asyncio.sleep(0.1)  # passa da graça (call_later usa o relógio real do laço)
+
+    await _rodar_lifespan(app, settings, corpo)
+    return chamadas
+
+
+async def test_monitor_morto_encerra_processo_com_a_flag(
+    settings: Settings, relogio: RelogioFalso, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert await _monitor_quebrado(settings, relogio, monkeypatch, sair=True) == ["terminar"]
+
+
+async def test_monitor_morto_sem_a_flag_nao_encerra(
+    settings: Settings, relogio: RelogioFalso, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert await _monitor_quebrado(settings, relogio, monkeypatch, sair=False) == []
+
+
+def test_flag_de_saida_desligada_por_padrao(settings: Settings) -> None:
+    assert settings.sair_se_monitor_morrer is False
+
+
+def test_terminador_padrao_sai_com_codigo_diferente_de_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sentinela import main
+
+    codigos: list[int] = []
+    monkeypatch.setattr("os._exit", codigos.append)
+    main._sair_do_processo()
+    assert codigos == [main.CODIGO_MONITOR_MORTO] and codigos[0] != 0

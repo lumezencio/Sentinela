@@ -99,3 +99,29 @@ async def test_amostra_repetida_no_mesmo_instante_nao_derruba_o_lote(
     await g.descarregar()
     async with sessoes() as s:
         assert (await s.execute(select(func.count()).select_from(Amostra))).scalar_one() == 1
+
+
+async def test_transicao_para_pausado_marca_flag_e_retomada_desmarca(
+    sessoes: async_sessionmaker[AsyncSession],
+) -> None:
+    """Recusa do agendador (fora das sub-redes) persiste a pausa, não só o estado."""
+    g = GravadorSql(sessoes)
+    em = T0 + timedelta(seconds=30)
+    await g.registrar_transicao(
+        "eq1", Transicao(Estado.ONLINE, Estado.PAUSADO), em, causa="fora_das_subredes"
+    )
+    async with sessoes() as s:
+        eq = await s.get(Equipamento, "eq1")
+        assert eq is not None
+        assert (eq.estado, eq.pausado) == ("pausado", True)
+        ev = (await s.execute(select(Evento))).scalar_one()
+        assert ev.causa == "fora_das_subredes"
+    await g.registrar_transicao("eq1", Transicao(Estado.PAUSADO, Estado.DESCONHECIDO), em)
+    async with sessoes() as s:
+        eq = await s.get(Equipamento, "eq1")
+        assert eq is not None
+        assert (eq.estado, eq.pausado) == ("desconhecido", False)
+    await g.registrar_transicao("eq1", Transicao(Estado.DESCONHECIDO, Estado.ONLINE), em)
+    async with sessoes() as s:
+        eq = await s.get(Equipamento, "eq1")
+        assert eq is not None and eq.pausado is False
