@@ -63,6 +63,8 @@ export function prepararItem(e) {
     latencia_ms: e.latencia_ms ?? null,
     checagem: e.checagem || "icmp",
     porta: e.porta ?? null,
+    pai_id: typeof e.pai_id === "string" ? e.pai_id : null, // câmera atrás de gravador (Fase 3)
+    canal: Number.isInteger(e.canal) ? e.canal : null,
     _busca: normalizar(`${e.nome} ${e.ip}`),
     _ip: ipNumerico(e.ip),
   };
@@ -76,6 +78,29 @@ export function aplicarEstado(store, msg) {
   item.desde = msg.desde;
   if (msg.estado === "offline" || msg.estado === "pausado") item.latencia_ms = null;
   return true;
+}
+
+/**
+ * Mensagem "equipamento" do WS (aprovação, IP mudado, checagem trocada): criado/atualizado
+ * trazem a linha no formato do snapshot e viram upsert (idempotente: o gravador pode ser
+ * anunciado "criado" mais de uma vez); removido apaga. @returns {boolean} o store mudou.
+ */
+export function aplicarEquipamento(store, msg) {
+  if (!msg) return false;
+  if (msg.acao === "removido") return typeof msg.id === "string" && store.itens.delete(msg.id);
+  if (msg.acao !== "criado" && msg.acao !== "atualizado") return false;
+  const e = msg.equipamento;
+  if (!e || typeof e.id !== "string" || typeof e.nome !== "string") return false;
+  store.itens.set(e.id, prepararItem(e));
+  return true;
+}
+
+/** "Atrás do gravador NVR A, canal 3" para câmera de gravador; "" para os demais. */
+export function atrasDoGravador(item, store) {
+  if (!item || !item.pai_id) return "";
+  const pai = store.itens.get(item.pai_id);
+  const canal = item.canal !== null && item.canal !== undefined ? `, canal ${item.canal}` : "";
+  return pai ? `Atrás do gravador ${pai.nome}${canal}` : `Atrás do gravador${canal}`;
 }
 
 export function aplicarLatencias(store, lote) {
@@ -172,5 +197,6 @@ export function linhaDeTela(item, store, agora) {
     desdeTitulo: item.desde,
     latencia: formatarLatencia(item.latencia_ms),
     checagem: rotuloChecagem(item.checagem, item.porta),
+    atras: atrasDoGravador(item, store),
   };
 }

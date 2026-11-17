@@ -1,6 +1,8 @@
 // Painel (Alpine CSP): sessão, conexão ao vivo, contadores, lista e cadastro (admin).
 import { api, irParaLogin } from "./api.js";
+import { configuracoesDoPainel } from "./configuracoes.js";
 import {
+  aplicarEquipamento,
   aplicarEstado,
   aplicarLatencias,
   aplicarSnapshot,
@@ -11,6 +13,7 @@ import {
   paginar,
   prepararItem,
 } from "./lista.js";
+import { novosDoPainel, textoSeguro } from "./novos.js";
 import { organogramaDoPainel } from "./organograma.js";
 import { visoesDoPainel } from "./teia-pagina.js";
 import { criarConexao } from "./ws.js";
@@ -32,6 +35,15 @@ function temaAtual() {
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "claro" : "escuro";
 }
 
+/** Faixa da varredura a partir da mensagem "varredura" (ou do GET /varredura). */
+function estadoDaVarredura(p) {
+  if (!p || p.estado !== "rodando") return { rodando: false, cidr: "", pct: 0, achados: 0 };
+  const total = Number(p.total) || 0;
+  const feitos = Number(p.feitos) || 0;
+  const pct = total > 0 ? Math.min(100, Math.floor((feitos / total) * 100)) : 0;
+  return { rodando: true, cidr: textoSeguro(p.cidr, 43), pct, achados: Number(p.achados) || 0 };
+}
+
 function novoFormulario() {
   return { nome: "", ip: "", mac: "", classe: "", checagem: "icmp", porta: "" };
 }
@@ -43,6 +55,8 @@ function painel() {
   let quadro = 0;
   let relogio = 0;
   let ressinc = 0;
+  let resolverConfirmacao = null;
+  let focoAntesDaConfirmacao = null;
 
   const dados = {
     usuario: "",
@@ -71,6 +85,9 @@ function painel() {
     novaSubrede: "",
     subredeErro: "",
     subredeAviso: "",
+    varredura: estadoDaVarredura(null),
+    varreduraErro: "",
+    confirmacao: { titulo: "", texto: "", botao: "Confirmar", perigo: false },
 
     async init() {
       this.iniciarVisoes(); // aba pelo hash já na abertura (a Teia monta sob demanda)
@@ -87,7 +104,8 @@ function painel() {
       }
       this.usuario = eu.dados.login;
       this.admin = eu.dados.papel === "admin";
-      this.liberarTeia(); // só agora a Teia monta (e o bundle é pedido)
+      this.liberarTeia(); // só agora a Teia monta (e o bundle é pedido) e Novos/Config carregam
+      this.carregarVarredura();
       conexao = criarConexao({
         aoMensagem: (msg) => this.receber(msg),
         aoMudarEstado: (estado) => {
@@ -113,11 +131,25 @@ function painel() {
         this.classes = store.ordemClasses.map((c) => ({ slug: c.slug, nome: c.nome }));
         this.carregado = true;
         this.teiaAoMudarStore();
+        this.novosAoMensagem(msg);
       } else if (msg.tipo === "estado") {
         if (aplicarEstado(store, msg)) this.teiaAoEstado(msg.id);
         else this.pedirRessincronizacao();
       } else if (msg.tipo === "latencias") {
         aplicarLatencias(store, msg.lote);
+      } else if (msg.tipo === "equipamento") {
+        // aprovação (o gravador pode vir "criado" mais de uma vez: upsert idempotente)
+        if (!aplicarEquipamento(store, msg)) return;
+        this.teiaAoMudarStore();
+      } else if (msg.tipo === "descoberta" || msg.tipo === "pendentes") {
+        this.novosAoMensagem(msg);
+        return;
+      } else if (msg.tipo === "varredura") {
+        this.aplicarVarredura(msg);
+        return;
+      } else if (msg.tipo === "fonte") {
+        this.cfgAoMensagem(msg);
+        return;
       } else {
         return; // ping e tipos futuros
       }
@@ -141,6 +173,7 @@ function painel() {
       this.contadores = contar(store);
       this.renderizarTeia();
       this.renderizarOrganograma(); // só na aba dele; no máximo 2 vezes por segundo
+      if (this.aba === "configuracoes") this.renderizarFontes(); // "há N min" das coletas
       if (this.aba !== "lista") return; // a lista só é montada na aba dela
       const filtrada = filtrar(
         store,
@@ -251,6 +284,81 @@ function painel() {
       }
       // a sessão pode continuar válida no servidor: fica na página e avisa
       this.aviso = MSG_SAIR;
+    },
+
+    // ---------- varredura lenta (faixa no topo, todas as abas) ----------
+    async carregarVarredura() {
+      const r = await api.verVarredura();
+      if (r.ok && r.dados && r.dados.rodando) {
+        this.aplicarVarredura({ ...r.dados.progresso, estado: "rodando" });
+      }
+    },
+    aplicarVarredura(p) {
+      this.varredura = estadoDaVarredura(p);
+      if (!this.varredura.rodando) this.varreduraErro = "";
+    },
+    get faixaVarredura() {
+      return this.varredura.rodando;
+    },
+    get textoVarredura() {
+      return `Varredura lenta em ${this.varredura.cidr}: ${this.varredura.pct}%.`;
+    },
+    get detalheVarredura() {
+      const n = this.varredura.achados;
+      return `${n} ${n === 1 ? "achado" : "achados"}`;
+    },
+    get estiloVarredura() {
+      return { "--pct": `${this.varredura.pct}%` };
+    },
+    async cancelarVarredura() {
+      if (!this.admin) return;
+      this.varreduraErro = "";
+      const r = await api.cancelarVarredura();
+      if (!r.ok) {
+        this.varreduraErro = r.erro;
+        return;
+      }
+      this.varredura = estadoDaVarredura(null); // o WS confirma com "cancelada"
+    },
+
+    // ---------- confirmação (diálogo próprio, acessível; devolve true/false) ----------
+    confirmar({ titulo, texto, botao = "Confirmar", perigo = false }) {
+      if (resolverConfirmacao) resolverConfirmacao(false);
+      this.confirmacao = { titulo, texto, botao, perigo };
+      focoAntesDaConfirmacao = document.activeElement;
+      const dlg = this.$refs.dlgConfirmar;
+      dlg.returnValue = "";
+      dlg.showModal();
+      this.$nextTick(() => this.$refs.naoConfirmar && this.$refs.naoConfirmar.focus());
+      return new Promise((resolver) => {
+        resolverConfirmacao = resolver;
+      });
+    },
+    aoFecharConfirmacao() {
+      const ok = this.$refs.dlgConfirmar.returnValue === "sim";
+      const resolver = resolverConfirmacao;
+      resolverConfirmacao = null;
+      const voltar = focoAntesDaConfirmacao;
+      focoAntesDaConfirmacao = null;
+      if (voltar && voltar.isConnected && typeof voltar.focus === "function") voltar.focus();
+      if (resolver) resolver(ok);
+    },
+    get classeConfirmar() {
+      return this.confirmacao.perigo ? "botao botao-perigo" : "botao botao-primario";
+    },
+
+    /**
+     * Equipamento aprovado em Novos: entra no store já, se o WS ainda não o trouxe. Nunca
+     * sobrescreve a linha do WS (ela tem pai_id/canal; a resposta do POST não).
+     */
+    inserirAprovado(e) {
+      if (!e || typeof e.id !== "string" || store.itens.has(e.id)) return;
+      aplicarEquipamento(store, {
+        acao: "criado",
+        equipamento: { ...e, desde: e.desde || e.estado_desde },
+      });
+      this.teiaAoMudarStore();
+      this.agendarRender();
     },
 
     // ---------- novo equipamento (admin) ----------
@@ -408,9 +516,17 @@ function painel() {
       if (conexao) conexao.ressincronizar();
     },
   };
-  // abas e Teia (teia-pagina.js): mesmas propriedades no mesmo objeto, getters preservados
-  Object.defineProperties(dados, Object.getOwnPropertyDescriptors(visoesDoPainel(store)));
-  return Object.defineProperties(dados, Object.getOwnPropertyDescriptors(organogramaDoPainel(store)));
+  // abas e Teia (teia-pagina.js), Organograma, Novos e Configurações: mesmas propriedades no
+  // mesmo objeto, getters preservados
+  for (const parte of [
+    visoesDoPainel(store),
+    organogramaDoPainel(store),
+    novosDoPainel(store),
+    configuracoesDoPainel(),
+  ]) {
+    Object.defineProperties(dados, Object.getOwnPropertyDescriptors(parte));
+  }
+  return dados;
 }
 
 document.addEventListener("alpine:init", () => {

@@ -132,3 +132,54 @@ test("paginaDoCartao: 50 por cartão, página limitada, peso por gravidade", () 
   assert.equal(paginaDoCartao(cartao, 99).itens.length, 20);
   assert.equal(paginaDoCartao(cartao, 0).pagina, 1);
 });
+
+// ---------- Fase 3: câmeras atrás do gravador ----------
+function lojaComGravador() {
+  const store = criarStore();
+  aplicarSnapshot(store, {
+    classes: [
+      { slug: "camera", nome: "Câmeras", cor: "#5B8DEF", ordem: 2 },
+      { slug: "gravador", nome: "Gravadores", cor: "#B79CE8", ordem: 3 },
+    ],
+    equipamentos: [
+      { id: "n1", nome: "NVR Bloco B", ip: "10.99.50.10", classe: "gravador", estado: "online" },
+      { id: "n2", nome: "NVR Bloco A", ip: "10.99.50.11", classe: "gravador", estado: "online" },
+      { id: "solta", nome: "Cam Solta", ip: "10.99.1.2", classe: "camera", estado: "online" },
+      { id: "solta2", nome: "Cam Caída", ip: "10.99.1.3", classe: "camera", estado: "offline" },
+      { id: "f2", nome: "Canal 2", ip: "192.168.254.2", classe: "camera", estado: "online", pai_id: "n1", canal: 2 },
+      { id: "f1", nome: "Canal 1", ip: "192.168.254.1", classe: "camera", estado: "offline", pai_id: "n1", canal: 1 },
+      { id: "g1", nome: "Portão", ip: "192.168.254.1", classe: "camera", estado: "online", pai_id: "n2", canal: 1 },
+    ],
+  });
+  return store;
+}
+
+test("organograma: câmeras de gravador vêm agrupadas sob ele, depois das soltas", () => {
+  const cameras = montarOrganograma(lojaComGravador(), SEM_FILTRO).find((c) => c.slug === "camera");
+  // soltas por gravidade; depois cada gravador (por nome), filhos por gravidade e canal
+  assert.deepEqual(cameras.itens.map((i) => i.id), ["solta2", "solta", "g1", "f1", "f2"]);
+  const p = paginaDoCartao(cameras, 1);
+  assert.deepEqual(
+    p.grupos.map((g) => [g.titulo, g.itens.map((i) => i.id)]),
+    [["", ["solta2", "solta"]], ["Atrás de NVR Bloco A", ["g1"]], ["Atrás de NVR Bloco B", ["f1", "f2"]]],
+  );
+  assert.equal(new Set(p.grupos.map((g) => g.chave)).size, 3);
+  // o formato dos itens não muda (a grade antiga continua valendo)
+  assert.deepEqual(Object.keys(p.itens[0]).sort(),
+    ["estadoClasse", "estadoIcone", "estadoRotulo", "id", "nome", "peso"]);
+});
+
+test("organograma: sem filhos há um único grupo sem título", () => {
+  const p = paginaDoCartao(montarOrganograma(lojaDemo(), SEM_FILTRO).find((c) => c.slug === "camera"), 1);
+  assert.equal(p.grupos.length, 1);
+  assert.equal(p.grupos[0].titulo, "");
+  assert.equal(p.grupos[0].itens.length, p.itens.length);
+});
+
+test("organograma: gravador que não está no store aparece como 'gravador'", () => {
+  const store = lojaComGravador();
+  store.itens.delete("n2");
+  const cameras = montarOrganograma(store, SEM_FILTRO).find((c) => c.slug === "camera");
+  const titulos = paginaDoCartao(cameras, 1).grupos.map((g) => g.titulo);
+  assert.ok(titulos.includes("Atrás do gravador"), titulos);
+});

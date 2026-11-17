@@ -2,9 +2,11 @@
 // detecção de WebGL, carga preguiçosa do bundle 3D e dados prontos para os painéis da
 // Teia. Funções puras ou com dependências injetáveis (testadas no Node, sem navegador).
 // Não importa nada de js/teia/: esses fontes só existem dentro do bundle.
-import { ESTADOS, formatarLatencia, grupoDe, haQuanto, paginar, rotuloChecagem } from "./lista.js";
+import {
+  atrasDoGravador, ESTADOS, formatarLatencia, grupoDe, haQuanto, paginar, rotuloChecagem,
+} from "./lista.js";
 
-export const ABAS = ["lista", "teia", "organograma"];
+export const ABAS = ["lista", "teia", "organograma", "novos", "configuracoes"];
 
 /** Aba a partir de location.hash ("#teia" → "teia"); qualquer outra coisa → "lista". */
 export function abaDoHash(hash) {
@@ -168,6 +170,7 @@ export function fichaDoEquipamento(item, store, agora = Date.now()) {
     desdeTitulo: item.desde,
     latencia: formatarLatencia(item.latencia_ms),
     pausado: item.estado === "pausado",
+    atras: atrasDoGravador(item, store),
   };
 }
 

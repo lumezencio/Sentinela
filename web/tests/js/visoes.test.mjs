@@ -261,3 +261,23 @@ test("margensDosPaineis: painel alto à esquerda/direita, faixa em cima/embaixo"
   ]);
   assert.deepEqual(alta, { esquerda: 0, direita: 0, cima: 0, baixo: 440 });
 });
+
+// ---------- Fase 3 ----------
+test("abaDoHash: #novos e #configuracoes", () => {
+  assert.equal(abaDoHash("#novos"), "novos");
+  assert.equal(abaDoHash("#configuracoes"), "configuracoes");
+});
+
+test("fichaDoEquipamento: câmera atrás do gravador diz qual e o canal", () => {
+  const store = lojaDemo();
+  store.itens.set("nvr", { id: "nvr", nome: "NVR Bloco A", ip: "10.99.50.10", classe: "camera", estado: "online" });
+  store.itens.set("filho", {
+    id: "filho", nome: "Portão", ip: "192.168.254.1", classe: "camera", estado: "online",
+    checagem: "gravador", pai_id: "nvr", canal: 3,
+  });
+  const f = fichaDoEquipamento(store.itens.get("filho"), store);
+  assert.equal(f.atras, "Atrás do gravador NVR Bloco A, canal 3");
+  assert.equal(fichaDoEquipamento(store.itens.get("w1"), store).atras, "");
+  store.itens.delete("nvr");
+  assert.equal(fichaDoEquipamento(store.itens.get("filho"), store).atras, "Atrás do gravador, canal 3");
+});
