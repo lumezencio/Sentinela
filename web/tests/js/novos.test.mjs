@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  agruparPorGravador, cartaoDaDescoberta, cidr24, percentual, POR_PAGINA_NOVOS, rotuloOrigem,
+  agruparPorGravador, cartaoDaDescoberta, cidr24, dadosDeAprovacao, dividirLote, foiEditada, percentual, POR_PAGINA_NOVOS, rotuloOrigem,
   sinaisLegiveis, textoSeguro,
 } from "../../src/js/novos.js";
 
@@ -176,4 +176,31 @@ test("cartaoDaDescoberta: título, meta, selos, confiança com texto e cidr do b
   const ch = cartaoDaDescoberta(desc("z", { canal: 4, gravador_fonte_id: "F", fora_das_subredes: true }), NOMES);
   assert.equal(ch.canalRotulo, "Canal 4");
   assert.equal(ch.fora, false);
+});
+
+test("dividirLote: linhas com classe ou nome editados vão uma a uma, com os dados da edição", () => {
+  const a = desc("a", { classe_sugerida: null, nome_sugerido: "cam-a" });
+  const b = desc("b", { classe_sugerida: "camera", nome_sugerido: "cam-b" });
+  const c = desc("c", { classe_sugerida: "camera", nome_sugerido: "cam-c" });
+  const d = desc("d", { classe_sugerida: "iot" });
+  const edicoes = new Map([
+    ["a", { classe: "camera" }], // Desconhecido → Câmeras
+    ["b", { classe: "camera", nome: "cam-b" }], // mexeu mas voltou ao sugerido: sem edição
+    ["c", { nome: "  Portão Norte " }], // só o nome
+  ]);
+  const r = dividirLote(["a", "b", "c", "d", "sumiu"], [a, b, c, d], edicoes);
+  assert.deepEqual(r.individuais, [
+    { id: "a", dados: { classe: "camera" } },
+    { id: "c", dados: { classe: "camera", nome: "Portão Norte" } },
+  ]);
+  assert.deepEqual(r.lote, ["b", "d"]);
+  assert.deepEqual(dividirLote(["d"], [d], new Map()), { individuais: [], lote: ["d"] });
+});
+
+test("dadosDeAprovacao/foiEditada: padrão é a classe sugerida (ou desconhecido) sem nome", () => {
+  const x = desc("x", { classe_sugerida: null, nome_sugerido: "n" });
+  assert.deepEqual(dadosDeAprovacao(x, undefined), { classe: "desconhecido" });
+  assert.equal(foiEditada(x, undefined), false);
+  assert.equal(foiEditada(x, { classe: "desconhecido", nome: "n" }), false);
+  assert.equal(foiEditada(x, { nome: "outro" }), true);
 });

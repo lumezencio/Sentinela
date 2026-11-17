@@ -1101,6 +1101,37 @@ def test_novos_lote(page: Page, alvo: Alvo) -> None:
     demo_de_volta(page)
 
 
+def test_novos_lote_respeita_classe_editada(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_novos(page)
+    editada, padrao = "desktop-financeiro", "brn3c2b1a"
+    sugerida = api_json(page, "GET", "/descobertas?status=pendente&limit=100")["dados"]["itens"]
+    classe_padrao = next(d["classe_sugerida"] for d in sugerida if d["nome_sugerido"] == padrao)
+    cartao = cartao_novo(secao, editada)
+    cartao.get_by_label("Classe").select_option(label="Servidores")
+    for nome in (editada, padrao):
+        cartao_novo(secao, nome).get_by_role("checkbox", name=f"Selecionar {nome}").check()
+    try:
+        secao.locator(".nv-lote").get_by_role("button", name="Aprovar selecionadas").click()
+        expect(secao.locator("#novos-aviso")).to_have_text("2 aprovadas.")
+        for nome in (editada, padrao):
+            expect(cartao_novo(secao, nome)).to_have_count(0)
+        classes = {}
+        for nome in (editada, padrao):
+            itens = api_json(page, "GET", f"/equipamentos?q={nome}&limit=10")["dados"]["itens"]
+            assert len(itens) == 1, itens
+            classes[nome] = itens[0]["classe"]
+        # a classe escolhida na linha vale no lote; a outra fica com a sugerida
+        assert classes[editada] == "servidor", classes
+        assert classes[padrao] == (classe_padrao or "desconhecido"), classes
+        assert erros == [], erros
+    finally:
+        for nome in (editada, padrao):
+            apagar_equipamentos(page, ids_por_busca(page, nome))
+    demo_de_volta(page)
+
+
 def test_novos_visualizador_so_leitura(page: Page, alvo: Alvo) -> None:
     if not alvo.login_leitor:
         pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")

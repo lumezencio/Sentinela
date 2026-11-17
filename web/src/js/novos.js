@@ -158,6 +158,42 @@ export function cartaoDaDescoberta(d, nomes = {}) {
   };
 }
 
+/**
+ * Corpo do POST /aprovar a partir da edição da linha: a classe escolhida (ou a sugerida) e
+ * o nome só se o admin digitou um diferente do sugerido.
+ */
+export function dadosDeAprovacao(d, edicao) {
+  const e = edicao || {};
+  const dados = { classe: e.classe || d.classe_sugerida || "desconhecido" };
+  const nome = typeof e.nome === "string" ? e.nome.trim() : "";
+  if (nome && nome !== (d.nome_sugerido || "")) dados.nome = nome;
+  return dados;
+}
+
+/** A linha foi editada (classe diferente da sugerida ou nome novo)? */
+export function foiEditada(d, edicao) {
+  const dados = dadosDeAprovacao(d, edicao);
+  return dados.classe !== (d.classe_sugerida || "desconhecido") || "nome" in dados;
+}
+
+/**
+ * Divide a seleção do lote: linhas editadas vão uma a uma (POST /aprovar com classe/nome,
+ * que o /aprovar-lote não aceita); as demais vão juntas no lote. Ids fora da lista saem.
+ */
+export function dividirLote(ids, descobertas, edicoes) {
+  const porId = new Map((descobertas || []).map((d) => [d.id, d]));
+  const individuais = [];
+  const lote = [];
+  for (const id of ids) {
+    const d = porId.get(id);
+    if (!d) continue;
+    const e = edicoes && edicoes.get(id);
+    if (foiEditada(d, e)) individuais.push({ id, dados: dadosDeAprovacao(d, e) });
+    else lote.push(id);
+  }
+  return { individuais, lote };
+}
+
 const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 
 /** Estado e métodos da aba Novos; `store` é o mesmo da lista (nomes de classes e gravadores). */
@@ -442,11 +478,7 @@ export function novosDoPainel(store) {
     async aprovarNovo(id) {
       const d = lista.find((x) => x.id === id);
       if (!this.admin || !d || ocupados.has(id)) return;
-      const e = edicoes.get(id) || {};
-      const classe = e.classe || d.classe_sugerida || "desconhecido";
-      const dados = { classe };
-      const nome = typeof e.nome === "string" ? e.nome.trim() : "";
-      if (nome && nome !== (d.nome_sugerido || "")) dados.nome = nome;
+      const dados = dadosDeAprovacao(d, edicoes.get(id));
       const r = await this.acaoNovo(id, () => api.aprovarDescoberta(id, dados));
       if (!r) return;
       const posicao = this.posicaoNaTela(id);
@@ -545,25 +577,42 @@ export function novosDoPainel(store) {
     async aprovarSelecionadas() {
       if (!this.admin || this.novosOcupado || selecao.size === 0) return;
       const ids = [...selecao].slice(0, MAX_LOTE);
+      // linhas com classe/nome editados vão uma a uma (o lote só leva ids): nada se perde
+      const { individuais, lote } = dividirLote(ids, lista, edicoes);
       this.novosOcupado = true;
       this.novosAviso = "";
       for (const id of ids) ocupados.add(id);
       this.renderizarNovos();
-      const r = await api.aprovarLote(ids);
+      const aprovadas = [];
+      const recusadas = [];
+      let falhaGeral = "";
+      for (const { id, dados } of individuais) {
+        const r = await api.aprovarDescoberta(id, dados);
+        if (r.ok) {
+          aprovadas.push(id);
+          if (r.dados && typeof r.dados.id === "string") this.inserirAprovado(r.dados);
+        } else if (r.status === 404) {
+          this.tirarDaLista(id);
+        } else {
+          recusadas.push({ id, motivo: r.erro || MSG_FALHA });
+        }
+      }
+      if (lote.length) {
+        const r = await api.aprovarLote(lote);
+        if (r.ok && r.dados) {
+          if (Array.isArray(r.dados.aprovadas)) aprovadas.push(...r.dados.aprovadas.map(String));
+          if (Array.isArray(r.dados.recusadas)) recusadas.push(...r.dados.recusadas);
+        } else {
+          falhaGeral = r.erro || MSG_FALHA;
+        }
+      }
       for (const id of ids) ocupados.delete(id);
       this.novosOcupado = false;
-      if (!r.ok || !r.dados) {
-        this.novosAviso = r.erro || MSG_FALHA;
-        this.renderizarNovos();
-        return;
-      }
-      const aprovadas = Array.isArray(r.dados.aprovadas) ? r.dados.aprovadas : [];
-      const recusadas = Array.isArray(r.dados.recusadas) ? r.dados.recusadas : [];
-      for (const id of aprovadas) this.tirarDaLista(String(id));
+      for (const id of aprovadas) this.tirarDaLista(id);
       for (const x of recusadas) if (x && x.id) erros.set(String(x.id), textoSeguro(x.motivo, 160));
       const partes = [plural(aprovadas.length, "aprovada", "aprovadas")];
       if (recusadas.length) partes.push(`${plural(recusadas.length, "recusada", "recusadas")} (motivo na linha)`);
-      this.novosAviso = `${partes.join(", ")}.`;
+      this.novosAviso = falhaGeral ? `${partes.join(", ")}. ${falhaGeral}` : `${partes.join(", ")}.`;
       this.renderizarNovos();
     },
 
