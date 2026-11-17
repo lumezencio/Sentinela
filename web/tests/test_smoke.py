@@ -186,8 +186,13 @@ def test_link_direto_esconde_a_lista_antes_do_alpine(page: Page, alvo: Alvo) -> 
     # sem o Alpine, só o tema.js (síncrono no <head>) e o CSS decidem o que aparece
     page.route("**/vendor/alpine-csp.min.js", lambda r: r.abort())
     page.goto("/index.html#organograma")
+    page.reload()  # mesma página só com outro hash: recarrega de verdade, agora sem o Alpine
+    expect(page.locator(".aviso-sem-alpine")).to_be_hidden()  # nada de aviso antes de 3 s
     assert page.evaluate("document.documentElement.dataset.aba") == "organograma"
     expect(page.locator("#conteudo-lista")).to_be_hidden()
+    # sem o Alpine a página não fica em branco: o aviso de falha aparece (só CSS, com atraso)
+    expect(page.locator(".aviso-sem-alpine")).to_be_visible(timeout=10_000)
+    expect(page.locator(".aviso-sem-alpine")).to_contain_text("Não foi possível carregar")
     page.goto("/index.html#lista")
     page.reload()
     assert page.evaluate("document.documentElement.dataset.aba") == "lista"
@@ -203,10 +208,24 @@ SOMA_CLS = """() => new Promise((ok) => {
 })"""
 
 
-def test_lista_sem_salto_de_layout_ao_chegar_as_linhas(browser: Browser, alvo: Alvo) -> None:
-    # janela do preset desktop do Lighthouse: as 50 linhas chegam sem empurrar a página (CLS)
+def test_link_direto_com_alpine_nao_mostra_aviso_de_falha(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    page.goto("/index.html#organograma")
+    page.reload()
+    expect(page.locator("#conteudo-organograma .org-cartao").first).to_be_visible(timeout=15_000)
+    page.wait_for_timeout(3500)  # passou o atraso do aviso
+    expect(page.locator(".aviso-sem-alpine")).to_be_hidden()
+    # o global "fence" (Fenced Frame, depreciado) que o Alpine CSP enumeraria não existe mais
+    assert page.evaluate("() => !('fence' in window)")
+
+
+@pytest.mark.parametrize("largura", [1350, 1024])
+def test_lista_sem_salto_de_layout_ao_chegar_as_linhas(
+    browser: Browser, alvo: Alvo, largura: int
+) -> None:
+    # 1350x940 é a janela do preset desktop do Lighthouse: as 50 linhas chegam sem empurrar
     contexto = browser.new_context(
-        viewport={"width": 1350, "height": 940}, ignore_https_errors=True, base_url=alvo.url
+        viewport={"width": largura, "height": 940}, ignore_https_errors=True, base_url=alvo.url
     )
     try:
         page = contexto.new_page()
@@ -218,6 +237,29 @@ def test_lista_sem_salto_de_layout_ao_chegar_as_linhas(browser: Browser, alvo: A
         # sem a reserva de altura/colunas fixas mede ~0,075 aqui; com ela ~0,014 (teto do
         # Lighthouse "bom": 0,1)
         assert cls < 0.05, cls
+    finally:
+        contexto.close()
+
+
+IPS_CORTADOS = (
+    "() => [...document.querySelectorAll('#lista .col-ip')]"
+    ".filter((c) => c.scrollWidth > c.clientWidth).map((c) => c.textContent)"
+)
+
+
+@pytest.mark.parametrize("largura", [800, 1024, 1350])
+def test_lista_nunca_corta_o_ip(browser: Browser, alvo: Alvo, largura: int) -> None:
+    contexto = browser.new_context(
+        viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo)
+        expect(linhas(page)).to_have_count(POR_PAGINA)
+        assert page.evaluate(IPS_CORTADOS) == []
+        # o nome (que pode quebrar/cortar) traz o valor completo no title
+        primeira = linhas(page).first.locator(".col-nome")
+        expect(primeira).to_have_attribute("title", primeira.inner_text())
     finally:
         contexto.close()
 
@@ -710,6 +752,34 @@ def test_abrir_no_organograma_nao_mexe_na_teia_oculta(page: Page, alvo: Alvo) ->
     x, y, z = (int(v) for v in (palco.get_attribute("data-camera") or "0,0,0").split(","))
     assert abs(y - 260) <= 5, (x, y, z)
     assert abs((x * x + z * z) ** 0.5 - 520) <= 10, (x, y, z)
+    assert erros == [], erros
+
+
+def test_fechar_equipamento_fora_da_teia_devolve_a_vista_geral(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    palco = abrir_teia(page)
+    # A aberto na Teia: câmera vai até ele e a rotação para
+    page.locator("#teia-classes").get_by_role("button", name=re.compile(r"^Gravadores")).click()
+    page.locator("#teia-classes ul.teia-equips").get_by_role("button").first.click()
+    expect(page.locator("#painel-equipamento")).to_be_visible()
+    expect(palco).to_have_attribute("data-girando", "nao")
+    # B aberto e fechado no Organograma, com a Teia oculta
+    page.get_by_role("tab", name="Organograma").click()
+    item = page.locator('#conteudo-organograma .org-cartao[data-slug="camera"] .org-item').first
+    expect(item).to_be_visible(timeout=15_000)
+    nome = item.locator(".org-nome").inner_text()
+    item.click()
+    dialogo = page.get_by_role("dialog", name=nome)
+    expect(dialogo).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(dialogo).to_be_hidden()
+    # de volta à Teia: vista geral girando, sem painel nem classe focada
+    page.get_by_role("tab", name="Teia").click()
+    expect(page.locator("#conteudo-teia")).to_be_visible()
+    expect(palco).to_have_attribute("data-girando", "sim")
+    expect(page.locator("#painel-equipamento")).to_be_hidden()
+    expect(page.locator("#teia-classes").get_by_role("heading", name="Classes")).to_be_visible()
     assert erros == [], erros
 
 

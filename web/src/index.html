@@ -61,6 +61,9 @@
 
   <!-- um único <main>: as três abas são painéis dentro dele (a ativa é a única visível) -->
   <main class="conteudo" id="conteudo">
+  <noscript><div class="casca"><p class="alerta">O Sentinela precisa de JavaScript ligado no navegador para mostrar os equipamentos.</p></div></noscript>
+  <!-- só aparece (CSS, após 3 s) num link direto para #teia/#organograma se o Alpine não subir -->
+  <div class="casca aviso-sem-alpine" x-show="falhaDeCarga"><p class="alerta" role="alert">Não foi possível carregar a interface do Sentinela. Recarregue a página; se continuar, confira a conexão com o servidor.</p></div>
   <section class="casca" id="conteudo-lista" role="tabpanel" aria-labelledby="aba-lista" :hidden="!abaLista">
     <div id="banner-conexao" class="banner" role="status" aria-live="polite" hidden :hidden="!bannerVisivel" :class="bannerErro ? 'banner-erro' : ''">
       <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span>
@@ -157,7 +160,7 @@
         <tbody>
           <template x-for="l in linhas" :key="l.id">
             <tr class="linha">
-              <td class="td-nome col-nome" x-text="l.nome"></td>
+              <td class="td-nome col-nome" :title="l.nome" x-text="l.nome"></td>
               <td class="td-estado">
                 <span :class="l.estadoClasse" :title="l.estadoDica">
                   <svg class="icone-status" aria-hidden="true"><use :href="l.estadoIcone"/></svg>

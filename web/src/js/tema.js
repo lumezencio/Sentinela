@@ -8,6 +8,15 @@
   } catch (e) {
     /* armazenamento bloqueado: segue a preferência do sistema */
   }
+  // O Alpine CSP lê todas as globais do window ao carregar; a "fence" (API Fenced Frame,
+  // depreciada) gera aviso de depreciação no navegador. O app nunca usa fenced frames:
+  // remove a global antes do Alpine (o ideal é o Alpine ignorar "fence", como já faz com
+  // "styleMedia" e "sharedStorage").
+  try {
+    delete window.fence;
+  } catch (e) {
+    /* não configurável neste navegador: segue com o aviso */
+  }
   var aba = String(window.location.hash || "").replace(/^#/, "");
   document.documentElement.dataset.aba = aba === "teia" || aba === "organograma" ? aba : "lista";
 })();

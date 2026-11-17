@@ -351,26 +351,76 @@ html[data-aba="organograma"] #conteudo-lista {
 }
 
 /* Sem salto de layout (CLS) quando as linhas chegam: a lista reserva a altura da janela (a
-   paginação já nasce fora da dobra) e as colunas têm largura fixa, independente do conteúdo */
+   paginação já nasce fora da dobra) */
 @media (min-width: 768px) {
   .painel-lista {
     min-height: calc(100vh - 300px);
   }
+}
+
+/* Colunas fixas (independem do conteúdo) só com largura de sobra; abaixo disso a tabela se
+   ajusta ao conteúdo e nada é cortado. O IP nunca corta; nome e "desde" têm title. */
+@media (min-width: 1200px) {
   .tabela {
     table-layout: fixed;
   }
-  .tabela th,
   .tabela td {
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .tabela th:nth-child(1) { width: 24%; }
-  .tabela th:nth-child(2) { width: 14%; }
-  .tabela th:nth-child(3) { width: 13%; }
-  .tabela th:nth-child(4) { width: 17%; }
-  .tabela th:nth-child(5) { width: 12%; }
-  .tabela th:nth-child(6) { width: 10%; }
-  .tabela th:nth-child(7) { width: 10%; }
+  .tabela td.td-ip {
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .tabela th:nth-child(1) {
+    width: 23%;
+  }
+  .tabela th:nth-child(2) {
+    width: 14%;
+  }
+  .tabela th:nth-child(3) {
+    width: 14%;
+  }
+  .tabela th:nth-child(4) {
+    width: 17%;
+  }
+  .tabela th:nth-child(5) {
+    width: 12%;
+  }
+  .tabela th:nth-child(6) {
+    width: 10%;
+  }
+  .tabela th:nth-child(7) {
+    width: 10%;
+  }
+}
+
+.tabela td.col-ip {
+  min-width: 16ch; /* IPv4 de 15 caracteres + folga, em fonte mono */
+  white-space: nowrap;
+}
+
+/* aviso de falha (link direto para #teia/#organograma sem o Alpine): só CSS, depois de 3 s;
+   com o Alpine rodando, x-show o esconde antes disso */
+.aviso-sem-alpine {
+  display: none;
+}
+
+html[data-aba="teia"] .aviso-sem-alpine,
+html[data-aba="organograma"] .aviso-sem-alpine {
+  display: block;
+  animation: surgir-aviso 0.3s ease 3s both;
+}
+
+@keyframes surgir-aviso {
+  from {
+    opacity: 0;
+    visibility: hidden;
+  }
+  to {
+    opacity: 1;
+    visibility: visible;
+  }
 }
 
 .ordenar {

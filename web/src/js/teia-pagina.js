@@ -46,6 +46,7 @@ export function visoesDoPainel(store) {
   return {
     aba: abaDoHash(window.location.hash),
     avisoVisao: "",
+    falhaDeCarga: false, // o aviso .aviso-sem-alpine só aparece se o Alpine não subir
     estilo: estiloSalvo(),
     estilos: ESTILOS.map((id) => ({ id, nome: NOMES_ESTILO[id] })),
     teiaCarregando: false,
@@ -330,7 +331,13 @@ export function visoesDoPainel(store) {
       focoAntesDoPainel = null;
       if (controle) {
         controle.limparSelecao();
-        if (devolverFoco && this.aba === "teia") this.$nextTick(() => controle && controle.reenquadrar());
+        if (this.aba !== "teia") {
+          // fechado fora da Teia (Organograma): ao voltar, vista geral girando, sem classe focada
+          this.classeFocada = "";
+          controle.verTudo();
+        } else if (devolverFoco) {
+          this.$nextTick(() => controle && controle.reenquadrar());
+        }
       }
       if (devolverFoco && voltar && voltar.isConnected && typeof voltar.focus === "function") {
         voltar.focus();
