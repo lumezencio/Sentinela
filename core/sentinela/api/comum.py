@@ -1,5 +1,6 @@
 """Peças comuns da API de cadastro: auditoria, validação de destino e MAC, pausa/retomada."""
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from ipaddress import IPv4Address
@@ -17,6 +18,7 @@ from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de
 from sentinela.rede.guarda import DestinoProibido, Guarda, Protocolo
 from sentinela.rede.mac import MSG_MAC, normalizar_mac
+from sentinela.seguranca.bloqueio import LimitadorIP
 
 # reexportados: a mesma causa do agendador; MAC vive em rede/mac.py (usado pela descoberta)
 __all__ = ["CAUSA_FORA", "MSG_MAC", "normalizar_mac"]
@@ -35,6 +37,23 @@ def erro(codigo: int, motivo: str) -> HTTPException:
 
 def nao_encontrado() -> HTTPException:
     return erro(status.HTTP_404_NOT_FOUND, "Não encontrado.")
+
+
+MSG_TAXA = "Muitas solicitações; aguarde um pouco."
+
+
+def limitar_taxa(request: Request, usuario: Usuario) -> None:
+    """10 por minuto por usuário nas ações que falam com a rede (testar, coletar, sondar,
+    iniciar varredura): a mesma janela deslizante do bloqueio de login (``LimitadorIP``),
+    com a chave no id do usuário. 429 com ``Retry-After`` quando estourar."""
+    limitador: LimitadorIP = request.app.state.taxa_descoberta
+    espera = limitador.reservar(f"usuario:{usuario.id}")
+    if espera:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=MSG_TAXA,
+            headers={"Retry-After": str(max(1, math.ceil(espera)))},
+        )
 
 
 def validar_destino(guarda: Guarda, ip: str, porta: int | None, checagem: str) -> str:

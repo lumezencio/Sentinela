@@ -10,7 +10,19 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from sentinela.api import auth, classes, equipamentos, importacao, saude, subredes, ws
+from sentinela.api import (
+    auth,
+    classes,
+    config_descoberta,
+    descobertas,
+    equipamentos,
+    fontes,
+    importacao,
+    saude,
+    subredes,
+    varredura,
+    ws,
+)
 from sentinela.api.deps import verificar_csrf
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
@@ -260,11 +272,18 @@ def criar_app(
     app.state.config_ws = ws.ConfigWs()
     app.state.falhas_ip = LimitadorIP(relogio)
     app.state.falhas_fantasma = BloqueioFantasma(relogio)
+    # testar/coletar/sondar/varredura: 10 por minuto por usuário (mesma janela do login)
+    app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
+    app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
     app.include_router(subredes.router)
     app.include_router(classes.router)
     app.include_router(importacao.router)  # antes de /equipamentos/{id}
     app.include_router(equipamentos.router)
+    app.include_router(fontes.router)
+    app.include_router(descobertas.router)
+    app.include_router(varredura.router)
+    app.include_router(config_descoberta.router)
     app.include_router(ws.router)
     return app
