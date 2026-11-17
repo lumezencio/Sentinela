@@ -76,8 +76,9 @@ versao_ok "$V_COMPOSE" "$MIN_COMPOSE" ||
 # ---------------------------------------------------------------- .env
 criar_env() {
   [[ -f .env.example ]] || falhar ".env.example não encontrado"
-  local chave tmp
+  local chave chave_cred tmp
   chave="$(openssl rand -hex 32)"
+  chave_cred="$(openssl rand -hex 32)"
   tmp="$(mktemp .env.XXXXXX)"
   # se algo falhar no meio, não sobra um .env.XXXXXX com a chave
   trap 'rm -f "$tmp"' EXIT
@@ -85,6 +86,7 @@ criar_env() {
   while IFS= read -r linha || [[ -n "$linha" ]]; do
     case "$linha" in
       SENTINELA_CHAVE_SESSAO=*) linha="SENTINELA_CHAVE_SESSAO=$chave" ;;
+      SENTINELA_CHAVE_CREDENCIAIS=*) linha="SENTINELA_CHAVE_CREDENCIAIS=$chave_cred" ;;
       SENTINELA_PORTA_HTTPS=*) linha="SENTINELA_PORTA_HTTPS=${SENTINELA_PORTA_HTTPS:-443}" ;;
       SENTINELA_PORTA_HTTP=*) linha="SENTINELA_PORTA_HTTP=${SENTINELA_PORTA_HTTP:-80}" ;;
     esac
@@ -92,7 +94,26 @@ criar_env() {
   done <.env.example >"$tmp"
   mv "$tmp" .env
   trap - EXIT
-  echo "[ok] .env criado com uma chave de sessão nova"
+  echo "[ok] .env criado com uma chave de sessão e uma de credenciais novas"
+}
+
+# Garante SENTINELA_CHAVE_CREDENCIAIS num .env já existente (instalações anteriores à
+# descoberta automática): só gera se ausente ou vazia; nunca troca uma chave existente
+# (trocá-la tornaria ilegíveis as credenciais já cifradas).
+garantir_chave_credenciais() {
+  grep -qE '^SENTINELA_CHAVE_CREDENCIAIS=.+' .env && return 0
+  local chave tmp
+  chave="$(openssl rand -hex 32)"
+  tmp="$(mktemp .env.XXXXXX)"
+  trap 'rm -f "$tmp"' EXIT
+  chmod 600 "$tmp"
+  {
+    grep -vE '^SENTINELA_CHAVE_CREDENCIAIS=' .env || true
+    printf 'SENTINELA_CHAVE_CREDENCIAIS=%s\n' "$chave"
+  } >"$tmp"
+  mv "$tmp" .env
+  trap - EXIT
+  echo "[ok] SENTINELA_CHAVE_CREDENCIAIS gerada no .env (cifra as credenciais das fontes)"
 }
 
 if [[ -f .env ]]; then
@@ -101,6 +122,7 @@ else
   criar_env
 fi
 chmod 600 .env
+garantir_chave_credenciais
 
 # valor efetivo de uma variável: ambiente do shell > .env > padrão
 valor_env() {
@@ -114,6 +136,7 @@ valor_env() {
 }
 PORTA_HTTPS="$(valor_env SENTINELA_PORTA_HTTPS 443)"
 grep -qE '^SENTINELA_CHAVE_SESSAO=.+' .env || falhar "SENTINELA_CHAVE_SESSAO vazia no .env"
+grep -qE '^SENTINELA_CHAVE_CREDENCIAIS=.+' .env || falhar "SENTINELA_CHAVE_CREDENCIAIS vazia no .env"
 
 # ---------------------------------------------------------------- certificados
 ip_valido() {

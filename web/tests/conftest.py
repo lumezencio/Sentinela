@@ -157,6 +157,7 @@ class ServidorLocal:
             ambiente="desenvolvimento",
             banco_url=self._banco_url,
             chave_sessao="chave-do-smoke-nao-secreta",  # noqa: S106 - só teste
+            chave_credenciais=secrets.token_hex(32),
             demo=True,
         )
         app = criar_app(settings)

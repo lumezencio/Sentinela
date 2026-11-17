@@ -1,3 +1,4 @@
+import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Protocol
@@ -24,6 +25,7 @@ def settings(tmp_path: Path) -> Settings:
         ambiente="teste",
         banco_url=f"sqlite+aiosqlite:///{tmp_path / 'teste.db'}",
         chave_sessao="chave-de-teste-nao-secreta",
+        chave_credenciais=secrets.token_hex(32),
     )
 
 

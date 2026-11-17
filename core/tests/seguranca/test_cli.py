@@ -1,3 +1,4 @@
+import secrets
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
@@ -38,6 +39,7 @@ def _settings(tmp_path: Path, ambiente: Literal["teste", "producao"]) -> Setting
         ambiente=ambiente,
         banco_url=f"sqlite+aiosqlite:///{tmp_path / 'cli.db'}",
         chave_sessao="x",
+        chave_credenciais=secrets.token_hex(32),
     )
 
 
