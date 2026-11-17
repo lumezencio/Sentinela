@@ -272,3 +272,51 @@ async def test_sem_titulo_se_nenhuma_porta_http_aberta(monkeypatch: pytest.Monke
     monkeypatch.setattr(sondagem, "_buscar_titulo", espia)
     assert await _sondar() == ({554}, None)
     assert chamadas == []
+
+
+async def test_location_hostil_nao_descarta_as_portas_abertas(
+    so_porta: Callable[[int], None],
+) -> None:
+    async with ServidorHttp() as srv:
+        # URL inválida no Location (httpx.InvalidURL não é HTTPError)
+        srv.resposta = (
+            b"HTTP/1.1 302 Found\r\nLocation: http://[::1\r\n"
+            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        so_porta(srv.porta)
+        portas, titulo = await _sondar()
+    assert portas == {srv.porta}
+    assert titulo is None
+
+
+async def test_corpo_comprimido_e_recusado_sem_descomprimir(
+    so_porta: Callable[[int], None],
+) -> None:
+    import gzip
+
+    corpo = gzip.compress(b"<html><head><title>zipado</title></head></html>")
+    resposta = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Encoding: gzip\r\n"
+        b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(corpo)
+    ) + corpo
+    async with ServidorHttp(resposta) as srv:
+        so_porta(srv.porta)
+        portas, titulo = await _sondar()
+    assert portas == {srv.porta}
+    assert titulo is None  # Content-Encoding diferente de identity: nada é lido
+
+
+async def test_invalidurl_no_titulo_nao_descarta_as_portas(
+    so_porta: Callable[[int], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``httpx.InvalidURL`` (não é ``HTTPError``) vinda do título é só um sinal perdido."""
+
+    async def invalida(*a: Any, **k: Any) -> str | None:
+        raise sondagem.httpx.InvalidURL("Invalid port")
+
+    monkeypatch.setattr(sondagem, "_buscar_titulo", invalida)
+    async with ServidorHttp(_html("x")) as srv:
+        so_porta(srv.porta)
+        portas, titulo = await _sondar()
+    assert portas == {srv.porta}
+    assert titulo is None

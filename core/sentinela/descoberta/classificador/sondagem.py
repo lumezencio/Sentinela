@@ -6,7 +6,8 @@ clique "Sondar" do admin, ou aparelho já aprovado): classificar um achado pende
 - **Portas**: só a lista fixa ``PORTAS``; TCP connect (abre e fecha, nenhum dado enviado), uma
   conexão por vez por IP, 1 s de limite, uma ficha de prioridade baixa por tentativa.
 - **Título HTTP**: só se 80/443/8080 estiverem abertas; ``GET /`` com 2 s de limite total, no
-  máximo 16 KB lidos, título limpo de controles e com até 120 caracteres.
+  máximo 16 KB lidos crus (``Content-Encoding`` diferente de ``identity`` é recusado, nada é
+  descomprimido), título limpo de controles e com até 120 caracteres.
 - **Redirecionamentos**: só dentro do mesmo IP e porta, até ``MAX_SALTOS``; outro host nunca é
   contatado.
 - **HTTPS não fixa certificado**: é uma sondagem de um aparelho ainda não confiado; a
@@ -72,11 +73,15 @@ def _extrair_titulo(corpo: bytes) -> str | None:
     return limpar(texto, LIMITE_TITULO)
 
 
-async def _ler_limitado(resposta: httpx.Response) -> bytes:
-    """Lê no máximo ``LIMITE_BYTES`` e abandona o resto do corpo."""
+async def _ler_limitado(resposta: httpx.Response) -> bytes | None:
+    """Lê no máximo ``LIMITE_BYTES`` crus (sem descompressão) e abandona o resto do corpo.
+    Corpo com ``Content-Encoding`` diferente de ``identity`` é recusado (None): pedimos
+    ``identity`` e não descomprimimos nada vindo de um aparelho não confiado."""
+    if resposta.headers.get("content-encoding", "identity").strip().lower() != "identity":
+        return None
     pedacos: list[bytes] = []
     total = 0
-    async for pedaco in resposta.aiter_bytes():
+    async for pedaco in resposta.aiter_raw():
         pedacos.append(pedaco)
         total += len(pedaco)
         if total >= LIMITE_BYTES:
@@ -114,7 +119,8 @@ async def _buscar_titulo(
                         return None  # outro host/porta/protocolo: nunca contatado
                     url = str(destino)
                     continue
-                return _extrair_titulo(await _ler_limitado(resposta))
+                corpo = await _ler_limitado(resposta)
+                return _extrair_titulo(corpo) if corpo is not None else None
     return None
 
 
@@ -126,7 +132,7 @@ async def _titulo(ip: str, abertas: set[int], guarda: Guarda, limitador: Limitad
             continue
         try:
             titulo = await _buscar_titulo(ip, porta, esquema, guarda, limitador)
-        except (TimeoutError, httpx.HTTPError, ValueError, DestinoProibido):
+        except (TimeoutError, httpx.HTTPError, httpx.InvalidURL, ValueError, DestinoProibido):
             continue  # título é só um sinal a mais: falha aqui não derruba a sondagem
         if titulo:
             return titulo
