@@ -1332,6 +1332,55 @@ def test_configuracoes_cria_fonte_testa_e_coleta(page: Page, alvo: Alvo) -> None
         expect(cartao).to_have_count(0)
 
 
+def test_configuracoes_lista_atrasada_nao_apaga_fonte_nova(page: Page, alvo: Alvo) -> None:
+    """Flaky de ``test_configuracoes_cria_fonte_testa_e_coleta``: um GET /fontes disparado por
+    um "coletada" (a demo coleta sem parar) antes da criação e que responde DEPOIS dela
+    sobrescrevia a lista e fazia a fonte nova sumir do painel."""
+    from conftest import PonteWs
+
+    erros = vigiar_console(page)
+    ponte = PonteWs(page)
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    expect(secao.locator(".cfg-fonte").first).to_be_visible(timeout=15_000)
+    seguradas: list[Any] = []
+
+    def segurar(rota: Route) -> None:
+        if rota.request.method != "GET" or seguradas:
+            rota.continue_()
+            return
+        seguradas.append((rota, rota.fetch()))  # resposta de ANTES da criação, entregue depois
+
+    page.route(re.compile(r".*/api/v1/fontes$"), segurar)
+    ponte.injetar({"tipo": "fonte", "acao": "coletada", "id": "qualquer"})
+    page.wait_for_timeout(300)  # o GET antigo já foi ao servidor e voltou, preso na rota
+    assert len(seguradas) == 1
+    secao.get_by_role("button", name="Nova fonte").click()
+    dialogo = page.get_by_role("dialog", name="Nova fonte")
+    dialogo.get_by_label("Tipo").select_option("mikrotik")
+    dialogo.get_by_label("Nome").fill("Roteador Atrasado")
+    dialogo.get_by_label("Endereço IP").fill("10.99.40.22")
+    dialogo.get_by_label("Usuário").fill("api-smoke")
+    dialogo.get_by_label("Senha", exact=True).fill(SENHA_SMOKE)
+    dialogo.get_by_role("button", name="Criar fonte").click()
+    cartao = secao.locator(".cfg-fonte").filter(has_text="Roteador Atrasado")
+    try:
+        expect(cartao).to_have_count(1)
+        rota, resposta = seguradas[0]
+        rota.fulfill(response=resposta)  # a lista velha chega depois da nova
+        page.wait_for_timeout(500)
+        assert cartao.count() == 1, "a lista atrasada apagou a fonte recém-criada"
+        assert erros == [], erros
+    finally:
+        page.unroute(re.compile(r".*/api/v1/fontes$"))
+        cartao.get_by_role("button", name="Remover Roteador Atrasado").click()
+        confirmar = page.get_by_role("dialog", name="Remover Roteador Atrasado?")
+        expect(confirmar).to_be_visible()
+        confirmar.get_by_role("button", name="Remover").click()
+        expect(cartao).to_have_count(0)
+
+
 def test_configuracoes_confiar_certificado_e_orientacao_r5(page: Page, alvo: Alvo) -> None:
     erros = vigiar_console(page)
     entrar(page, alvo)

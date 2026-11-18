@@ -248,6 +248,7 @@ export function configuracoesDoPainel() {
   let fontes = []; // da API, fora da reatividade
   const testes = new Map(); // id -> resultado do último teste nesta tela
   const ocupadas = new Set();
+  let pedidoFontes = 0; // número do último GET /fontes pedido (ver carregarFontes)
   const recusas = new Map(); // id -> erro da última ação no cartão
   let carregada = false;
   let gravarLimiar = 0;
@@ -296,7 +297,11 @@ export function configuracoesDoPainel() {
 
     // ---------- fontes ----------
     async carregarFontes() {
+      // uma lista pedida ANTES de outra (ex.: disparada por "coletada") pode chegar depois dela
+      // e apagar a fonte recém-criada: só vale a resposta do pedido mais recente
+      const pedido = ++pedidoFontes;
       const r = await api.listarFontes();
+      if (pedido !== pedidoFontes) return;
       if (!r.ok || !Array.isArray(r.dados)) {
         this.cfgErro = r.erro || MSG_FALHA;
         return;
