@@ -218,7 +218,15 @@ class Config(Base):
 
 
 class Alerta(Base):
-    """Alerta de queda/volta/instabilidade/falha de fonte, com o estado do envio ao Telegram."""
+    """Alerta de queda/volta/instabilidade/falha de fonte, com o estado do envio ao Telegram.
+
+    Caiu e voltou em menos de 2 min (``breve``): se a queda ainda não foi enviada, fecha com
+    ``envio='pendente'`` e sai uma mensagem só ("caiu e voltou"). Se já foi enviada, o
+    agrupador marca ``breve``, preenche ``fechado_em`` e devolve ``envio`` a ``'pendente'``
+    mantendo ``telegram_msgs`` (não vazio): o despachante trata ``pendente`` + ``breve`` +
+    ``telegram_msgs`` como edição (``editMessageText``) da mensagem já enviada, sem alerta
+    ``volta``. Volta depois de 2 min de uma queda enviada gera um alerta ``volta``.
+    """
 
     __tablename__ = "alerta"
     __table_args__ = (
@@ -241,7 +249,7 @@ class Alerta(Base):
     voltaram: Mapped[list[str]] = mapped_column(JSON, default=list)
     aberto_em: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
     fechado_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None, index=True)
-    # caiu e voltou em menos de 2 min antes do envio
+    # caiu e voltou em menos de 2 min (enviada: volta a pendente para edição; ver docstring)
     breve: Mapped[bool] = mapped_column(Boolean, default=False)
     # o alerta de volta aponta a queda
     alerta_origem_id: Mapped[int | None] = mapped_column(

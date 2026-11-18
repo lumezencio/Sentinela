@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from sentinela.alertas.agrupador import Agrupador
 from sentinela.alertas.silencios import Silencios
 from sentinela.api import (
     auth,
@@ -114,6 +115,9 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     app.state.silencios = Silencios(
         app.state.sessoes, monitor.agendador, monitor.barramento, app.state.relogio, agora_utc
     )
+    app.state.agrupador = Agrupador(
+        app.state.sessoes, monitor.barramento, app.state.silencios, app.state.relogio, agora_utc
+    )
     _montar_descoberta(app, settings, monitor)
 
 
@@ -161,8 +165,9 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
 @asynccontextmanager
 async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     """Inicia a limpeza diária, a descarga periódica, a descoberta (orquestrador e leitura de
-    canais) e ``agendador.executar``; no shutdown, cancela a varredura e
-    encerra e espera, nessa ordem (o agendador cancelado drena as transições e descarrega).
+    canais), os silêncios, o agrupador de alertas e ``agendador.executar``; no shutdown,
+    cancela a varredura e encerra e espera, nessa ordem (o agendador cancelado drena as
+    transições e descarrega).
     """
     tarefas: list[asyncio.Task[None]] = []
     app.state.tarefas_monitor = tarefas
@@ -190,6 +195,10 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         tarefas.append(
             asyncio.create_task(app.state.silencios.executar(), name="sentinela-silencios")
         )
+        # antes do agendador: assina o barramento antes da primeira transição
+        tarefas.append(
+            asyncio.create_task(app.state.agrupador.executar(), name="sentinela-alertas")
+        )
         # o agendador por último: os laços da descoberta o usam e param antes dele
         tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
@@ -203,7 +212,7 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
         await app.state.orquestrador.encerrar()
         for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, descoberta,
-            # leitura de canais, silêncios e agendador
+            # leitura de canais, silêncios, alertas e agendador
             tarefa.cancel()
             # falha já registrada por ``_laco_terminou``; aqui só espera o fim
             await asyncio.gather(tarefa, return_exceptions=True)

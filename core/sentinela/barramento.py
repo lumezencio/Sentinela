@@ -40,8 +40,9 @@ class Barramento:
             fila.put_nowait(msg)
 
     @asynccontextmanager
-    async def assinar(self) -> AsyncIterator[AsyncIterator[Mensagem]]:
-        fila: asyncio.Queue[Mensagem] = asyncio.Queue(maxsize=self._tamanho_fila)
+    async def assinar(self, tamanho: int | None = None) -> AsyncIterator[AsyncIterator[Mensagem]]:
+        """``tamanho`` próprio para quem não pode perder mensagens em rajada (o agrupador)."""
+        fila: asyncio.Queue[Mensagem] = asyncio.Queue(maxsize=tamanho or self._tamanho_fila)
         self._assinantes.add(fila)
         try:
             yield _Fluxo(fila)
