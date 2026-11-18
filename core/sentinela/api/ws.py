@@ -2,8 +2,8 @@
 
 Protocolo (servidor → cliente, JSON):
 
-- ``{"tipo": "snapshot", "classes": [...], "equipamentos": [...], "pendentes": n}`` logo
-  após conectar (``pendentes``: descobertas na fila);
+- ``{"tipo": "snapshot", "classes": [...], "equipamentos": [...], "pendentes": n,
+  "alertas_abertos": n}`` logo após conectar (``pendentes``: descobertas na fila);
 - ``{"tipo": "estado", "id", "estado", "desde"}`` a cada transição, com ``"causa"`` nas
   forçadas; ``estado`` pode ser ``inalcancavel`` (caiu junto com o pai, causa
   ``"pai:<id do pai>"``, Fase 4) e a liberação volta a ``desconhecido``;
@@ -19,6 +19,10 @@ Protocolo (servidor → cliente, JSON):
   "id"}`` se ele já não existe;
 - ``{"tipo": "silencio", "acao": "criado"|"encerrado", "id"}`` quando um silêncio ou uma
   manutenção começa ou termina (Fase 4);
+- ``{"tipo": "alerta", "acao": "aberto"|"atualizado"|"fechado"|"removido", "alerta":
+  AlertaSaida | null, "abertos": n}`` com a linha no formato de ``GET /alertas`` (``removido``
+  ou alerta já apagado: ``alerta`` nulo e ``id`` no topo); ``snapshot.alertas_abertos`` traz
+  o total ao conectar (Fase 4);
 - ``{"tipo": "ping"}`` a cada 25 s (mantém proxies e detecta conexão morta).
 
 Fechamentos: ``4403`` origem diferente do host, ``4401`` sem sessão válida (no handshake ou
@@ -38,10 +42,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinela.api.alertas import contar_abertos, saida_alerta
 from sentinela.api.deps import usuario_do_cookie
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.config import Settings
-from sentinela.db.modelos import Classe, Descoberta, Equipamento, Usuario
+from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento, Usuario
 from sentinela.monitor.agendador import Agendador
 from sentinela.relogio import Relogio
 
@@ -53,7 +58,7 @@ FECHA_NAO_AUTENTICADO = 4401
 FECHA_ORIGEM_PROIBIDA = 4403
 FECHA_CLIENTE_LENTO = 1013  # "try again later"
 FECHA_ERRO_INTERNO = 1011
-# ``alvo_recusado`` é interno; ``equipamento`` é enriquecido com a linha do banco
+# ``alvo_recusado`` é interno; ``equipamento`` e ``alerta`` são enriquecidos com a linha do banco
 TIPOS_REPASSADOS = frozenset(
     {"estado", "latencias", "descoberta", "pendentes", "varredura", "fonte", "silencio"}
 )
@@ -150,6 +155,27 @@ async def mensagem_equipamento(db: AsyncSession, acao: str, id: str) -> dict[str
     return {"tipo": "equipamento", "acao": acao, "equipamento": item_equipamento(eq, slug)}
 
 
+async def mensagem_alerta(db: AsyncSession, dados: dict[str, Any]) -> dict[str, Any]:
+    """Mensagem ``alerta`` do barramento com a linha do banco; apagado (ou ``removido``):
+    ``alerta`` nulo."""
+    id = dados["id"]
+    acao = str(dados.get("acao"))
+    alerta = None if acao == "removido" else await db.get(Alerta, id)
+    if alerta is None:
+        acao = "removido"
+    return {
+        "tipo": "alerta",
+        "acao": acao,
+        "id": id,
+        "alerta": None
+        if alerta is None
+        else (await saida_alerta(db, alerta)).model_dump(mode="json"),
+        "abertos": dados["abertos"]
+        if isinstance(dados.get("abertos"), int)
+        else await contar_abertos(db),
+    }
+
+
 async def montar_snapshot(db: AsyncSession) -> dict[str, Any]:
     """Classes, equipamentos com os campos que a tela usa (sem MAC nem fabricante) e o total
     de descobertas pendentes."""
@@ -180,6 +206,7 @@ async def montar_snapshot(db: AsyncSession) -> dict[str, Any]:
             )
             or 0
         ),
+        "alertas_abertos": await contar_abertos(db),
     }
 
 
@@ -243,6 +270,9 @@ class _Conexao:
                 acao = "criado" if m.dados.get("acao") == "criado" else "atualizado"
                 async with self._sessoes() as db:
                     self.enfileirar(await mensagem_equipamento(db, acao, m.dados["id"]))
+            elif m.tipo == "alerta" and isinstance(m.dados.get("id"), int):
+                async with self._sessoes() as db:
+                    self.enfileirar(await mensagem_alerta(db, m.dados))
 
     async def pingar(self) -> None:
         while True:

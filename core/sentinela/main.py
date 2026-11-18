@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from sentinela.alertas.agrupador import Agrupador
 from sentinela.alertas.silencios import Silencios
 from sentinela.api import (
+    alertas,
     auth,
     classes,
     config_descoberta,
@@ -302,6 +303,7 @@ def criar_app(
     app.include_router(descobertas.router)
     app.include_router(varredura.router)
     app.include_router(silencios.router)
+    app.include_router(alertas.router)
     app.include_router(config_descoberta.router)
     app.include_router(ws.router)
     return app

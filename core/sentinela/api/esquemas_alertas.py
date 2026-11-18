@@ -39,3 +39,38 @@ class SilencioSaida(BaseModel):
     motivo: str | None
     criado_por: str | None
     pausados: int
+
+
+class AlertaSaida(BaseModel):
+    id: int
+    tipo: str
+    texto: str
+    equipamento_id: str | None
+    equipamento_nome: str | None
+    classe: str | None
+    afetados_total: int
+    aberto_em: datetime
+    fechado_em: datetime | None
+    breve: bool
+    reconhecido_por: str | None
+    reconhecido_em: datetime | None
+    silenciado: bool
+    envio: str
+
+
+class AfetadoSaida(BaseModel):
+    id: str
+    nome: str
+    classe: str
+    estado: str
+
+
+class AlertaDetalhe(AlertaSaida):
+    afetados: list[AfetadoSaida]
+
+
+class PaginaAlertas(BaseModel):
+    itens: list[AlertaSaida]
+    total: int
+    pagina: int
+    por_pagina: int
