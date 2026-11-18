@@ -260,3 +260,99 @@ async def test_cobertura_inclui_ancestrais(app: FastAPI, cliente_admin: httpx.As
     assert cob.cobre(filho, classes["camera"], [pai])
     assert not cob.cobre(filho, classes["camera"], [])
     assert cob.cobre(filho, classes["servidor"], [])
+
+
+# ---- ajustes da revisão -----------------------------------------------------------------------
+
+
+async def _eventos_de(app: FastAPI, eid: str) -> list[tuple[str, str, str | None]]:
+    async with _sessoes(app)() as db:
+        linhas = await db.execute(
+            select(Evento.de, Evento.para, Evento.causa)
+            .where(Evento.equipamento_id == eid)
+            .order_by(Evento.em, Evento.id)
+        )
+        return [(d, p, c) for d, p, c in linhas]
+
+
+async def test_recusa_de_destino_mantem_pausado_sem_retomar_e_repausar(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    registrado = await _equip(cliente_admin, 10)
+    sid = await _criar(app, _pedido(registrado))
+    antes = await _eventos_de(app, registrado)
+    sub = (await cliente_admin.get(SUBREDES)).json()[0]["id"]
+    assert (await cliente_admin.delete(f"{SUBREDES}/{sub}")).status_code == 204
+    await _servico(app).encerrar(sid, None, datetime.now(UTC))
+    novos = (await _eventos_de(app, registrado))[len(antes) :]
+    assert all(para == "pausado" for _, para, _ in novos)  # nunca saiu de pausado
+    assert not any(c == CAUSA_MANUTENCAO and para != "pausado" for _, para, c in novos)
+    assert _estado_no_agendador(app, registrado) is Estado.PAUSADO
+    assert (await _causas_de_pausa(app, registrado))[-1] == "fora_das_subredes"
+    assert await _pausado(app, registrado)
+
+
+async def test_recusa_de_destino_fora_do_agendador_tambem_fica_pausada(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    eid = await _equip(cliente_admin, 10)
+    sid = await _criar(app, _pedido(eid))
+    sub = (await cliente_admin.get(SUBREDES)).json()[0]["id"]
+    assert (await cliente_admin.delete(f"{SUBREDES}/{sub}")).status_code == 204
+    app.state.agendador.remover(eid)  # equipamento que o agendador não conhece
+    await _servico(app).encerrar(sid, None, datetime.now(UTC))
+    assert await _pausado(app, eid)
+    assert (await _causas_de_pausa(app, eid))[-1] == "fora_das_subredes"
+
+
+async def test_pausar_manual_durante_manutencao_sobrevive_ao_fim(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    eid = await _equip(cliente_admin, 10)
+    sid = await _criar(app, _pedido(eid))
+    assert (await cliente_admin.post(f"{EQUIP}/{eid}/pausar")).status_code == 200
+    assert (await _causas_de_pausa(app, eid))[-1] == "manual"
+    await _servico(app).encerrar(sid, None, datetime.now(UTC))
+    assert await _pausado(app, eid)
+
+
+async def test_encerrar_vencidos_continua_apos_falha_em_um(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = await _equip(cliente_admin, 10)
+    b = await _equip(cliente_admin, 11)
+    s1 = await _criar(app, _pedido(a, horas=1))
+    s2 = await _criar(app, _pedido(b, horas=1))
+    servico = _servico(app)
+    original = servico.encerrar
+
+    async def quebra(id: int, *args: object, **kw: object) -> Silencio | None:
+        if id == s1:
+            raise RuntimeError("falha simulada")
+        return await original(id, *args, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(servico, "encerrar", quebra)
+    assert await servico.encerrar_vencidos(datetime.now(UTC) + timedelta(hours=2)) == 1
+    assert await _pausado(app, a)
+    assert not await _pausado(app, b)
+    assert s2 != s1
+
+
+async def test_encerrar_concorrente_libera_e_audita_uma_vez(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    import asyncio
+
+    eid = await _equip(cliente_admin, 10)
+    sid = await _criar(app, _pedido(eid))
+    servico = _servico(app)
+    agora = datetime.now(UTC)
+    resultados = await asyncio.gather(
+        servico.encerrar(sid, None, agora),
+        servico.encerrar(sid, None, agora),
+        return_exceptions=True,
+    )
+    assert sum(r is None for r in resultados) == 1
+    async with _sessoes(app)() as db:
+        consulta = select(Auditoria).where(Auditoria.acao == "silencio.encerrar")
+        assert len((await db.execute(consulta)).scalars().all()) == 1

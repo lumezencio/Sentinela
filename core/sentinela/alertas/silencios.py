@@ -12,16 +12,17 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import ColumnElement, or_, select
+from sqlalchemy import ColumnElement, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.api import comum
 from sentinela.barramento import Barramento, Mensagem
-from sentinela.db.modelos import Auditoria, Equipamento, Silencio, Usuario
+from sentinela.db.modelos import Auditoria, Equipamento, Evento, Silencio, Usuario
 from sentinela.descoberta.mescla import auditar_sistema
 from sentinela.horario import amanha_8h
 from sentinela.monitor.agendador import CAUSA_FORA, Agendador, Alvo
 from sentinela.monitor.checagens import GRAVADOR
+from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de
 from sentinela.rede.guarda import DestinoProibido
 from sentinela.relogio import Relogio
@@ -186,10 +187,19 @@ class Silencios:
         ``None`` se não existe ou já está encerrado. ``usuario=None`` audita como sistema.
         """
         async with self._sessoes() as db:
-            sil = await db.get(Silencio, id)
-            if sil is None or sil.encerrado_em is not None:
+            # UPDATE guardado: só quem muda a linha de aberta para encerrada segue adiante
+            # (o laço e a API não liberam nem auditam duas vezes)
+            fechou = await db.execute(
+                update(Silencio)
+                .where(Silencio.id == id, Silencio.encerrado_em.is_(None))
+                .values(encerrado_em=agora)
+            )
+            if fechou.rowcount != 1:  # type: ignore[attr-defined]
+                await db.rollback()
                 return None
-            sil.encerrado_em = agora
+            sil = await db.get(Silencio, id, populate_existing=True)
+            if sil is None:
+                return None
             retomar, adicionar, recusados = await self._liberar(db, sil, agora)
             alvo = sil.equipamento_id or str(sil.classe_id)
             retrato = self._retrato(sil, alvo, len(retomar) + len(adicionar) + len(recusados))
@@ -208,10 +218,8 @@ class Silencios:
                 )
             await db.commit()
             await db.refresh(sil)
-        for pid in (*retomar, *recusados):
+        for pid in retomar:
             self._agendador.retomar(pid, causa=CAUSA_MANUTENCAO)
-        for pid in recusados:  # destino hoje fora das sub-redes: volta pausado, com a causa certa
-            self._agendador.pausar(pid, causa=CAUSA_FORA)
         if adicionar:
             self._agendador.adicionar_lote(adicionar)
         await self._agendador.aguardar_gravacoes()
@@ -247,11 +255,22 @@ class Silencios:
                 continue
             if not eq.pausado or await comum.ultima_causa_de_pausa(db, pid) != CAUSA_MANUTENCAO:
                 continue  # retomado ou repausado à mão depois: não é mais da manutenção
-            registrado = self._agendador.estado_de(pid) is not None
-            if registrado and eq.checagem != GRAVADOR:
+            if eq.checagem != GRAVADOR:
                 try:
                     comum.validar_destino(self._agendador.guarda, eq.ip, eq.porta, eq.checagem)
                 except DestinoProibido:
+                    # continua pausado: só a causa passa a ser ``fora_das_subredes`` (sem
+                    # retomar e repausar, sem transição de estado)
+                    db.add(
+                        Evento(
+                            equipamento_id=pid,
+                            de=Estado.PAUSADO.value,
+                            para=Estado.PAUSADO.value,
+                            em=agora,
+                            duracao_s=0.0,
+                            causa=CAUSA_FORA,
+                        )
+                    )
                     recusados.append(pid)
                     continue
             if comum.marcar_retomada(db, self._agendador, eq, CAUSA_MANUTENCAO):
@@ -273,8 +292,11 @@ class Silencios:
             )
         total = 0
         for id in ids:
-            if await self.encerrar(id, None, agora) is not None:
-                total += 1
+            try:
+                if await self.encerrar(id, None, agora) is not None:
+                    total += 1
+            except Exception:  # um silêncio com problema não pode travar os demais
+                log.exception("falha ao encerrar o silêncio %d (segue com os demais)", id)
         return total
 
     async def executar(self) -> None:

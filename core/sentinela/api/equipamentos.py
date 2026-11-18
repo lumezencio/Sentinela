@@ -22,6 +22,7 @@ from sentinela.api.esquemas_equipamentos import (
 from sentinela.db.modelos import Classe, Equipamento, Evento, Usuario
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.checagens import GRAVADOR
+from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de, registrar_no_agendador
 from sentinela.rede.guarda import Guarda
 
@@ -215,6 +216,22 @@ async def pausar(id: IdEquip, request: Request, db: SessaoDB, admin: Admin) -> E
             agendador.pausar(eq.id, causa=comum.CAUSA_MANUAL)
             await agendador.aguardar_gravacoes()
             await db.refresh(eq)
+    elif await comum.ultima_causa_de_pausa(db, eq.id) != comum.CAUSA_MANUAL:
+        # já pausado por outra causa (ex.: manutenção): a pausa manual passa a valer e
+        # sobrevive ao fim da outra causa
+        antes = retrato(eq, classe.slug)
+        db.add(
+            Evento(
+                equipamento_id=eq.id,
+                de=eq.estado,
+                para=Estado.PAUSADO.value,
+                em=agora_utc(),
+                duracao_s=0.0,
+                causa=comum.CAUSA_MANUAL,
+            )
+        )
+        auditar(db, request, admin, "equipamento.pausar", eq.id, antes, retrato(eq, classe.slug))
+        await db.commit()
     return EquipamentoSaida.de(eq, classe.slug)
 
 
