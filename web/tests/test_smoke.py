@@ -513,6 +513,11 @@ def test_teia_clicar_equipamento_mostra_historico(page: Page, alvo: Alvo) -> Non
     primeiro.click()
     painel = page.locator("#painel-equipamento")
     expect(painel).to_be_visible()
+    # Task 11b: de perto, o IP aparece dentro das esferas (canvas -> sprite; contagem no palco)
+    palco = page.locator("#conteudo-teia [data-equipamentos]")
+    if palco.get_attribute("data-nivel") != "agrupado":
+        com_ip = re.compile(r"^[1-9]\d*$")
+        expect(palco).to_have_attribute("data-rotulos-ip", com_ip, timeout=10_000)
     expect(painel.get_by_role("heading", level=2)).to_have_text(nome)
     expect(painel.get_by_role("heading", name="Últimas quedas")).to_be_visible()
     historico = painel.locator(".teia-historico li:visible, .teia-historico-vazio:visible")
@@ -874,6 +879,31 @@ def pesos_por_cartao(secao: Any) -> list[list[int]]:
         "cs => cs.map(c => [...c.querySelectorAll('.org-item')].map(i => Number(i.dataset.peso)))"
     )
     return resultado
+
+
+def test_organograma_mostra_o_ip_inteiro_em_cada_no(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_organograma(page)
+    itens = secao.locator(".org-item")
+    expect(itens.first).to_be_visible()
+    ips = secao.locator(".org-item .org-ip")
+    assert ips.count() == itens.count() > 0
+    # IP da API como texto, inteiro (sem corte nem reticências), dentro do próprio nó
+    dados = page.evaluate(
+        """() => [...document.querySelectorAll('#conteudo-organograma .org-item')].map((b) => {
+            const ip = b.querySelector('.org-ip');
+            const r = ip.getBoundingClientRect(), c = b.getBoundingClientRect();
+            return {texto: ip.textContent, cabe: ip.scrollWidth <= ip.clientWidth + 1,
+                    dentro: r.left >= c.left && r.right <= c.right + 0.5
+                        && r.bottom <= c.bottom + 0.5,
+                    filhos: ip.children.length};
+        })"""
+    )
+    for d in dados:
+        assert re.fullmatch(r"10\.99\.\d{1,3}\.\d{1,3}", d["texto"]), d
+        assert d["cabe"] and d["dentro"] and d["filhos"] == 0, d
+    assert erros == [], erros
 
 
 def test_organograma_360_pior_estado_primeiro_sem_rolagem(browser: Browser, alvo: Alvo) -> None:

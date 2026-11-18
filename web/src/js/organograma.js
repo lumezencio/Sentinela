@@ -3,7 +3,7 @@
 // cartão. Usa os mesmos filtros da Lista. Funções puras testadas no Node + o pedaço do
 // componente "painel" (mesmo `this` do Alpine). Não importa nada de js/teia/ (só existe no
 // bundle 3D): a paleta de reserva e o hash são cópias conferidas em organograma.test.mjs.
-import { ESTADOS, filtrar, grupoDe, paginar } from "./lista.js";
+import { ESTADOS, filtrar, grupoDe, paginar, textoDoIp } from "./lista.js";
 import { vinculoDoGravador } from "./dependencia.js";
 import { fichaDoEquipamento } from "./visoes.js";
 
@@ -110,6 +110,7 @@ export function paginaDoCartao(cartao, pagina) {
     return {
       id: it.id,
       nome: it.nome,
+      ip: textoDoIp(it.ip), // painel com login; o telão não usa esta função
       peso: pesoDe(it),
       estadoClasse: `estado st-${chave}`,
       estadoIcone: `#${est.icone}`,

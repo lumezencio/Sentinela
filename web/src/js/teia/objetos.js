@@ -9,6 +9,7 @@ import {
   SpriteMaterial, SRGBColorSpace, TorusGeometry,
 } from "three";
 import { aparenciaDe } from "./aparencia.js";
+import { COR_FUNDO_ROTULO, COR_TEXTO_ROTULO } from "./rotulo-ip.js";
 
 export const FUNDO = "#0e1016";
 const PRIMARIA = "#8793E8";
@@ -225,6 +226,58 @@ export function criarObjetoGrupo(acervo, opcoes) {
   const g = criarCorpo(acervo, raio / TAMANHO.equipamento, 24);
   vestirCorpo(g, acervo, estado, esmaecido);
   return g;
+}
+
+// ---------- rótulo de IP (painel com login; nunca no telão) ----------
+const LETRA_TEXTURA = 30; // px da letra no canvas: 2x o maior tamanho na tela (nítido)
+const FONTE_IP = `600 ${LETRA_TEXTURA}px ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace`;
+const PAD_X = 14, PAD_Y = 9;
+
+/**
+ * Textura do IP: pílula escura quase opaca com o texto claro centrado (só fillText: o texto
+ * vindo da rede nunca vira HTML). `userData.aspecto` = largura/altura e `userData.letra` = a
+ * fração da altura ocupada pela letra (a cena converte px de letra em escala do sprite).
+ * dispose() vira no-op (o three-forcegraph descarta o map de um nó que sai da cena); quem
+ * libera de verdade é o cache de rótulos da cena (liberarDeVerdade).
+ */
+export function criarTexturaIp(texto) {
+  const medir = novoCanvas(2, 2).getContext("2d");
+  medir.font = FONTE_IP;
+  const largura = Math.ceil(medir.measureText(texto).width) + 2 * PAD_X;
+  const altura = LETRA_TEXTURA + 2 * PAD_Y;
+  const c = novoCanvas(largura, altura), g = c.getContext("2d");
+  const r = altura / 2;
+  g.fillStyle = COR_FUNDO_ROTULO;
+  g.beginPath();
+  g.moveTo(r, 0);
+  g.lineTo(largura - r, 0);
+  g.arc(largura - r, r, r, -Math.PI / 2, Math.PI / 2);
+  g.lineTo(r, altura);
+  g.arc(r, r, r, Math.PI / 2, (Math.PI * 3) / 2);
+  g.closePath();
+  g.fill();
+  g.font = FONTE_IP;
+  g.fillStyle = COR_TEXTO_ROTULO;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(texto, largura / 2, altura / 2 + 1);
+  const t = textura(c);
+  t.userData.aspecto = largura / altura;
+  t.userData.letra = LETRA_TEXTURA / altura;
+  t.liberarDeVerdade = t.dispose.bind(t);
+  t.dispose = () => {};
+  return t;
+}
+
+/** Sprite do rótulo de IP de um equipamento: escondido até a cena decidir mostrar. */
+export function criarRotuloIp() {
+  const s = new Sprite(new SpriteMaterial({
+    transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false,
+  }));
+  s.raycast = naoRaycast; // o clique continua na esfera/halo
+  s.renderOrder = 12; // por cima da marca de estado
+  s.visible = false;
+  return s;
 }
 
 // ---------- classe ----------

@@ -1561,8 +1561,25 @@ html[data-aba="teia"] .campo {
   flex: none;
 }
 
+.org-textos {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .org-nome {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* IP do equipamento (painel com login; o telão não tem IP): mono, tabular, quebra se faltar
+   largura (IPv6) em vez de cortar */
+.org-ip {
+  color: var(--texto-suave);
+  font-family: var(--fonte-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 

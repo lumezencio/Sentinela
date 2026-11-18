@@ -6,6 +6,7 @@ import ForceGraph3D from "3d-force-graph";
 import { AmbientLight, Color, FogExp2, PointLight, Vector2, Vector3 } from "three";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { textoDoIp } from "../lista.js";
 import { aparenciaDe, corDaClasse } from "./aparencia.js";
 import {
   bloomPermitido, criarMedidorFps, decidirNivel, limparAgrupadoPorFps, quedaSustentada,
@@ -14,9 +15,13 @@ import { calcularPosicoes, ESTILOS, RAIO_CLASSES } from "./estilos.js";
 import { DIST_MAX_ROTULO, enquadrar, posicaoDoRotulo, raioEnvolvente } from "./enquadramento.js";
 import {
   brilhoParaComposicaoLinear, criarAcervo, criarAnelSelecao, criarEstrelas, criarObjetoClasse,
-  criarObjetoEquipamento, criarObjetoGrupo, criarObjetoServidor, FUNDO, OPACIDADE_ESMAECIDA,
-  TAMANHO, vestirClasse, vestirCorpo,
+  criarObjetoEquipamento, criarObjetoGrupo, criarObjetoServidor, criarRotuloIp, criarTexturaIp,
+  FUNDO, OPACIDADE_ESMAECIDA, TAMANHO, vestirClasse, vestirCorpo,
 } from "./objetos.js";
+import {
+  criarCacheRotulos, diametroProjetadoPx, opacidadeEntrada, rotuloIpVisivel, semSobreposicao,
+  tamanhoRotuloPx,
+} from "./rotulo-ip.js";
 import {
   assinaturas, CLASSE_SERVIDOR, classesDaCena, diferencaNos, raioSuperNo, resumoPorClasse,
   rotuloAbaixo, textoRotuloClasse,
@@ -36,6 +41,8 @@ const FOLGA_ROTULO_PX = { lado: 60, cima: 32 };
 // teto do recuo: abaixo de DIST_MAX_ROTULO, senão os rótulos das classes somem
 const RECUO_MAXIMO = DIST_MAX_ROTULO - 150;
 const LEITURAS_MS = 250;
+const LIMITE_TEXTURAS_IP = 300; // texturas de IP guardadas (as da tela atual nunca saem)
+const FOLGA_IP_PX = 4; // vão mínimo entre dois rótulos de IP na tela
 
 const estiloValido = (e) => (ESTILOS.includes(e) ? e : "a");
 const suave = (t) => t * t * (3 - 2 * t);
@@ -56,6 +63,12 @@ function rgba(hex, alfa) {
  * `interativo: false` desliga clique, dica e controles do usuário (a rotação lenta continua);
  * `caberNaTela: true` recua a câmera da vista geral até a Teia (com os rótulos) caber no
  * palco em qualquer proporção, e reenquadra quando o palco muda de tamanho.
+ * Painel com login: `rotulosIp: true` desenha o IP de cada equipamento sobre a esfera (canvas
+ * -> sprite, cache por IP), só quando a esfera tem >= 24 px na tela e com <= 3000 nós; o
+ * container ganha data-rotulos-ip (quantos estão visíveis). Rótulos não se sobrepõem entre si,
+ * nem aos rótulos das classes, nem às caixas de `obstaculos()` (DOMRects dos painéis por cima
+ * da cena), nem saem do palco: o que não cabe some até a câmera chegar mais perto. Padrão
+ * desligado: o telão nunca mostra IP.
  */
 export function montarTeia(container, opcoes = {}) {
   const aoClicarEquipamento = opcoes.aoClicarEquipamento || null;
@@ -66,6 +79,8 @@ export function montarTeia(container, opcoes = {}) {
   const comParticulas = opcoes.particulas !== false;
   const interativo = opcoes.interativo !== false;
   const caberNaTela = !!opcoes.caberNaTela;
+  const rotulosIp = opcoes.rotulosIp === true;
+  const obstaculosDaPagina = typeof opcoes.obstaculos === "function" ? opcoes.obstaculos : () => [];
 
   const est = {
     estilo: estiloValido(opcoes.estilo),
@@ -89,6 +104,12 @@ export function montarTeia(container, opcoes = {}) {
   const acervo = criarAcervo();
   let medidor = criarMedidorFps();
   let raf = null;
+  const texturasIp = criarCacheRotulos({
+    limite: LIMITE_TEXTURAS_IP, criar: criarTexturaIp, liberar: (t) => t.liberarDeVerdade(),
+  });
+  let quadroIp = 0;
+  let ipVisiveis = 0;
+  let obstaculosIp = []; // {x, y, l, a} em px do palco; relidos a cada LEITURAS_MS
 
   const srv = { id: "srv", tipo: "servidor", fx: 0, fy: 0, fz: 0, x: 0, y: 0, z: 0 };
   const nos = new Map(); // id -> nó de equipamento
@@ -523,6 +544,126 @@ export function montarTeia(container, opcoes = {}) {
     const geo = String(mem.geometries), tex = String(mem.textures);
     if (container.dataset.geometrias !== geo) container.dataset.geometrias = geo;
     if (container.dataset.texturas !== tex) container.dataset.texturas = tex;
+    if (rotulosIp) {
+      const ips = String(ipVisiveis);
+      if (container.dataset.rotulosIp !== ips) container.dataset.rotulosIp = ips;
+      lerObstaculosIp();
+    }
+  }
+
+  /** Painéis da página e rótulos das classes em px do palco (lidos fora do caminho por quadro). */
+  function lerObstaculosIp() {
+    const base = container.getBoundingClientRect();
+    const lista = [];
+    const juntar = (r) => {
+      if (!r || !(r.width > 0) || !(r.height > 0)) return;
+      lista.push({
+        x: r.left - base.left + r.width / 2, y: r.top - base.top + r.height / 2, l: r.width, a: r.height,
+      });
+    };
+    for (const r of rotulos.values()) if (!r.el.hidden) juntar(r.span.getBoundingClientRect());
+    let externos = [];
+    try {
+      externos = obstaculosDaPagina() || [];
+    } catch {
+      externos = [];
+    }
+    for (const r of externos) juntar(r);
+    obstaculosIp = lista;
+  }
+
+  // ---------- rótulos de IP (canvas -> sprite dentro do grupo do equipamento) ----------
+  function esconderIp(u) {
+    if (u.rotuloIp && u.rotuloIp.visible) u.rotuloIp.visible = false;
+  }
+
+  /**
+   * Por quadro, para cada equipamento: diâmetro projetado -> opacidade (some < 24 px, nada
+   * acima de 3000 nós, nada nas classes esmaecidas); só os que aparecem pedem texto/textura.
+   */
+  function atualizarRotulosIp() {
+    if (!rotulosIp) return;
+    if (est.nivel === "agrupado" || !est.store) {
+      for (const no of nos.values()) if (no.__threeObj) esconderIp(no.__threeObj.userData);
+      ipVisiveis = 0;
+      return;
+    }
+    quadroIp += 1;
+    const camera = G.camera(), cp = camera.position, altura = G.height(), largura = G.width();
+    const fov = camera.fov || 50;
+    const tan2 = (2 * Math.tan((fov * Math.PI) / 360)) / altura; // unidades por px a distância 1
+    // 1) candidatos: esfera grande o bastante, na tela, classe não esmaecida, com IP
+    const candidatos = [];
+    for (const no of nos.values()) {
+      const obj = no.__threeObj;
+      if (!obj) continue;
+      const u = obj.userData;
+      if (esmaecidoClasse(no.classe)) {
+        esconderIp(u);
+        continue;
+      }
+      const distancia = obj.position.distanceTo(cp);
+      const diametroPx = diametroProjetadoPx({
+        raio: TAMANHO.equipamento, distancia, fovGraus: fov, alturaPx: altura,
+      });
+      let ve = rotuloIpVisivel({ diametroPx, totalNos: est.total });
+      let x = 0, y = 0;
+      if (ve) {
+        // fora da tela (atrás da câmera ou além da borda): nem texto nem textura
+        vetor.copy(obj.position).project(camera);
+        if (vetor.z > 1 || Math.abs(vetor.x) > 1.2 || Math.abs(vetor.y) > 1.2) ve = false;
+        x = ((vetor.x + 1) / 2) * largura;
+        y = ((1 - vetor.y) / 2) * altura;
+      }
+      const texto = ve ? textoDoIp(est.store.itens.get(no.id)?.ip) : "";
+      if (!texto) {
+        esconderIp(u);
+        continue;
+      }
+      // prioridade: o selecionado primeiro, depois o mais perto
+      const prio = no === selecionado ? -1 : distancia;
+      candidatos.push({ obj, u, texto, distancia, diametroPx, x, y, prio });
+    }
+    candidatos.sort((a, b) => a.prio - b.prio);
+    // 2) tamanho na tela de cada um; fica de fora quem sairia do palco ou encostaria num
+    // rótulo mais prioritário, num rótulo de classe ou num painel
+    const noPalco = [];
+    for (const c of candidatos) {
+      c.tex = texturasIp.obter(c.texto, quadroIp);
+      c.alturaPx = tamanhoRotuloPx(c.diametroPx) / c.tex.userData.letra;
+      const l = c.alturaPx * c.tex.userData.aspecto, a = c.alturaPx;
+      c.caixa = { x: c.x, y: c.y, l, a };
+      const dentro = c.x - l / 2 >= FOLGA_IP_PX && c.x + l / 2 <= largura - FOLGA_IP_PX
+        && c.y - a / 2 >= FOLGA_IP_PX && c.y + a / 2 <= altura - FOLGA_IP_PX;
+      if (dentro) noPalco.push(c);
+      else esconderIp(c.u);
+    }
+    const entra = semSobreposicao(noPalco.map((c) => c.caixa), FOLGA_IP_PX, obstaculosIp);
+    const agora = performance.now();
+    let n = 0;
+    noPalco.forEach((c, i) => {
+      if (!entra[i]) {
+        esconderIp(c.u);
+        return;
+      }
+      if (!c.u.rotuloIp) {
+        c.u.rotuloIp = criarRotuloIp();
+        c.obj.add(c.u.rotuloIp);
+      }
+      const s = c.u.rotuloIp, mat = s.material;
+      if (mat.map !== c.tex) {
+        if (!mat.map) mat.needsUpdate = true; // primeira textura: o shader passa a usar map
+        mat.map = c.tex;
+      }
+      if (!s.visible) c.u.ipDesde = agora; // entrou agora: esmaece em ENTRADA_MS
+      mat.opacity = reduzido ? 1 : opacidadeEntrada(agora - c.u.ipDesde + 16);
+      // altura do sprite (mundo) para a letra ter tamanhoRotuloPx na tela
+      const alturaMundo = c.alturaPx * c.distancia * tan2;
+      s.scale.set(alturaMundo * c.tex.userData.aspecto, alturaMundo, 1);
+      s.visible = true;
+      n += 1;
+    });
+    ipVisiveis = n;
   }
 
   function trocarNivel(novo) {
@@ -836,6 +977,7 @@ export function montarTeia(container, opcoes = {}) {
     const t = agora / 1000;
     atualizarAnel(t);
     atualizarRotulos();
+    atualizarRotulosIp(); // prefers-reduced-motion não afeta
     if (reduzido) return;
     const aneis = srv.__threeObj?.userData.aneis;
     if (aneis) {
@@ -937,6 +1079,7 @@ export function montarTeia(container, opcoes = {}) {
     G.onNodeClick(null).onNodeHover(null);
     liberarObjeto(scene); // nós, links, partículas, estrelas, rótulos (compartilhados: no-op)
     acervo.liberar(); // agora sim: geometrias, materiais e texturas comuns
+    texturasIp.liberarTudo(); // texturas de IP (o dispose delas era no-op)
     G._destructor(); // esvazia o grafo (a lib descarta o que restar)
     for (const p of comp.passes) p.dispose?.();
     comp.dispose();
@@ -956,7 +1099,7 @@ export function montarTeia(container, opcoes = {}) {
     delete container.dataset.equipamentos;
     delete container.dataset.nivel;
     delete container.dataset.movimento;
-    for (const chave of ["nosGrafo", "girando", "particulas", "camera", "geometrias", "texturas"]) {
+    for (const chave of ["nosGrafo", "girando", "particulas", "camera", "geometrias", "texturas", "rotulosIp"]) {
       delete container.dataset[chave];
     }
   }

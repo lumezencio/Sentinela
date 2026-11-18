@@ -192,6 +192,10 @@ export function visoesDoPainel(store) {
           aoClicarEquipamento: (id) => this.abrirEquipamento(id),
           aoClicarClasse: (slug) => this.focarClasse(slug),
           margens: () => this.margensDaCena(),
+          rotulosIp: true, // IP dentro de cada esfera: só no painel (o telão nunca liga)
+          // os rótulos de IP não ficam por baixo dos painéis de vidro sobre a cena
+          obstaculos: () => [...document.querySelectorAll("#conteudo-teia .vidro")]
+            .map((el) => el.getBoundingClientRect()),
         });
       } catch {
         controle = null;

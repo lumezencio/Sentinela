@@ -36,7 +36,15 @@ from playwright.sync_api import Browser, Page, WebSocketRoute, expect, sync_play
 LARGURAS = (360, 390, 768, 1024, 1280, 1366, 1440, 1920)
 ALTURA = 900
 TEMAS = ("claro", "escuro")
-DESTINOS = ("alertas", "alertas-silencio", "alertas-dialogo", "configuracoes")
+DESTINOS = (
+    "alertas",
+    "alertas-silencio",
+    "alertas-dialogo",
+    "configuracoes",
+    "teia",
+    "teia-perto",
+    "organograma",
+)
 NOME_LONGO = "Switch de distribuição do bloco administrativo B, sala de telecom do 2º andar"
 NOME_EXTREMO = (
     "Gravador de vídeo do corredor central do prédio anexo, rack 3, prateleira inferior; "
@@ -88,7 +96,30 @@ def _entrar(browser: Browser, url: str, login: str, senha: str) -> dict[str, Any
         contexto.close()
 
 
+def _abrir_teia(page: Page, perto: bool) -> None:
+    """Teia na vista geral (esferas pequenas: sem IP) ou de perto (Câmeras e o 1º equipamento
+    focados: IP dentro das esferas)."""
+    page.goto("/index.html#teia")
+    palco = page.locator("#conteudo-teia [data-equipamentos]")
+    expect(palco).to_have_attribute("data-equipamentos", re.compile(r"^[1-9]"), timeout=30_000)
+    page.wait_for_timeout(3500)  # bloom/nível se decidem nos primeiros 3 s
+    if perto:
+        classes = page.locator("#teia-classes")
+        classes.get_by_role("button", name=re.compile(r"^Câmeras")).click()
+        page.wait_for_timeout(1800)
+        classes.locator(".teia-equip").first.click()
+        page.wait_for_timeout(2500)
+
+
 def _abrir(page: Page, destino: str) -> None:
+    if destino in ("teia", "teia-perto"):
+        _abrir_teia(page, destino == "teia-perto")
+        return
+    if destino == "organograma":
+        page.goto("/index.html#organograma")
+        expect(page.locator("#conteudo-organograma .org-item").first).to_be_visible(timeout=20_000)
+        page.wait_for_timeout(900)
+        return
     aba = "configuracoes" if destino == "configuracoes" else "alertas"
     page.goto(f"/index.html#{aba}")
     if aba == "alertas":
@@ -123,6 +154,8 @@ def _capturar_tela(page: Page, destino: str, saida: Path, tema: str, largura: in
         page.keyboard.press("Escape")
         return
     page.screenshot(path=f"{base}.png")
+    if destino.startswith("teia"):
+        return  # a Teia ocupa a janela: a página inteira seria igual
     # página inteira: o cabeçalho fixo sairia no meio da imagem
     page.evaluate("document.querySelector('.topo').style.position = 'static'")
     page.screenshot(path=f"{base}-pagina.png", full_page=True)
@@ -164,9 +197,15 @@ def _encerrar_silencios(page: Page, ids: list[int]) -> None:
         page.evaluate(POST_JSON, [f"/silencios/{id_}/encerrar", None])
 
 
-def capturar(url: str, login: str, senha: str, destinos: list[str], saida: Path) -> None:
+# GPU real (ANGLE/D3D11): sem ela o SwiftShader do headless fica lento e a Teia se agrupa
+ARGS_GPU = ["--use-angle=d3d11", "--enable-gpu", "--ignore-gpu-blocklist", "--enable-webgl"]
+
+
+def capturar(
+    url: str, login: str, senha: str, destinos: list[str], saida: Path, gpu: bool = False
+) -> None:
     with sync_playwright() as p:
-        navegador = p.chromium.launch()
+        navegador = p.chromium.launch(args=ARGS_GPU if gpu else [])
         try:
             estado = _entrar(navegador, url, login, senha)
             for destino in destinos:
@@ -226,6 +265,7 @@ def main() -> None:
     ap.add_argument("--local", action="store_true", help="sobe o demo do smoke e captura nele")
     ap.add_argument("--saida", type=Path, default=None, help="pasta das imagens")
     ap.add_argument("--destinos", default=",".join(DESTINOS), help=f"entre {', '.join(DESTINOS)}")
+    ap.add_argument("--gpu", action="store_true", help="Chromium com GPU real (Teia sem agrupar)")
     args = ap.parse_args()
     destinos = [d.strip() for d in args.destinos.split(",") if d.strip()]
     desconhecidos = [d for d in destinos if d not in DESTINOS]
@@ -237,7 +277,7 @@ def main() -> None:
         with tempfile.TemporaryDirectory(prefix="sentinela-capt-") as tmp:
             url, login, senha, servidor = _subir_local(Path(tmp))
             try:
-                capturar(url, login, senha, destinos, saida)
+                capturar(url, login, senha, destinos, saida, args.gpu)
             finally:
                 servidor.derrubar()
     else:
@@ -246,7 +286,7 @@ def main() -> None:
         senha = os.environ.get("SENTINELA_SMOKE_SENHA", "")
         if not (url and login and senha):
             sys.exit("informe --url (ou SENTINELA_URL_SMOKE) e SENTINELA_SMOKE_LOGIN/SENHA")
-        capturar(url, login, senha, destinos, saida)
+        capturar(url, login, senha, destinos, saida, args.gpu)
     print(f"capturas em {saida}")
 
 

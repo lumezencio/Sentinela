@@ -125,7 +125,8 @@ test("paginaDoCartao: 50 por cartão, página limitada, peso por gravidade", () 
   assert.equal(p1.itens[0].nome, "Cam 10");
   assert.equal(p1.itens[12].peso, GRAVIDADE.online);
   assert.deepEqual(Object.keys(p1.itens[0]).sort(),
-    ["estadoClasse", "estadoIcone", "estadoRotulo", "id", "nome", "peso"]);
+    ["estadoClasse", "estadoIcone", "estadoRotulo", "id", "ip", "nome", "peso"]);
+  assert.equal(p1.itens[0].ip, "10.99.1.10");
   assert.equal(p1.itens[0].estadoClasse, "estado st-offline");
   assert.equal(p1.itens[0].estadoIcone, "#i-offline");
   assert.equal(paginaDoCartao(cartao, 99).pagina, 3);
@@ -166,7 +167,7 @@ test("organograma: câmeras de gravador vêm agrupadas sob ele, depois das solta
   assert.equal(new Set(p.grupos.map((g) => g.chave)).size, 3);
   // o formato dos itens não muda (a grade antiga continua valendo)
   assert.deepEqual(Object.keys(p.itens[0]).sort(),
-    ["estadoClasse", "estadoIcone", "estadoRotulo", "id", "nome", "peso"]);
+    ["estadoClasse", "estadoIcone", "estadoRotulo", "id", "ip", "nome", "peso"]);
 });
 
 test("organograma: sem filhos há um único grupo sem título", () => {
@@ -219,4 +220,26 @@ test("organograma: dependente comum (sem canal) não vira 'Atrás do gravador'",
   const grupos = paginaDoCartao(cartao, 1).grupos;
   assert.equal(grupos.length, 1);
   assert.equal(grupos[0].titulo, "");
+});
+
+test("paginaDoCartao: IP do item como a API manda (câmera de gravador incluída), hostil vira texto", () => {
+  const store = criarStore();
+  aplicarSnapshot(store, {
+    classes: [
+      { slug: "gravador", nome: "Gravadores", cor: "#5B8DEF", ordem: 1 },
+      { slug: "camera", nome: "Câmeras", cor: "#5B8DEF", ordem: 2 },
+    ],
+    equipamentos: [
+      { id: "g", nome: "NVR A", ip: "10.99.2.1", classe: "gravador", estado: "online" },
+      { id: "k", nome: "Cam canal 3", ip: "10.99.2.1", classe: "camera", estado: "online", pai_id: "g", canal: 3 },
+      { id: "h", nome: "<b>x</b>", ip: "<script>1</script>", classe: "camera", estado: "online" },
+      { id: "z", nome: "Sem IP", ip: null, classe: "camera", estado: "online" },
+    ],
+  });
+  const cartoes = montarOrganograma(store, SEM_FILTRO);
+  const cam = paginaDoCartao(cartoes.find((c) => c.slug === "camera"), 1).itens;
+  const porId = Object.fromEntries(cam.map((q) => [q.id, q]));
+  assert.equal(porId.k.ip, "10.99.2.1");
+  assert.equal(porId.h.ip, "<script>1</script>");
+  assert.equal(porId.z.ip, "");
 });

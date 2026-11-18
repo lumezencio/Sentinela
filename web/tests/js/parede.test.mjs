@@ -173,6 +173,8 @@ test("bundle do telão: sem sintaxe posterior ao ES2017 e sem sourcemap", () => 
   assert.doesNotMatch(texto, /#[A-Za-z_$][\w$]*\s*(=|;|\(|in\b)/, "membro privado (#)");
   assert.doesNotMatch(texto, /sourceMappingURL/);
   assert.doesNotMatch(texto, /\beval\(/);
+  // escape de propriedade Unicode em regex (\p{...}) só existe a partir do Chrome 64
+  assert.doesNotMatch(texto, /\\[pP]\{/, "regex com \\p{...}");
 });
 
 test("bundle da Teia do telão: ESM ES2017 que publica window.SentinelaTeiaParede", () => {
@@ -184,6 +186,7 @@ test("bundle da Teia do telão: ESM ES2017 que publica window.SentinelaTeiaPared
   assert.doesNotMatch(texto, /createElement\(["']style["']\)/);
   assert.doesNotMatch(texto, /WebGPURenderer/);
   assert.doesNotMatch(texto, /window\.scene\s*=/);
+  assert.doesNotMatch(texto, /\\[pP]\{/, "regex com \\p{...}");
 });
 
 // APIs posteriores ao Chromium 63 (TV Tizen 5.0): o bundle do telão não pode usá-las, salvo as

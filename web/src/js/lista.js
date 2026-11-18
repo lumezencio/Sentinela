@@ -36,6 +36,22 @@ function ipNumerico(ip) {
   return partes.reduce((acc, p) => acc * 256 + (Number.parseInt(p, 10) || 0), 0);
 }
 
+// controle (C0/C1) e formatação invisível (bidi, largura zero, BOM); sem \p{...}: o bundle do
+// telão (Chromium 63) também carrega este módulo
+const CONTROLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+const IP_MAX = 45; // o mais longo IPv6 (com IPv4 embutido) tem 45 caracteres
+
+/**
+ * IP para rótulo (Teia e Organograma do painel): o texto que a API mandou, sem caracteres de
+ * controle/formatação; não-string, vazio ou longo demais para ser IP vira "" (nunca inventa
+ * nem corta). Só vai à tela como texto (canvas ou textContent/x-text).
+ */
+export function textoDoIp(ip) {
+  if (typeof ip !== "string") return "";
+  const texto = ip.replace(CONTROLE, "").trim();
+  return texto.length > IP_MAX ? "" : texto;
+}
+
 export function criarStore() {
   return {
     itens: new Map(), // id -> equipamento

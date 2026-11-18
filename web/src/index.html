@@ -430,7 +430,10 @@
                     <li>
                       <button class="org-item" type="button" :data-id="q.id" :data-peso="q.peso" :title="q.estadoRotulo" @click="abrirNoOrganograma(q.id)">
                         <span :class="q.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="q.estadoIcone"/></svg></span>
-                        <span class="org-nome" x-text="q.nome"></span>
+                        <span class="org-textos">
+                          <span class="org-nome" x-text="q.nome"></span>
+                          <span class="org-ip" x-show="q.ip" x-text="q.ip"></span>
+                        </span>
                         <span class="so-leitor" x-text="q.estadoRotulo"></span>
                       </button>
                     </li>
