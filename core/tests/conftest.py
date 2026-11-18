@@ -15,6 +15,7 @@ from sentinela.db.sessao import criar_motor
 from sentinela.main import criar_app
 from sentinela.relogio import RelogioFalso
 from sentinela.seguranca.senhas import gerar_hash
+from tests.apoio_totp import Tempo
 
 SENHA_TESTE = "senha-de-teste-longa-1"
 
@@ -101,3 +102,12 @@ async def cliente_visualizador(
     cliente: httpx.AsyncClient, criar_usuario: CriarUsuario
 ) -> httpx.AsyncClient:
     return await _entrar(cliente, criar_usuario, "visual-teste", "visualizador")
+
+
+@pytest.fixture
+def tempo(monkeypatch: pytest.MonkeyPatch) -> Tempo:
+    """Relógio de parede falso para o login em duas etapas (código TOTP e validade da etapa)."""
+    t = Tempo()
+    monkeypatch.setattr("sentinela.api.auth.agora_utc", t)
+    monkeypatch.setattr("sentinela.api.totp.agora_utc", t)
+    return t

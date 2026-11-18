@@ -801,3 +801,15 @@ def test_terminador_padrao_sai_com_codigo_diferente_de_zero(
     monkeypatch.setattr("os._exit", codigos.append)
     main._sair_do_processo()
     assert codigos == [main.CODIGO_MONITOR_MORTO] and codigos[0] != 0
+
+
+async def test_ws_recusa_sessao_restrita(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    """Admin sem TOTP com a política ligada: o WebSocket trata como sem sessão (4401)."""
+    token = _token(cliente_admin)
+    ws = abrir_ws(cookie=token)
+    assert (await ws.conectar())["type"] == "websocket.accept"
+    await ws.terminar()
+    app.state.politica_totp = True
+    assert await abrir_ws(cookie=token).recusa() == 4401

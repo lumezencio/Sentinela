@@ -3,6 +3,7 @@
     python -m sentinela.cli criar-admin --login X
     python -m sentinela.cli sub-rede adicionar|remover CIDR
     python -m sentinela.cli sub-rede listar
+    python -m sentinela.cli totp-zerar LOGIN
     python -m sentinela.cli oui-atualizar ARQUIVO.csv [...] [--saida oui.tsv.gz]
 
 A senha é lida com ``getpass`` (duas vezes, para confirmar). Fora de produção, se
@@ -40,6 +41,7 @@ from sentinela.descoberta.classificador.oui import CAMINHO_PADRAO as OUI_PADRAO
 from sentinela.descoberta.classificador.oui import atualizar_de_csv
 from sentinela.monitor.montagem import sub_redes_do_banco
 from sentinela.rede.guarda import DestinoProibido, Guarda
+from sentinela.seguranca.politica import zerar_totp
 from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 
 VARIAVEL_SENHA = "SENTINELA_ADMIN_SENHA"
@@ -152,6 +154,35 @@ async def _sub_rede(settings: Settings, acao: str, texto: str | None) -> None:
         await motor.dispose()
 
 
+async def _totp_zerar(settings: Settings, login: str) -> None:
+    """Emergência (perdeu o aplicativo e os códigos): apaga o TOTP e revoga as sessões."""
+    motor = criar_motor(settings.banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            alvo = await db.scalar(select(Usuario).where(Usuario.login == login.strip()))
+            if alvo is None:
+                raise ErroCli("usuário não encontrado; nada foi alterado", 1)
+            await zerar_totp(db, alvo.id)
+            db.add(
+                Auditoria(
+                    usuario_id=None,
+                    acao="cli:totp.zerar",
+                    alvo=f"usuario:{alvo.id}",
+                    antes=None,
+                    depois=None,
+                    ip=None,
+                    em=datetime.now(UTC),
+                )
+            )
+            await db.commit()
+    finally:
+        await motor.dispose()
+    print(
+        f"segundo fator de {login.strip()!r} apagado e sessões revogadas; "
+        "o usuário pode ativar de novo no próximo login"
+    )
+
+
 def _oui_atualizar(arquivos: list[str], saida: str | None) -> None:
     """Regera a base OUI a partir de CSVs da IEEE já baixados (nunca acessa a rede)."""
     destino = Path(saida) if saida else OUI_PADRAO
@@ -170,6 +201,10 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     sub = comandos.add_parser("sub-rede", help="declara as sub-redes privadas monitoradas")
     sub.add_argument("acao", choices=["adicionar", "remover", "listar"])
     sub.add_argument("cidr", nargs="?", help="ex. 10.99.0.0/24")
+    zerar = comandos.add_parser(
+        "totp-zerar", help="apaga o segundo fator (TOTP) de um usuário e revoga as sessões dele"
+    )
+    zerar.add_argument("login")
     oui = comandos.add_parser(
         "oui-atualizar", help="regera a base OUI a partir de CSVs da IEEE (MA-L, MA-M, MA-S)"
     )
@@ -181,6 +216,9 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     try:
         if args.comando == "oui-atualizar":
             _oui_atualizar(args.arquivos, args.saida)
+            return 0
+        if args.comando == "totp-zerar":
+            await _totp_zerar(settings, args.login)
             return 0
         if args.comando == "sub-rede":
             await _sub_rede(settings, args.acao, args.cidr)

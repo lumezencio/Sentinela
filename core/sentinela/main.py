@@ -20,6 +20,7 @@ from sentinela.api import (
     classes,
     config_descoberta,
     config_geral,
+    config_seguranca,
     config_telegram,
     descobertas,
     equipamentos,
@@ -30,6 +31,8 @@ from sentinela.api import (
     saude,
     silencios,
     subredes,
+    totp,
+    usuarios,
     varredura,
     ws,
     ws_parede,
@@ -66,6 +69,8 @@ from sentinela.registro import configurar_logs
 from sentinela.relogio import Relogio, RelogioReal
 from sentinela.seguranca.bloqueio import BloqueioFantasma, LimitadorIP
 from sentinela.seguranca.cofre import Cofre
+from sentinela.seguranca.etapa import RegistroEtapas
+from sentinela.seguranca.politica import exigir_totp_admin
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +98,7 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     try:
         async with app.state.sessoes() as db:
             await semear_classes(db)
+            app.state.politica_totp = await exigir_totp_admin(db)
         await _montar_monitor(app, settings)
         async with _lacos_do_monitor(app):
             yield
@@ -335,9 +341,16 @@ def criar_app(
     app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
     # telão: no máximo 10 pedidos de emparelhamento por IP por hora (rota sem sessão)
     app.state.pedidos_ip = LimitadorIP(relogio, max_falhas=10, janela_s=3600)
+    app.state.etapas_totp = RegistroEtapas()
+    # ativar/confirmar/zerar TOTP: 10 por minuto por usuário
+    app.state.taxa_totp = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
+    app.state.politica_totp = False  # o ciclo de vida carrega o valor gravado
     app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
+    app.include_router(totp.router)
+    app.include_router(usuarios.router)
+    app.include_router(config_seguranca.router)
     app.include_router(subredes.router)
     app.include_router(classes.router)
     app.include_router(importacao.router)  # antes de /equipamentos/{id}

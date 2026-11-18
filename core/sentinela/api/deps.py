@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.modelos import Usuario
 from sentinela.seguranca.csrf import CABECALHO_CSRF, COOKIE_CSRF, METODOS_ESCRITA, tokens_conferem
+from sentinela.seguranca.politica import restrita
 from sentinela.seguranca.sessoes import COOKIE_SESSAO, usuario_da_sessao
+
+MSG_RESTRITA = "Ative o segundo fator para continuar."
 
 
 def agora_utc() -> datetime:
@@ -30,10 +33,21 @@ SessaoDB = Annotated[AsyncSession, Depends(obter_sessao)]
 async def usuario_do_cookie(db: AsyncSession, cookies: Mapping[str, str]) -> Usuario | None:
     """Dono da sessão do cookie, ou None se ausente, desconhecida, revogada ou expirada.
 
-    Compartilhada pelas rotas HTTP (``usuario_atual``) e pelo WebSocket.
+    Compartilhada pelas rotas HTTP (``usuario_atual``) e pelo WebSocket. Não olha a política
+    do segundo fator: quem decide sobre a sessão restrita é quem chama.
     """
     token = cookies.get(COOKIE_SESSAO)
     return await usuario_da_sessao(db, token, agora_utc()) if token else None
+
+
+_PERMITIDOS_RESTRITA: set[Callable[..., Any]] = set()
+
+
+def permite_restrita[F: Callable[..., Any]](endpoint: F) -> F:
+    """Marca um endpoint que a sessão restrita (admin sem TOTP, política ligada) pode usar:
+    só ``/auth/eu``, ``/auth/logout`` e as rotas de ativação."""
+    _PERMITIDOS_RESTRITA.add(endpoint)
+    return endpoint
 
 
 async def usuario_atual(request: Request, db: SessaoDB) -> Usuario:
@@ -41,6 +55,10 @@ async def usuario_atual(request: Request, db: SessaoDB) -> Usuario:
     usuario = await usuario_do_cookie(db, request.cookies)
     if usuario is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Não autenticado.")
+    if restrita(usuario, request.app.state.politica_totp) and (
+        request.scope.get("endpoint") not in _PERMITIDOS_RESTRITA
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=MSG_RESTRITA)
     return usuario
 
 
