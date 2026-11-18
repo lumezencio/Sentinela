@@ -34,14 +34,24 @@ def normalizar(texto: str) -> str | None:
     return f"{limpo[:_METADE]}-{limpo[_METADE:]}"
 
 
-async def emitir(db: AsyncSession, usuario_id: int, agora: datetime) -> list[str]:
-    """Apaga os códigos anteriores, grava 10 hashes e devolve os códigos em claro (única vez)."""
+async def preparar() -> tuple[list[str], list[str]]:
+    """Gera os códigos e seus hashes (argon2 fora de qualquer transação de escrita)."""
     codigos = gerar_codigos()
-    hashes = [await gerar_hash_segredo_async(c) for c in codigos]
+    return codigos, [await gerar_hash_segredo_async(c) for c in codigos]
+
+
+async def gravar(db: AsyncSession, usuario_id: int, hashes: list[str], agora: datetime) -> None:
+    """Apaga os códigos anteriores e grava os hashes, SEM ``commit`` (o chamador decide)."""
     await db.execute(delete(CodigoRecuperacao).where(CodigoRecuperacao.usuario_id == usuario_id))
     db.add_all(
         CodigoRecuperacao(usuario_id=usuario_id, hash_codigo=h, criado_em=agora) for h in hashes
     )
+
+
+async def emitir(db: AsyncSession, usuario_id: int, agora: datetime) -> list[str]:
+    """Apaga os códigos anteriores, grava 10 hashes e devolve os códigos em claro (única vez)."""
+    codigos, hashes = await preparar()
+    await gravar(db, usuario_id, hashes, agora)
     await db.commit()
     return codigos
 

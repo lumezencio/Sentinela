@@ -7,6 +7,8 @@ from sentinela.seguranca import recuperacao
 from tests.apoio_totp import AGORA_FIXO, dar_totp, sessoes_do, usuario_de
 from tests.conftest import SENHA_TESTE, CriarUsuario
 
+SENHA = {"senha": SENHA_TESTE}
+
 
 async def test_listar_usuarios_so_admin(
     app: FastAPI, cliente_admin: httpx.AsyncClient, criar_usuario: CriarUsuario
@@ -27,7 +29,9 @@ async def test_visualizador_nao_lista_nem_zera_403(
     cliente_visualizador: httpx.AsyncClient,
 ) -> None:
     assert (await cliente_visualizador.get("/api/v1/usuarios")).status_code == 403
-    assert (await cliente_visualizador.post("/api/v1/usuarios/1/totp/zerar")).status_code == 403
+    assert (
+        await cliente_visualizador.post("/api/v1/usuarios/1/totp/zerar", json=SENHA)
+    ).status_code == 403
 
 
 async def test_sem_sessao_401(cliente: httpx.AsyncClient) -> None:
@@ -51,7 +55,7 @@ async def test_zerar_totp_de_outro_usuario_audita_e_revoga_sessoes(
         outro.cookies.set("sentinela_sessao", token)
         assert (await outro.get("/api/v1/auth/eu")).status_code == 200
 
-        r = await cliente_admin.post(f"/api/v1/usuarios/{alvo.id}/totp/zerar")
+        r = await cliente_admin.post(f"/api/v1/usuarios/{alvo.id}/totp/zerar", json=SENHA)
         assert r.status_code == 204
         assert (await outro.get("/api/v1/auth/eu")).status_code == 401  # sessão revogada
 
@@ -69,11 +73,32 @@ async def test_zerar_totp_de_outro_usuario_audita_e_revoga_sessoes(
 
 
 async def test_zerar_id_inexistente_404_generico(cliente_admin: httpx.AsyncClient) -> None:
-    r = await cliente_admin.post("/api/v1/usuarios/9999/totp/zerar")
+    r = await cliente_admin.post("/api/v1/usuarios/9999/totp/zerar", json=SENHA)
     assert r.status_code == 404
     assert r.json() == {"detail": "Não encontrado."}
 
 
 async def test_zerar_exige_csrf(app: FastAPI, cliente_admin: httpx.AsyncClient) -> None:
     del cliente_admin.headers["X-CSRF"]
-    assert (await cliente_admin.post("/api/v1/usuarios/1/totp/zerar")).status_code == 403
+    assert (
+        await cliente_admin.post("/api/v1/usuarios/1/totp/zerar", json=SENHA)
+    ).status_code == 403
+
+
+async def test_zerar_exige_a_senha_do_admin_e_conta_no_bloqueio(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, criar_usuario: CriarUsuario
+) -> None:
+    alvo = await criar_usuario("vera", SENHA_TESTE)
+    await dar_totp(app, "vera")
+    url = f"/api/v1/usuarios/{alvo.id}/totp/zerar"
+    r = await cliente_admin.post(url, json={"senha": "errada-qualquer-1"})
+    assert r.status_code == 401
+    assert r.json() == {"detail": "Login ou senha inválidos."}
+    assert (await cliente_admin.post(url)).status_code == 415  # sem corpo
+    assert (await cliente_admin.post(url, json={})).status_code == 422
+    assert (await usuario_de(app, "vera")).totp_cifrado is not None  # nada foi apagado
+    assert (await usuario_de(app, "admin-teste")).falhas == 1
+    for _ in range(4):
+        await cliente_admin.post(url, json={"senha": "errada-qualquer-1"})
+    assert (await cliente_admin.post(url, json=SENHA)).status_code == 429
+    assert (await usuario_de(app, "vera")).totp_cifrado is not None

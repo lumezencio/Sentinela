@@ -305,6 +305,21 @@ async def _erro_de_validacao(_request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(detalhes)})
 
 
+def _recusar_varios_workers() -> None:
+    """A etapa do login (``RegistroEtapas``) e os limitadores vivem em memória do processo:
+    com vários workers o passo 2 cairia noutro processo e os limites se multiplicariam.
+    O Sentinela roda com UM processo uvicorn; recusa subir se ``WEB_CONCURRENCY`` > 1."""
+    try:
+        workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+    except ValueError:
+        workers = 1
+    if workers > 1:
+        raise RuntimeError(
+            "O Sentinela exige um único processo (WEB_CONCURRENCY=1): o login em duas etapas "
+            "e os limites de tentativas ficam em memória."
+        )
+
+
 def criar_app(
     settings: Settings | None = None,
     *,
@@ -317,6 +332,7 @@ def criar_app(
     ``terminar`` só é chamado se ``settings.sair_se_monitor_morrer`` (testes injetam um falso).
     """
     configurar_logs()
+    _recusar_varios_workers()
     settings = settings or obter_settings()
     relogio = relogio or RelogioReal()
     producao = settings.ambiente == "producao"

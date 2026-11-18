@@ -63,7 +63,7 @@ def _hash(jti: str) -> str:
 
 
 class RegistroEtapas:
-    """``jti`` ativos (por hash): uso único, 5 erros invalidam, expiram em 300 s.
+    """``jti`` ativos (por hash): uso único, 5 tentativas invalidam, expiram em 300 s.
 
     Em memória e limitado: reiniciar o core só obriga a refazer o login. Sem ``await``: cada
     operação é atômica no laço de eventos."""
@@ -95,10 +95,16 @@ class RegistroEtapas:
         """Gasta o ``jti``; ``False`` se outro já gastou (ou invalidou)."""
         return self._etapas.pop(_hash(jti), None) is not None
 
-    def registrar_erro(self, jti: str) -> None:
-        item = self._etapas.get(_hash(jti))
+    def tentar(self, jti: str) -> bool:
+        """Reserva UMA tentativa de código nesta etapa, ANTES de verificar (atômico: sem
+        ``await``). ``False`` quando já foram ``ERROS_MAXIMOS`` tentativas: a etapa morre.
+        O sucesso gasta a etapa inteira (``consumir``), então não há o que devolver."""
+        chave = _hash(jti)
+        item = self._etapas.get(chave)
         if item is None:
-            return
+            return False
         item[2] += 1
-        if item[2] >= ERROS_MAXIMOS:
-            del self._etapas[_hash(jti)]
+        if item[2] > ERROS_MAXIMOS:
+            del self._etapas[chave]
+            return False
+        return True

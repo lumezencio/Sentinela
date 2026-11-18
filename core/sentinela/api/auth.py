@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import ColumnElement, Row, or_, select, update
+from sqlalchemy import ColumnElement, Row, case, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +25,12 @@ from sentinela.api.deps import (
 )
 from sentinela.db.modelos import Usuario
 from sentinela.seguranca import etapa, recuperacao, totp
-from sentinela.seguranca.bloqueio import BloqueioFantasma, LimitadorIP, duracao_bloqueio
+from sentinela.seguranca.bloqueio import (
+    FALHAS_ANTES_DO_BLOQUEIO,
+    BloqueioFantasma,
+    LimitadorIP,
+    duracao_bloqueio,
+)
 from sentinela.seguranca.csrf import COOKIE_CSRF, gerar_token_csrf
 from sentinela.seguranca.politica import restrita
 from sentinela.seguranca.senhas import (
@@ -176,11 +181,20 @@ async def reservar_falha(
 
 
 async def devolver_reserva(db: AsyncSession, usuario_id: int) -> None:
-    """Desfaz UMA reserva (senha certa em ``iniciar``) sem zerar as falhas alheias."""
+    """Desfaz UMA reserva (senha certa em ``iniciar``/``zerar``) sem zerar as falhas alheias.
+
+    Se, devolvida a reserva, o usuário volta abaixo do limiar do bloqueio, o ``bloqueado_ate``
+    que a própria reserva criou também sai (não deixa um usuário legítimo trancado)."""
     await db.execute(
         update(Usuario)
         .where(Usuario.id == usuario_id, Usuario.falhas > 0)
-        .values(falhas=Usuario.falhas - 1)
+        .values(
+            falhas=Usuario.falhas - 1,
+            bloqueado_ate=case(
+                (Usuario.falhas - 1 < FALHAS_ANTES_DO_BLOQUEIO, None),
+                else_=Usuario.bloqueado_ate,
+            ),
+        )
         .execution_options(synchronize_session=False)
     )
     await db.commit()
@@ -190,14 +204,46 @@ def _com_totp(cifrado: str | None, contador: int | None) -> bool:
     return cifrado is not None and contador is not None
 
 
+async def rotacionar_sessao(
+    db: AsyncSession, request: Request, usuario_id: int, agora: datetime
+) -> str:
+    """Revoga a sessão do cookie (fixação) e cria outra; devolve o token novo."""
+    anterior = request.cookies.get(COOKIE_SESSAO)
+    if anterior:
+        await revogar_sessao(db, anterior)
+    return await criar_sessao(db, usuario_id, agora)
+
+
+def cookie_de_sessao(resposta: Response, token: str) -> None:
+    _definir_cookie(resposta, COOKIE_SESSAO, token, httponly=True)
+
+
+async def conferir_senha_da_sessao(
+    request: Request, db: AsyncSession, usuario_id: int, senha: str
+) -> None:
+    """Pede a senha de novo a quem já tem sessão (``iniciar``, ``zerar``). Errada: conta no
+    bloqueio como o login (IP e usuário) e responde 401; bloqueado: 429. Certa: devolve a
+    própria reserva. Levanta ``HTTPException`` em qualquer recusa."""
+    ip = request.client.host if request.client else "desconhecido"
+    falhas_ip: LimitadorIP = request.app.state.falhas_ip
+    espera = falhas_ip.reservar(ip)
+    if espera:
+        raise _muitas(espera)
+    linha = await reservar_falha(db, Usuario.id == usuario_id, agora_utc())
+    if linha is None:
+        await db.rollback()
+        raise _muitas(1)
+    if not await verificar_async(linha.hash_senha, senha):
+        raise _invalido()
+    falhas_ip.liberar(ip)
+    await devolver_reserva(db, usuario_id)
+
+
 async def abrir_sessao(
     db: AsyncSession, request: Request, usuario_id: int, agora: datetime
 ) -> Response:
     """Revoga a sessão anterior do cookie (fixação), cria a nova e devolve a resposta 204."""
-    anterior = request.cookies.get(COOKIE_SESSAO)
-    if anterior:
-        await revogar_sessao(db, anterior)
-    token = await criar_sessao(db, usuario_id, agora)
+    token = await rotacionar_sessao(db, request, usuario_id, agora)
     resposta = Response(status_code=status.HTTP_204_NO_CONTENT)
     _definir_cookie(resposta, COOKIE_SESSAO, token, httponly=True)
     _definir_cookie(resposta, COOKIE_CSRF, gerar_token_csrf(), httponly=False)
@@ -373,6 +419,8 @@ async def totp_entrar(corpo: CodigoTotp, request: Request, db: SessaoDB) -> Resp
     if achado is None or not etapas.valida(achado[1], achado[0], agora):
         raise _codigo_invalido()
     usuario_id, jti = achado
+    if not etapas.tentar(jti):  # reservada ANTES do await: 5 tentativas por etapa, atômico
+        raise _codigo_invalido()
 
     linha = await reservar_falha(db, Usuario.id == usuario_id, agora)
     if linha is None:
@@ -391,7 +439,6 @@ async def totp_entrar(corpo: CodigoTotp, request: Request, db: SessaoDB) -> Resp
         await _rollback_seguro(db)
         aceito = False
     if not aceito:
-        etapas.registrar_erro(jti)
         _registrar(_rotulo_conhecido(linha.login), "falha_totp")
         raise _codigo_invalido()
     if not etapas.consumir(jti):  # a mesma etapa já entrou por outra requisição

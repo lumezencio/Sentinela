@@ -52,11 +52,11 @@ def test_registro_uso_unico_expira_e_erros() -> None:
     assert len(reg) == 0
 
     reg.registrar("j3", 1, AGORA)
-    for _ in range(etapa.ERROS_MAXIMOS - 1):
-        reg.registrar_erro("j3")
-        assert reg.valida("j3", 1, AGORA)
-    reg.registrar_erro("j3")
+    for _ in range(etapa.ERROS_MAXIMOS):
+        assert reg.tentar("j3")
+    assert not reg.tentar("j3")  # a 6ª já nasce recusada e a etapa morre
     assert not reg.valida("j3", 1, AGORA)
+    assert not reg.tentar("desconhecido")
 
 
 def test_registro_limitado() -> None:

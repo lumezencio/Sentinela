@@ -13,26 +13,26 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import update
-from sqlalchemy.exc import SQLAlchemyError
 
 from sentinela.api.auth import (
     MSG_CODIGO,
-    MSG_INVALIDO,
-    devolver_reserva,
+    conferir_senha_da_sessao,
+    cookie_de_sessao,
     exigir_json,
-    reservar_falha,
+    rotacionar_sessao,
 )
 from sentinela.api.comum import auditar
 from sentinela.api.deps import SessaoDB, UsuarioAtual, agora_utc, permite_restrita
 from sentinela.db.modelos import Usuario
 from sentinela.seguranca import recuperacao, totp
 from sentinela.seguranca.bloqueio import LimitadorIP
-from sentinela.seguranca.senhas import SENHA_MAXIMA, verificar_async
+from sentinela.seguranca.senhas import SENHA_MAXIMA
 
 router = APIRouter(prefix="/api/v1/auth/totp", tags=["totp"])
 log = logging.getLogger("sentinela.totp")
 
 URL_QR = "/api/v1/auth/totp/qr"
+_SEM_CACHE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 MSG_MUITAS = "Muitas tentativas. Aguarde e tente novamente."
 MSG_JA_ATIVO = "O segundo fator já está ativo."
 MSG_NADA_PENDENTE = "Inicie a ativação primeiro."
@@ -80,25 +80,15 @@ def _agrupar(segredo: str) -> str:
 
 @router.post("/iniciar", dependencies=[Depends(exigir_json)])
 @permite_restrita
-async def iniciar(corpo: Senha, request: Request, usuario: UsuarioAtual, db: SessaoDB) -> Iniciado:
+async def iniciar(
+    corpo: Senha, request: Request, usuario: UsuarioAtual, db: SessaoDB
+) -> JSONResponse:
     """Gera um segredo novo (pendente) depois de pedir a senha de novo.
 
     Senha errada conta no bloqueio como o login (mesma reserva e mesma escala)."""
     if totp.totp_ativo(usuario):
         raise HTTPException(status.HTTP_409_CONFLICT, detail=MSG_JA_ATIVO)
-    ip = request.client.host if request.client else "desconhecido"
-    falhas_ip: LimitadorIP = request.app.state.falhas_ip
-    espera = falhas_ip.reservar(ip)
-    if espera:
-        raise _muitas(espera)
-    agora = agora_utc()
-    linha = await reservar_falha(db, Usuario.id == usuario.id, agora)
-    if linha is None:
-        await db.rollback()
-        raise _muitas(1)
-    if not await verificar_async(linha.hash_senha, corpo.senha):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=MSG_INVALIDO)
-    falhas_ip.liberar(ip)
+    await conferir_senha_da_sessao(request, db, usuario.id, corpo.senha)
     segredo = totp.novo_segredo()
     await db.execute(
         update(Usuario)
@@ -107,8 +97,9 @@ async def iniciar(corpo: Senha, request: Request, usuario: UsuarioAtual, db: Ses
         .execution_options(synchronize_session=False)
     )
     await db.commit()
-    await devolver_reserva(db, usuario.id)
-    return Iniciado(chave=_agrupar(segredo), qr_url=URL_QR)
+    return JSONResponse(
+        Iniciado(chave=_agrupar(segredo), qr_url=URL_QR).model_dump(), headers=_SEM_CACHE
+    )
 
 
 @router.get("/qr")
@@ -149,8 +140,9 @@ async def confirmar(
     contador = totp.conferir(segredo, corpo.codigo, agora, None) if segredo else None
     if contador is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=MSG_CODIGO)
+    codigos, hashes = await recuperacao.preparar()  # argon2 antes de abrir a escrita
     try:
-        # só um confirmar ativa (o segundo, simultâneo, não casa a condição)
+        # ativação, códigos e auditoria na MESMA transação; só um confirmar ativa
         res = await db.execute(
             update(Usuario)
             .where(
@@ -161,16 +153,20 @@ async def confirmar(
             .values(totp_ultimo_contador=contador)
             .execution_options(synchronize_session=False)
         )
+        if res.rowcount != 1:  # type: ignore[attr-defined]
+            await db.rollback()
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=MSG_JA_ATIVO)
+        await recuperacao.gravar(db, usuario.id, hashes, agora)
+        auditar(db, request, usuario, "totp.ativar", f"usuario:{usuario.id}")
         await db.commit()
-    except SQLAlchemyError:
-        await db.rollback()
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=MSG_CODIGO) from None
-    if res.rowcount != 1:  # type: ignore[attr-defined]
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=MSG_JA_ATIVO)
-    codigos = await recuperacao.emitir(db, usuario.id, agora)
-    auditar(db, request, usuario, "totp.ativar", f"usuario:{usuario.id}")
-    await db.commit()
+    except HTTPException:
+        raise
+    except BaseException:
+        await db.rollback()  # nada de TOTP ativo sem os códigos e a auditoria
+        raise
+    # sessão nova (a restrita, se era o caso, deixa de valer); o CSRF continua o mesmo
+    token = await rotacionar_sessao(db, request, usuario.id, agora)
     log.info("segundo fator ativado", extra={"evento": "totp.ativar"})
-    return JSONResponse(
-        Ativado(codigos=codigos).model_dump(), headers={"Cache-Control": "no-store"}
-    )
+    resposta = JSONResponse(Ativado(codigos=codigos).model_dump(), headers=_SEM_CACHE)
+    cookie_de_sessao(resposta, token)
+    return resposta

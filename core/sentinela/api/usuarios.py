@@ -5,14 +5,16 @@ import math
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from sentinela.api.auth import conferir_senha_da_sessao, exigir_json
 from sentinela.api.comum import auditar, nao_encontrado
 from sentinela.api.deps import SessaoDB, exigir_admin
 from sentinela.db.modelos import Usuario
 from sentinela.seguranca.bloqueio import LimitadorIP
 from sentinela.seguranca.politica import zerar_totp
+from sentinela.seguranca.senhas import SENHA_MAXIMA
 from sentinela.seguranca.totp import totp_ativo
 
 router = APIRouter(prefix="/api/v1/usuarios", tags=["usuarios"])
@@ -29,6 +31,12 @@ class UsuarioSaida(BaseModel):
     totp_ativo: bool
 
 
+class Senha(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    senha: str = Field(min_length=1, max_length=SENHA_MAXIMA)
+
+
 @router.get("")
 async def listar(db: SessaoDB, _admin: Admin) -> list[UsuarioSaida]:
     linhas = (await db.execute(select(Usuario).order_by(Usuario.id).limit(LIMITE))).scalars()
@@ -41,10 +49,15 @@ async def listar(db: SessaoDB, _admin: Admin) -> list[UsuarioSaida]:
 @router.post(
     "/{usuario_id}/totp/zerar",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(exigir_json)],
     response_class=Response,
 )
-async def zerar(usuario_id: int, request: Request, db: SessaoDB, admin: Admin) -> Response:
-    """Apaga o segundo fator do alvo e revoga as sessões dele; 404 genérico se não existe."""
+async def zerar(
+    usuario_id: int, corpo: Senha, request: Request, db: SessaoDB, admin: Admin
+) -> Response:
+    """Apaga o segundo fator do alvo e revoga as sessões dele; 404 genérico se não existe.
+
+    Exige a senha do administrador que age (errada conta no bloqueio como o login)."""
     limitador: LimitadorIP = request.app.state.taxa_totp
     espera = limitador.reservar(f"usuario:{admin.id}")
     if espera:
@@ -53,6 +66,7 @@ async def zerar(usuario_id: int, request: Request, db: SessaoDB, admin: Admin) -
             detail=MSG_MUITAS,
             headers={"Retry-After": str(max(1, math.ceil(espera)))},
         )
+    await conferir_senha_da_sessao(request, db, admin.id, corpo.senha)
     alvo = await db.get(Usuario, usuario_id)
     if alvo is None:
         raise nao_encontrado()

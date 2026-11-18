@@ -11,9 +11,11 @@ from fastapi import FastAPI
 from sqlalchemy import select, update
 
 from sentinela.api import auth
-from sentinela.db.modelos import CodigoRecuperacao, Usuario
-from sentinela.seguranca import recuperacao
+from sentinela.db.modelos import Auditoria, CodigoRecuperacao, Sessao, Usuario
+from sentinela.seguranca import etapa, recuperacao
+from sentinela.seguranca.bloqueio import LimitadorIP
 from sentinela.seguranca.etapa import COOKIE_ETAPA
+from sentinela.seguranca.sessoes import hash_token
 from sentinela.seguranca.totp import contador_de, decifrar_segredo, totp_ativo
 from tests.apoio_totp import Tempo, codigo_em, dar_totp, sessoes_do, usuario_de
 from tests.conftest import SENHA_TESTE, CriarUsuario
@@ -128,8 +130,10 @@ async def test_cinco_chutes_de_totp_com_senha_certa_bloqueiam_o_login(
         assert erradas < 10
     assert erradas == 4  # a reserva do passo 1 conta: a 5ª falha já bloqueia
     assert 1 <= int(r.headers["retry-after"]) <= 60
-    # nem o código certo entra com o login bloqueado
-    assert (await _entrar(cliente, codigo=codigo_em(ana, tempo()))).status_code == 429
+    # nem o código certo entra: login bloqueado e etapa já sem tentativas (5 reservadas)
+    r = await _entrar(cliente, codigo=codigo_em(ana, tempo()))
+    assert r.status_code == 401
+    assert "sentinela_sessao" not in r.headers.get("set-cookie", "")
     assert (await _login(cliente)).status_code == 429
     u = await usuario_de(app, "ana")
     assert u.bloqueado_ate is not None
@@ -547,3 +551,124 @@ async def test_logs_da_etapa_sem_segredos(
     await _entrar(cliente, codigo=codigo)
     for texto in (ana, token, codigo):
         assert texto not in caplog.text
+
+
+# --- endurecimento (revisão da Task 2) ----------------------------------------
+
+
+async def test_iniciar_nao_e_cacheavel(cliente_visualizador: httpx.AsyncClient) -> None:
+    r = await cliente_visualizador.post(INICIAR, json={"senha": SENHA_TESTE})
+    assert r.status_code == 200
+    assert "no-store" in r.headers["cache-control"]
+    assert r.headers["pragma"] == "no-cache"
+
+
+async def test_iniciar_certo_com_4_falhas_nao_deixa_o_usuario_trancado(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient
+) -> None:
+    async with sessoes_do(app)() as db:
+        await db.execute(update(Usuario).values(falhas=4))
+        await db.commit()
+    # a reserva leva a 5 falhas (bloqueio de 1 min); a senha certa devolve a reserva E o bloqueio
+    r = await cliente_visualizador.post(INICIAR, json={"senha": SENHA_TESTE})
+    assert r.status_code == 200
+    u = await usuario_de(app, "visual-teste")
+    assert u.falhas == 4
+    assert u.bloqueado_ate is None
+    assert (await _login(cliente_visualizador, "visual-teste")).status_code == 204
+
+
+async def test_devolver_reserva_mantem_bloqueio_acima_do_limiar(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient
+) -> None:
+    async with sessoes_do(app)() as db:
+        await db.execute(update(Usuario).values(falhas=7))
+        await db.commit()
+    assert (
+        await cliente_visualizador.post(INICIAR, json={"senha": SENHA_TESTE})
+    ).status_code == 200
+    # 7 falhas: a reserva (8) criou bloqueio; devolvida a 7 ainda é >= 5, o bloqueio fica
+    assert (await usuario_de(app, "visual-teste")).falhas == 7
+
+
+async def test_confirmar_e_atomico_se_a_emissao_falha_o_totp_nao_ativa(
+    app: FastAPI,
+    cliente_visualizador: httpx.AsyncClient,
+    tempo: Tempo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = cliente_visualizador
+    segredo = (await c.post(INICIAR, json={"senha": SENHA_TESTE})).json()["chave"].replace(" ", "")
+
+    async def _quebra(*_a: object, **_k: object) -> None:
+        raise RuntimeError("falha na emissão")
+
+    monkeypatch.setattr("sentinela.api.totp.recuperacao.gravar", _quebra)
+    with pytest.raises(RuntimeError):
+        await c.post(CONFIRMAR, json={"codigo": codigo_em(segredo, tempo())})
+    u = await usuario_de(app, "visual-teste")
+    assert not totp_ativo(u) and u.totp_ultimo_contador is None
+    async with sessoes_do(app)() as db:
+        assert (await db.execute(select(CodigoRecuperacao))).scalars().all() == []
+        assert "totp.ativar" not in [
+            a.acao for a in (await db.execute(select(Auditoria))).scalars()
+        ]
+    monkeypatch.undo()
+    r = await c.post(CONFIRMAR, json={"codigo": codigo_em(segredo, tempo())})
+    assert r.status_code == 200
+    async with sessoes_do(app)() as db:
+        acoes = [a.acao for a in (await db.execute(select(Auditoria))).scalars()]
+    assert acoes.count("totp.ativar") == 1
+
+
+async def test_confirmar_rotaciona_a_sessao(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, tempo: Tempo
+) -> None:
+    c = cliente_admin
+    app.state.politica_totp = True
+    antiga = c.cookies["sentinela_sessao"]
+    segredo = (await c.post(INICIAR, json={"senha": SENHA_TESTE})).json()["chave"].replace(" ", "")
+    r = await c.post(CONFIRMAR, json={"codigo": codigo_em(segredo, tempo())})
+    assert r.status_code == 200
+    nova = c.cookies["sentinela_sessao"]
+    assert nova != antiga
+    assert (await c.get("/api/v1/auth/eu")).status_code == 200
+    async with sessoes_do(app)() as db:
+        revogada = (
+            await db.execute(select(Sessao.revogada).where(Sessao.jti == hash_token(antiga)))
+        ).scalar_one()
+    assert revogada is True
+    # a sessão antiga já não serve
+    transporte = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transporte, base_url="https://teste") as outro:
+        outro.cookies.set("sentinela_sessao", antiga)
+        assert (await outro.get("/api/v1/auth/eu")).status_code == 401
+
+
+async def test_limite_de_5_tentativas_por_etapa_e_atomico_sob_concorrencia(
+    app: FastAPI, cliente: httpx.AsyncClient, ana: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert (await _login(cliente)).status_code == 202
+    chamadas = 0
+    original = auth._conferir_codigo
+
+    async def _conta(*a: Any, **k: Any) -> bool:
+        nonlocal chamadas
+        chamadas += 1
+        await asyncio.sleep(0.05)  # alarga a janela: todas as 12 já passaram pelo portão
+        return await original(*a, **k)
+
+    monkeypatch.setattr(auth, "_conferir_codigo", _conta)
+    monkeypatch.setattr(auth, "duracao_bloqueio", lambda _f: 0)  # isola o limite da etapa
+    app.state.falhas_ip = LimitadorIP(app.state.relogio, max_falhas=1000)
+    respostas = await asyncio.gather(*(_entrar(cliente, codigo="000000") for _ in range(12)))
+    assert [r.status_code for r in respostas] == [401] * 12
+    assert chamadas == etapa.ERROS_MAXIMOS == 5
+
+
+def test_recusa_varios_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sentinela.main import criar_app
+
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    with pytest.raises(RuntimeError, match="único processo"):
+        criar_app()

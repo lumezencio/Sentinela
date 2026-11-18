@@ -15,6 +15,7 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 - **Classifica sozinho:** fabricante pelo MAC, nome DHCP, dados SNMP/LLDP e do gravador; portas conhecidas e página web só quando você autoriza. Você aprova e corrige.
 - **Monitora com educação:** checagens unicast com teto global de pacotes por segundo; câmeras e controles de acesso checados com mais frequência.
 - **Mostra bonito e leve:** Teia 3D, Organograma por classe, lista, modo telão para TV, alertas por Telegram.
+- **Um único processo:** o core roda com um só worker do uvicorn (o login em duas etapas e os limites de tentativas ficam em memória); `WEB_CONCURRENCY` maior que 1 faz o core recusar subir.
 
 ## Instalação
 
