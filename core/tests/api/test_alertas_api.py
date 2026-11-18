@@ -204,3 +204,43 @@ async def test_reconhecer_e_idempotente(app: FastAPI, cliente_admin: httpx.Async
     assert r.status_code == 200
     assert r.json()["reconhecido_em"] == primeira["reconhecido_em"]
     assert len(await _auditorias(app)) == 1  # a segunda chamada não audita nem muda nada
+
+
+CAMPOS_SAIDA = {
+    "id", "tipo", "texto", "equipamento_id", "equipamento_nome", "classe", "afetados_total",
+    "aberto_em", "fechado_em", "breve", "reconhecido_por", "reconhecido_em", "silenciado",
+    "envio",
+}  # fmt: skip
+
+
+async def test_periodo_sem_fuso_422(cliente_visualizador: httpx.AsyncClient) -> None:
+    for nome in ("desde", "ate"):
+        r = await cliente_visualizador.get(URL, params={nome: "2026-11-18T10:00"})
+        assert r.status_code == 422, (nome, r.text)
+
+
+async def test_campos_exatos_e_nome_hostil_como_texto(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient
+) -> None:
+    hostil = "<b>" + "x" * 300
+    eq = await _equip(app, hostil, 1)
+    a = await _alerta(app, equipamento_id=eq, quedas=[eq])
+    item = (await cliente_visualizador.get(URL)).json()["itens"][0]
+    assert set(item) == CAMPOS_SAIDA  # sem ip, mac nem fabricante
+    assert item["texto"] == f"{hostil} caiu" and item["equipamento_nome"] == hostil
+    det = (await cliente_visualizador.get(f"{URL}/{a}")).json()
+    assert set(det) == CAMPOS_SAIDA | {"afetados"}
+    assert det["texto"] == f"{hostil} caiu"
+
+
+async def test_total_do_filtro_de_classe(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient
+) -> None:
+    cam, rot = await _equip(app, "Cam", 1), await _equip(app, "Rot", 2, "roteador")
+    await _alerta(app, equipamento_id=cam, quedas=[cam])
+    await _alerta(app, equipamento_id=cam, quedas=[cam])
+    await _alerta(app, equipamento_id=rot, quedas=[rot])
+    await _alerta(app, tipo="fonte_falhou")  # sem equipamento: fora de qualquer classe
+    r = await cliente_visualizador.get(URL, params={"classe": "camera"})
+    assert r.json()["total"] == 2
+    assert (await cliente_visualizador.get(URL)).json()["total"] == 4

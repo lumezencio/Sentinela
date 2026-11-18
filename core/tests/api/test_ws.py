@@ -387,6 +387,30 @@ async def test_mensagem_alerta_chega_enriquecida(
     assert msg["alerta"]["texto"] == "Equipamento 0 caiu"
     assert msg["alerta"]["equipamento_id"] == eq
     assert msg["alerta"]["envio"] == "pendente"
+    assert set(msg["alerta"]) == {
+        "id", "tipo", "texto", "equipamento_id", "equipamento_nome", "classe",
+        "afetados_total", "aberto_em", "fechado_em", "breve", "reconhecido_por",
+        "reconhecido_em", "silenciado", "envio",
+    }  # fmt: skip
+
+
+async def test_alerta_com_nome_hostil_chega_como_texto(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    (eq,) = await _criar_equipamentos(app, 1)
+    hostil = "<b>" + "x" * 300
+    async with _sessoes(app)() as db:
+        e = await db.get(Equipamento, eq)
+        assert e is not None
+        e.nome = hostil
+        await db.commit()
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    await ws.json()  # snapshot
+    a = await _alerta_no_banco(app, eq)
+    barramento: Barramento = app.state.barramento
+    barramento.publicar(Mensagem("alerta", {"acao": "aberto", "id": a, "abertos": 1}))
+    msg = await ws.json()
+    assert msg["alerta"]["texto"] == f"{hostil} caiu"
 
 
 async def test_alerta_removido_chega_sem_linha(

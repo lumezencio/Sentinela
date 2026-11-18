@@ -4,10 +4,10 @@ O reconhecimento escreve apenas ``reconhecido_por``/``reconhecido_em``: o ``envi
 contrato agrupador × despachante e nunca é tocado aqui.
 """
 
-from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
+from pydantic import AwareDatetime
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,9 +64,16 @@ async def listar(
     db: SessaoDB,
     _usuario: UsuarioAtual,
     filtro: Literal["abertos", "reconhecidos", "todos"] = "abertos",
-    classe: Annotated[str | None, Query(max_length=32)] = None,
-    desde: datetime | None = None,
-    ate: datetime | None = None,
+    classe: Annotated[
+        str | None,
+        Query(
+            max_length=32,
+            description="Slug da classe; exclui alertas sem equipamento"
+            " (fonte_falhou, equipamento removido).",
+        ),
+    ] = None,
+    desde: AwareDatetime | None = None,
+    ate: AwareDatetime | None = None,
     pagina: Annotated[int, Query(ge=1, le=100_000)] = 1,
     por_pagina: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> PaginaAlertas:
@@ -85,7 +92,7 @@ async def listar(
         consulta = consulta.where(Alerta.aberto_em >= desde)
     if ate is not None:
         consulta = consulta.where(Alerta.aberto_em <= ate)
-    total = await db.scalar(select(func.count()).select_from(consulta.subquery())) or 0
+    total = await db.scalar(consulta.with_only_columns(func.count(Alerta.id)).order_by(None)) or 0
     linhas = await db.execute(
         consulta.order_by(Alerta.aberto_em.desc(), Alerta.id.desc())
         .limit(por_pagina)
