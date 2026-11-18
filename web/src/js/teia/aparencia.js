@@ -13,6 +13,7 @@ const VISUAL = {
   suspeito: { cor: VERDE, forma: "cheia", pulsa: false, treme: true, opacidade: 1 },
   offline: { cor: "#D97373", forma: "cruz", pulsa: true, treme: false, opacidade: 1 },
   pausado: { cor: CINZA, forma: "translucida", pulsa: false, treme: false, opacidade: 0.45 },
+  inalcancavel: { cor: CINZA, forma: "elo", pulsa: false, treme: false, opacidade: 0.7 },
   desconhecido: { cor: CINZA, forma: "anel", pulsa: false, treme: false, opacidade: 0.7 },
 };
 

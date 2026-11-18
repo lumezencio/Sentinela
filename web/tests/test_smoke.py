@@ -28,13 +28,15 @@ POR_PAGINA = 50
 TIPOS_PRIMEIRA_TELA = ("document", "script", "stylesheet", "image", "fetch", "font")
 
 
-def entrar(page: Page, alvo: Alvo, login: str = "", senha: str = "") -> None:
+def entrar(
+    page: Page, alvo: Alvo, login: str = "", senha: str = "", total: int = TOTAL_DEMO
+) -> None:
     page.goto("/login.html")
     page.get_by_label("Login").fill(login or alvo.login)
     page.get_by_label("Senha").fill(senha or alvo.senha)
     page.get_by_role("button", name="Entrar").click()
     page.wait_for_url("**/index.html")
-    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    expect(page.locator("#contador-total")).to_have_text(str(total), timeout=15_000)
 
 
 def linhas(page: Page) -> Any:
@@ -1470,3 +1472,167 @@ def test_novos_2000_pendentes_pagina(browser: Browser, alvo_fila_grande: Alvo) -
         assert erros == [], erros
     finally:
         contexto.close()
+
+
+# ---------- Fase 4A: inalcançável e "Depende de" ----------
+DEP_ALFA = "Dep Smoke Switch Alfa"
+DEP_BETA = "Dep Smoke Ponto Beta"
+
+
+def criar_dependentes(page: Page) -> list[str]:
+    """Dois equipamentos soltos da classe iot (10.99.60.24x) para os testes de 'Depende de'."""
+    ids: list[str] = []
+    for nome, ip in ((DEP_ALFA, "10.99.60.241"), (DEP_BETA, "10.99.60.242")):
+        criado = page.evaluate(CRIAR_VIA_API, {"nome": nome, "ip": ip, "classe": "iot"})
+        assert criado["status"] == 201, criado
+        ids.append(criado["corpo"]["id"])
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 2), timeout=30_000)
+    return ids
+
+
+def abrir_ficha_no_organograma(page: Page, nome: str) -> Any:
+    org = abrir_organograma(page)
+    org.get_by_label("Buscar").fill(nome)
+    item = org.locator(".org-item").filter(has=page.locator(".org-nome", has_text=nome))
+    expect(item).to_have_count(1, timeout=10_000)
+    item.click()
+    dialogo = page.get_by_role("dialog", name=nome)
+    expect(dialogo).to_be_visible()
+    return dialogo
+
+
+def test_depende_de_define_e_mostra_na_ficha(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        expect(dialogo.locator(".equip-dep .dep-atual")).to_have_text("Nenhum")
+        dialogo.get_by_role("button", name="Alterar dependência").click()
+        dialogo.get_by_label("Buscar equipamento").fill("alfa")
+        opcao = dialogo.get_by_role("button", name=re.compile(DEP_ALFA))
+        expect(opcao).to_have_count(1)
+        # o próprio equipamento nunca é oferecido
+        expect(dialogo.get_by_role("button", name=re.compile(DEP_BETA))).to_have_count(0)
+        opcao.click()
+        expect(dialogo.locator(".dep-escolhido")).to_have_text(f"Novo pai: {DEP_ALFA}")
+        dialogo.get_by_role("button", name="Salvar").click()
+        expect(dialogo.locator(".equip-dep .dep-atual")).to_have_text(DEP_ALFA, timeout=10_000)
+        expect(dialogo.locator(".dep-editor")).to_be_hidden()
+        # o servidor guardou o vínculo
+        r = api_json(page, "GET", f"/equipamentos/{ids[1]}")
+        assert r["dados"]["pai_id"] == ids[0], r
+        # o pai agora não pode escolher o filho como pai (fecharia um ciclo)
+        page.keyboard.press("Escape")
+        dialogo = abrir_ficha_no_organograma(page, DEP_ALFA)
+        dialogo.get_by_role("button", name="Alterar dependência").click()
+        dialogo.get_by_label("Buscar equipamento").fill("beta")
+        expect(dialogo.get_by_text("Nenhum equipamento encontrado.")).to_be_visible()
+        page.keyboard.press("Escape")
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+    demo_de_volta(page)
+
+
+def test_depende_de_ciclo_mostra_erro_da_api(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        # a API é quem decide o ciclo: devolve a recusa e o painel mostra a mensagem dela
+        page.route(
+            "**/api/v1/equipamentos/*",
+            lambda route: (
+                route.fulfill(
+                    status=422,
+                    content_type="application/json",
+                    body='{"detail": "Dependência circular."}',
+                )
+                if route.request.method == "PATCH"
+                else route.continue_()
+            ),
+        )
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        dialogo.get_by_role("button", name="Alterar dependência").click()
+        dialogo.get_by_label("Buscar equipamento").fill("alfa")
+        dialogo.get_by_role("button", name=re.compile(DEP_ALFA)).click()
+        dialogo.get_by_role("button", name="Salvar").click()
+        expect(
+            dialogo.get_by_role("alert").filter(has_text="Dependência circular.")
+        ).to_be_visible()
+        expect(dialogo.locator(".equip-dep .dep-atual")).to_have_text("Nenhum")  # nada mudou
+        assert api_json(page, "GET", f"/equipamentos/{ids[1]}")["dados"]["pai_id"] is None
+        page.keyboard.press("Escape")
+        assert [e for e in erros if "422" not in e] == [], erros
+    finally:
+        page.unroute("**/api/v1/equipamentos/*")
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+    demo_de_volta(page)
+
+
+def test_camera_de_gravador_depende_de_so_leitura(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    gravador_antes = ids_por_busca(page, "10.99.50.10")
+    secao = abrir_novos(page)
+    canal = secao.locator(".nv-linha-filho").first
+    nome = "Canal Smoke Depende"
+    canal.get_by_label("Nome (opcional)").fill(nome)
+    ids: list[str] = []
+    try:
+        canal.get_by_role("button", name=re.compile("^Aprovar")).click()
+        expect(secao.locator("#novos-aviso")).to_contain_text("aprovado", timeout=10_000)
+        ids = ids_por_busca(page, nome)
+        assert len(ids) == 1, ids
+        dialogo = abrir_ficha_no_organograma(page, nome)
+        expect(dialogo.get_by_text("Depende de", exact=True)).to_be_visible()
+        expect(dialogo.locator(".equip-dep")).to_contain_text("somente leitura")
+        expect(dialogo.get_by_role("button", name="Alterar dependência")).to_be_hidden()
+        page.keyboard.press("Escape")
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+        for id_ in ids_por_busca(page, "10.99.50.10"):
+            if id_ not in gravador_antes:
+                apagar_equipamentos(page, [id_])
+    demo_de_volta(page)
+
+
+def test_visualizador_nao_edita_depende_de(page: Page, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        page.context.clear_cookies()
+        entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor, TOTAL_DEMO + 2)
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        expect(dialogo.get_by_text("Depende de", exact=True)).to_be_visible()  # só leitura
+        expect(dialogo.get_by_role("button", name="Alterar dependência")).to_be_hidden()
+        expect(dialogo.get_by_label("Buscar equipamento")).to_be_hidden()
+        page.keyboard.press("Escape")
+    finally:
+        page.context.clear_cookies()
+        entrar(page, alvo, total=TOTAL_DEMO + 2)
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+    demo_de_volta(page)
+
+
+def test_legenda_tem_inalcancavel_com_icone(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    abrir_teia(page)
+    item = page.locator(".teia-legenda li.st-inalcancavel")
+    expect(item).to_have_text("inalcançável")
+    expect(item.locator("use")).to_have_attribute("href", "#i-inalcancavel")
+    expect(item.locator("svg")).to_be_visible()
+    # o símbolo existe de verdade (um <use> sem destino ficaria invisível)
+    assert page.evaluate("!!document.getElementById('i-inalcancavel')")
+    # contador e filtro da Lista também falam do estado novo
+    page.get_by_role("tab", name="Lista").click()
+    expect(page.locator("#contador-inalcancavel")).to_be_visible()
+    expect(
+        page.get_by_role("combobox", name="Estado").locator("option", has_text="Inalcançável")
+    ).to_have_count(1)
+    assert erros == [], erros

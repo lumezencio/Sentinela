@@ -82,6 +82,8 @@ export const api = {
   pausarEquipamento: (id) => requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/pausar`),
   retomarEquipamento: (id) =>
     requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/retomar`),
+  definirPai: (id, paiId) =>
+    requisitar("PATCH", `/equipamentos/${encodeURIComponent(id)}`, { json: { pai_id: paiId } }),
   listarSubredes: () => requisitar("GET", "/subredes"),
   criarSubrede: (cidr) => requisitar("POST", "/subredes", { json: { cidr } }),
   removerSubrede: (id) => requisitar("DELETE", `/subredes/${encodeURIComponent(id)}`),

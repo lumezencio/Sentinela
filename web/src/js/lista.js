@@ -2,16 +2,19 @@
 // filtro, ordenação, paginação e contadores. 300–2000 itens cabem folgados aqui; só a
 // página visível (50 linhas) vira objeto reativo.
 
+import { motivoInalcancavel, vinculoDoGravador } from "./dependencia.js";
+
 export const POR_PAGINA = 50;
 
 /** Rótulo, ícone e peso (gravidade, para ordenar) de cada estado. */
 export const ESTADOS = {
-  online: { rotulo: "Online", icone: "i-online", peso: 4 },
-  suspeito: { rotulo: "Online", icone: "i-online", peso: 4, dica: "verificando" },
-  instavel: { rotulo: "Instável", icone: "i-instavel", peso: 1 },
+  online: { rotulo: "Online", icone: "i-online", peso: 5 },
+  suspeito: { rotulo: "Online", icone: "i-online", peso: 5, dica: "verificando" },
+  instavel: { rotulo: "Instável", icone: "i-instavel", peso: 2 },
   offline: { rotulo: "Offline", icone: "i-offline", peso: 0 },
-  pausado: { rotulo: "Pausado", icone: "i-pausado", peso: 3 },
-  desconhecido: { rotulo: "Aguardando", icone: "i-desconhecido", peso: 2 },
+  inalcancavel: { rotulo: "Inalcançável", icone: "i-inalcancavel", peso: 1 },
+  pausado: { rotulo: "Pausado", icone: "i-pausado", peso: 4 },
+  desconhecido: { rotulo: "Aguardando", icone: "i-desconhecido", peso: 3 },
 };
 
 /** Grupo do contador/filtro: "suspeito" conta como online (§9.2: nunca vermelho). */
@@ -63,7 +66,8 @@ export function prepararItem(e) {
     latencia_ms: e.latencia_ms ?? null,
     checagem: e.checagem || "icmp",
     porta: e.porta ?? null,
-    pai_id: typeof e.pai_id === "string" ? e.pai_id : null, // câmera atrás de gravador (Fase 3)
+    pai_id: typeof e.pai_id === "string" ? e.pai_id : null, // "Depende de" / gravador da câmera
+    causa: typeof e.causa === "string" ? e.causa : null, // "pai:<id>" quando inalcançável
     canal: Number.isInteger(e.canal) ? e.canal : null,
     _busca: normalizar(`${e.nome} ${e.ip}`),
     _ip: ipNumerico(e.ip),
@@ -76,7 +80,10 @@ export function aplicarEstado(store, msg) {
   if (!item) return false;
   item.estado = msg.estado;
   item.desde = msg.desde;
-  if (msg.estado === "offline" || msg.estado === "pausado") item.latencia_ms = null;
+  item.causa = typeof msg.causa === "string" ? msg.causa : null;
+  if (msg.estado === "offline" || msg.estado === "pausado" || msg.estado === "inalcancavel") {
+    item.latencia_ms = null;
+  }
   return true;
 }
 
@@ -91,13 +98,17 @@ export function aplicarEquipamento(store, msg) {
   if (msg.acao !== "criado" && msg.acao !== "atualizado") return false;
   const e = msg.equipamento;
   if (!e || typeof e.id !== "string" || typeof e.nome !== "string") return false;
-  store.itens.set(e.id, prepararItem(e));
+  const anterior = store.itens.get(e.id);
+  const novo = prepararItem(e);
+  // a linha do WS não traz a causa: quem continua inalcançável continua com ela
+  if (novo.causa === null && anterior && anterior.estado === novo.estado) novo.causa = anterior.causa;
+  store.itens.set(e.id, novo);
   return true;
 }
 
 /** "Atrás do gravador NVR A, canal 3" para câmera de gravador; "" para os demais. */
 export function atrasDoGravador(item, store) {
-  if (!item || !item.pai_id) return "";
+  if (!item || !item.pai_id || !vinculoDoGravador(item)) return "";
   const pai = store.itens.get(item.pai_id);
   const canal = item.canal !== null && item.canal !== undefined ? `, canal ${item.canal}` : "";
   return pai ? `Atrás do gravador ${pai.nome}${canal}` : `Atrás do gravador${canal}`;
@@ -111,7 +122,7 @@ export function aplicarLatencias(store, lote) {
 }
 
 export function contar(store) {
-  const c = { total: 0, online: 0, instavel: 0, offline: 0, pausado: 0, aguardando: 0 };
+  const c = { total: 0, online: 0, instavel: 0, offline: 0, inalcancavel: 0, pausado: 0, aguardando: 0 };
   for (const item of store.itens.values()) {
     c.total += 1;
     c[grupoDe(item.estado)] += 1;
@@ -198,5 +209,6 @@ export function linhaDeTela(item, store, agora) {
     latencia: formatarLatencia(item.latencia_ms),
     checagem: rotuloChecagem(item.checagem, item.porta),
     atras: atrasDoGravador(item, store),
+    motivo: motivoInalcancavel(item, store),
   };
 }

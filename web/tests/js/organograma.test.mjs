@@ -52,11 +52,11 @@ test("organograma: itens por gravidade (offline, instável, suspeito, aguardando
   assert.equal(cameras.total, 8);
   assert.equal(cameras.nome, "Câmeras");
   assert.equal(cameras.cor, "#5B8DEF");
-  assert.deepEqual(cameras.contagem, { online: 3, instavel: 1, offline: 2, pausado: 1, aguardando: 1 });
+  assert.deepEqual(cameras.contagem, { online: 3, instavel: 1, offline: 2, pausado: 1, aguardando: 1, inalcancavel: 0 });
 });
 
 test("organograma: GRAVIDADE crescente do pior ao melhor", () => {
-  const ordem = ["offline", "instavel", "suspeito", "desconhecido", "pausado", "online"];
+  const ordem = ["offline", "inalcancavel", "instavel", "suspeito", "desconhecido", "pausado", "online"];
   for (let i = 1; i < ordem.length; i++) assert.ok(GRAVIDADE[ordem[i - 1]] < GRAVIDADE[ordem[i]]);
 });
 
@@ -65,7 +65,7 @@ test("organograma: filtro por estado mantém só as classes com itens no estado"
   assert.deepEqual(org.map((c) => c.slug), ["camera"]);
   assert.deepEqual(org[0].itens.map((i) => i.id), ["c6", "c8"]);
   assert.equal(org[0].total, 2);
-  assert.deepEqual(org[0].contagem, { online: 0, instavel: 0, offline: 2, pausado: 0, aguardando: 0 });
+  assert.deepEqual(org[0].contagem, { online: 0, instavel: 0, offline: 2, pausado: 0, aguardando: 0, inalcancavel: 0 });
 });
 
 test("organograma: filtros de classe e busca (os mesmos da Lista)", () => {
@@ -182,4 +182,41 @@ test("organograma: gravador que não está no store aparece como 'gravador'", ()
   const cameras = montarOrganograma(store, SEM_FILTRO).find((c) => c.slug === "camera");
   const titulos = paginaDoCartao(cameras, 1).grupos.map((g) => g.titulo);
   assert.ok(titulos.includes("Atrás do gravador"), titulos);
+});
+
+test("organograma: inalcançável vem depois do offline e antes do instável; GRAVIDADE do brief", () => {
+  assert.deepEqual(GRAVIDADE, {
+    offline: 0, inalcancavel: 1, instavel: 2, suspeito: 3, desconhecido: 4, pausado: 5, online: 6,
+  });
+  const store = criarStore();
+  aplicarSnapshot(store, {
+    classes: [{ slug: "camera", nome: "Câmeras", cor: "#5B8DEF", ordem: 1 }],
+    equipamentos: [
+      { id: "a", nome: "A", ip: "10.99.1.1", classe: "camera", estado: "instavel" },
+      { id: "b", nome: "B", ip: "10.99.1.2", classe: "camera", estado: "inalcancavel" },
+      { id: "c", nome: "C", ip: "10.99.1.3", classe: "camera", estado: "offline" },
+      { id: "d", nome: "D", ip: "10.99.1.4", classe: "camera", estado: "online" },
+    ],
+  });
+  const [cartao] = montarOrganograma(store, SEM_FILTRO);
+  assert.deepEqual(cartao.itens.map((i) => i.id), ["c", "b", "a", "d"]);
+  assert.equal(cartao.contagem.inalcancavel, 1);
+  const pag = paginaDoCartao(cartao, 1);
+  assert.equal(pag.itens[1].estadoIcone, "#i-inalcancavel");
+  assert.equal(pag.itens[1].estadoRotulo, "Inalcançável");
+});
+
+test("organograma: dependente comum (sem canal) não vira 'Atrás do gravador'", () => {
+  const store = criarStore();
+  aplicarSnapshot(store, {
+    classes: [{ slug: "camera", nome: "Câmeras", cor: "#5B8DEF", ordem: 1 }],
+    equipamentos: [
+      { id: "sw", nome: "Switch", ip: "10.99.1.1", classe: "camera", estado: "online" },
+      { id: "x", nome: "X", ip: "10.99.1.2", classe: "camera", estado: "online", pai_id: "sw" },
+    ],
+  });
+  const [cartao] = montarOrganograma(store, SEM_FILTRO);
+  const grupos = paginaDoCartao(cartao, 1).grupos;
+  assert.equal(grupos.length, 1);
+  assert.equal(grupos[0].titulo, "");
 });

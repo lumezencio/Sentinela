@@ -63,7 +63,9 @@ function painel() {
     admin: false,
     conexao: "conectando",
     carregado: false,
-    contadores: { total: 0, online: 0, instavel: 0, offline: 0, pausado: 0, aguardando: 0 },
+    contadores: {
+      total: 0, online: 0, instavel: 0, offline: 0, inalcancavel: 0, pausado: 0, aguardando: 0,
+    },
     classes: [],
     filtroClasse: "",
     filtroEstado: "",

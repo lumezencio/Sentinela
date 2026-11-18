@@ -136,7 +136,7 @@ html[data-aba="organograma"] #conteudo-lista {
 /* ---------- contadores ---------- */
 .contadores {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   margin: 20px 0 16px;
 }
@@ -230,7 +230,8 @@ html[data-aba="organograma"] #conteudo-lista {
   --cor-status: var(--offline);
 }
 
-.st-pausado {
+.st-pausado,
+.st-inalcancavel {
   --cor-status: var(--pausado);
 }
 
@@ -317,7 +318,8 @@ html[data-aba="organograma"] #conteudo-lista {
   border: 1px solid var(--borda);
   border-radius: var(--raio);
   background: var(--superficie);
-  overflow: hidden;
+  overflow-x: auto; /* tablet estreito: a tabela rola dentro do cartão, nada fica cortado sem saída */
+  overflow-y: hidden;
 }
 
 .tabela {
@@ -340,6 +342,13 @@ html[data-aba="organograma"] #conteudo-lista {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+/* o nome nunca é cortado nem empurra as outras colunas para fora do cartão: quebra de linha */
+.tabela td.td-nome {
+  min-width: 160px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .tabela tbody tr:last-child td {
@@ -368,7 +377,8 @@ html[data-aba="organograma"] #conteudo-lista {
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .tabela td.td-ip {
+  .tabela td.td-ip,
+  .tabela td.td-nome {
     overflow: visible;
     text-overflow: clip;
   }
@@ -635,7 +645,8 @@ html[data-aba="organograma"] .aviso-sem-alpine {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
   }
-  .contador-total {
+  .contador-total,
+  .contadores > .contador:last-child:nth-child(even) {
     grid-column: 1 / -1;
   }
   .contador .numero {
@@ -1101,10 +1112,8 @@ html[data-aba="teia"] .campo {
 }
 
 .teia-equip-nome {
-  overflow: hidden;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .teia-equip-ip {
@@ -1186,10 +1195,103 @@ html[data-aba="teia"] .campo {
   font-size: 13.5px;
 }
 
+.teia-ficha .ficha-larga {
+  grid-column: 1 / -1;
+}
+
 .teia-equip-acoes {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+
+/* ---------- "Depende de" ---------- */
+.equip-dep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.dep-nota {
+  color: var(--texto-suave);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dep-editor {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--superficie-2);
+}
+
+.dep-lista {
+  display: grid;
+  gap: 4px;
+  max-height: 192px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+}
+
+.dep-opcao {
+  display: grid;
+  gap: 0;
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--raio-p);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dep-opcao:hover {
+  background: var(--superficie-2);
+}
+
+.dep-opcao[aria-pressed="true"] {
+  border-color: var(--primaria);
+}
+
+.dep-nome {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dep-classe {
+  color: var(--texto-suave);
+  font-size: 12px;
+}
+
+.dep-escolhido {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dep-acoes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.dep-acoes .botao {
+  min-height: 40px;
+}
+
+.dep-acoes .botao-fantasma {
+  grid-column: 1 / -1;
 }
 
 .teia-equip-acoes .botao {
@@ -1611,10 +1713,10 @@ html[data-aba="teia"] .campo {
   .teia-painel-equip {
     top: auto;
     right: var(--vao);
-    bottom: calc(var(--vao) + 54px);
+    bottom: calc(var(--vao) + 64px);
     left: var(--vao);
     width: auto;
-    max-height: 46%;
+    max-height: 56%;
   }
   .teia-legenda {
     display: none;

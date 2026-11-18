@@ -112,6 +112,12 @@ function texMarca(acervo, forma) {
       g.beginPath();
       g.arc(32, 32, 24, 0, Math.PI * 2);
       g.stroke();
+    } else if (forma === "elo") {
+      // toro aberto: elo partido, com a abertura à direita (não confunde com o anel fechado)
+      g.lineWidth = 6;
+      g.beginPath();
+      g.arc(32, 32, 24, Math.PI * 0.28, Math.PI * 1.72);
+      g.stroke();
     } else {
       g.lineWidth = 8;
       g.beginPath();
@@ -183,7 +189,7 @@ function criarCorpo(acervo, escala, resolucao) {
 }
 
 /**
- * Reaplica a aparência do estado: cor, opacidade e marca ("anel" ou "×"). Pulso e tremor
+ * Reaplica a aparência do estado: cor, opacidade e marca ("anel", "elo" aberto ou "×"). Pulso e tremor
  * ficam a cargo do laço de render (escala/posição), lidos de userData.aparencia.
  */
 export function vestirCorpo(grupo, acervo, estado, esmaecido) {
@@ -197,7 +203,7 @@ export function vestirCorpo(grupo, acervo, estado, esmaecido) {
   u.halo.scale.set(lado, lado, 1);
   u.esfera.scale.setScalar(escala);
   u.esfera.position.set(0, 0, 0);
-  const temMarca = ap.forma === "anel" || ap.forma === "cruz";
+  const temMarca = ap.forma === "anel" || ap.forma === "cruz" || ap.forma === "elo";
   u.marca.visible = temMarca;
   if (temMarca) {
     u.marca.material = matMarca(acervo, ap.forma, ap.cor, esmaecido);

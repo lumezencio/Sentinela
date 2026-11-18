@@ -3,6 +3,7 @@
 // classes, painel do equipamento com histórico e atalhos de admin. Misturado ao componente
 // "painel" do app.js (mesmo `this` do Alpine); a cena fica FORA da reatividade.
 import { api } from "./api.js";
+import { candidatosPai, vinculoDoGravador } from "./dependencia.js";
 import {
   abaDoHash, carregarTeia, equipamentosDaClasse, ESTILOS, estiloSalvo, fichaDoEquipamento,
   margensDosPaineis, NOMES_ESTILO, quedasDoHistorico, resumoDasClasses, salvarEstilo,
@@ -13,6 +14,7 @@ const AVISO_SEM_3D = "Seu navegador não tem 3D; mostrando o Organograma.";
 const MSG_HISTORICO = "Não foi possível carregar o histórico.";
 const MSG_CARGA = "Não foi possível abrir a Teia. Tente de novo ou veja o Organograma.";
 const MSG_PAUSA = "Não foi possível pausar/retomar.";
+const MSG_DEPENDENCIA = "Não foi possível salvar a dependência.";
 const TITULOS = {
   lista: "Lista", teia: "Teia", organograma: "Organograma", novos: "Novos",
   configuracoes: "Configurações",
@@ -21,7 +23,7 @@ const TITULOS = {
 const FICHA_VAZIA = {
   id: "", nome: "", classe: "", corClasse: "", ip: "", checagem: "", estadoClasse: "",
   estadoIcone: "#i-desconhecido", estadoRotulo: "", desde: "", desdeTitulo: "", latencia: "",
-  pausado: false, atras: "",
+  pausado: false, atras: "", dependeDe: "", dependeDeId: "", dependeSoLeitura: false,
 };
 
 /** Tira do palco o que uma montagem que falhou no meio deixou (canvas, camadas, atributos). */
@@ -68,6 +70,13 @@ export function visoesDoPainel(store) {
     historicoErro: "",
     acaoErro: "",
     pausando: false,
+    // "Depende de" (admin): busca entre os candidatos, escolha e salvar
+    depEditando: false,
+    depBusca: "",
+    depCandidatos: [],
+    depEscolhido: null,
+    depSalvando: false,
+    depErro: "",
 
     // ---------- abas ----------
     iniciarVisoes() {
@@ -320,6 +329,7 @@ export function visoesDoPainel(store) {
       const it = store.itens.get(id);
       if (!it) return;
       if (!this.equipAberto) focoAntesDoPainel = document.activeElement;
+      if (this.equip.id !== id) this.fecharDep();
       this.equip = fichaDoEquipamento(it, store);
       this.equipAberto = true;
       this.acaoErro = "";
@@ -336,6 +346,7 @@ export function visoesDoPainel(store) {
 
     fecharEquipamento(devolverFoco = true) {
       if (!this.equipAberto) return;
+      this.fecharDep();
       pedidoHistorico += 1;
       this.equipAberto = false;
       this.historico = [];
@@ -383,6 +394,83 @@ export function visoesDoPainel(store) {
     },
     get historicoVazio() {
       return !this.historicoCarregando && !this.historicoErro && this.historico.length === 0;
+    },
+    // ---------- "Depende de" ----------
+    get depPodeEditar() {
+      return this.admin && this.equipAberto && !this.equip.dependeSoLeitura;
+    },
+    get depEditorAberto() {
+      return this.depPodeEditar && this.depEditando;
+    },
+    get depAriaExpandido() {
+      return this.depEditando ? "true" : "false";
+    },
+    get depSemResultado() {
+      return this.depEditando && this.depCandidatos.length === 0;
+    },
+    get depSalvarDesabilitado() {
+      return this.depSalvando || !this.depEscolhido;
+    },
+    get depRotuloEscolhido() {
+      return this.depEscolhido ? `Novo pai: ${this.depEscolhido.nome}` : "";
+    },
+    depPressionado(id) {
+      return this.depEscolhido && this.depEscolhido.id === id ? "true" : "false";
+    },
+    abrirDep() {
+      if (!this.depPodeEditar) return;
+      this.depEditando = true;
+      this.depErro = "";
+      this.depBusca = "";
+      this.depEscolhido = null;
+      this.aoBuscarDep();
+      this.$nextTick(() => {
+        const campo = document.querySelector(this.aba === "teia" ? "#dep-busca" : "#dep-busca-org");
+        if (campo) campo.focus();
+      });
+    },
+    fecharDep() {
+      this.depEditando = false;
+      this.depBusca = "";
+      this.depCandidatos = [];
+      this.depEscolhido = null;
+      this.depErro = "";
+    },
+    aoBuscarDep() {
+      if (!this.equipAberto) return;
+      this.depCandidatos = candidatosPai(store, this.equip.id, this.depBusca);
+    },
+    escolherPai(id) {
+      const c = this.depCandidatos.find((x) => x.id === id);
+      this.depEscolhido = c ? { id: c.id, nome: c.nome } : null;
+    },
+    salvarDep() {
+      if (this.depEscolhido) return this.gravarDep(this.depEscolhido.id);
+    },
+    removerDep() {
+      return this.gravarDep(null);
+    },
+    async gravarDep(paiId) {
+      if (!this.depPodeEditar || this.depSalvando) return;
+      const id = this.equip.id;
+      const alvo = store.itens.get(id);
+      if (!alvo || vinculoDoGravador(alvo)) return;
+      this.depErro = "";
+      this.depSalvando = true;
+      const r = await api.definirPai(id, paiId);
+      this.depSalvando = false;
+      if (!r.ok || !r.dados) {
+        if (this.equipAberto && this.equip.id === id) this.depErro = r.erro || MSG_DEPENDENCIA;
+        return;
+      }
+      const item = store.itens.get(id);
+      if (item) {
+        item.pai_id = typeof r.dados.pai_id === "string" ? r.dados.pai_id : null;
+        this.agendarRender();
+      }
+      if (!this.equipAberto || this.equip.id !== id) return;
+      if (item) this.equip = fichaDoEquipamento(item, store);
+      this.fecharDep();
     },
     get rotuloPausa() {
       return this.equip.pausado ? "Retomar" : "Pausar";
