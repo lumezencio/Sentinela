@@ -367,6 +367,24 @@ html[data-aba="organograma"] #conteudo-lista {
   }
 }
 
+/* Tablet (768 a 1199 px): sem espaço para 7 colunas; "Desde" e "Checagem" saem da tabela (continuam
+   na ficha e no cartão do celular) e o espaço das células encolhe, para nada passar da borda. */
+@media (min-width: 768px) and (max-width: 1199px) {
+  .tabela th,
+  .tabela td {
+    padding: 11px 8px;
+  }
+  .tabela th:nth-child(5),
+  .tabela td:nth-child(5),
+  .tabela th:nth-child(7),
+  .tabela td:nth-child(7) {
+    display: none;
+  }
+  .tabela td.td-nome {
+    min-width: 120px;
+  }
+}
+
 /* Colunas fixas (independem do conteúdo) só com largura de sobra; abaixo disso a tabela se
    ajusta ao conteúdo e nada é cortado. O IP nunca corta; nome e "desde" têm title. */
 @media (min-width: 1200px) {

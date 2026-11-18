@@ -311,11 +311,11 @@
         <div><dt>Checagem</dt><dd class="mono" x-text="equip.checagem"></dd></div>
         <div><dt>Latência</dt><dd class="mono" x-text="equip.latencia"></dd></div>
         <div x-show="equip.atras"><dt>Gravador</dt><dd class="equip-atras" x-text="equip.atras"></dd></div>
-        <div class="ficha-larga"><dt>Depende de</dt><dd class="equip-dep"><span class="dep-atual" :class="equip.dependeDe ? '' : 'suave'" x-text="equip.dependeDe || 'Nenhum'"></span><span class="dep-nota" x-show="equip.dependeSoLeitura">definido pelo gravador, somente leitura</span></dd></div>
+        <div class="ficha-larga"><dt>Depende de</dt><dd class="equip-dep"><span class="dep-atual" :class="equip.dependeDe ? '' : 'suave'" x-text="equip.dependeDe || 'Nenhum'"></span><span class="dep-nota" x-show="equip.dependeSoLeitura">somente leitura (definido pela descoberta)</span></dd></div>
       </dl>
       <div class="teia-equip-acoes" x-show="admin">
         <button class="botao" type="button" @click="alternarPausa" :disabled="pausando" x-text="rotuloPausa">Pausar</button>
-        <button class="botao" type="button" @click="abrirDep" x-show="depPodeEditar" :aria-expanded="depAriaExpandido">Alterar dependência</button>
+        <button class="botao" type="button" id="dep-alterar" @click="abrirDep" x-show="depPodeEditar" :aria-expanded="depAriaExpandido">Alterar dependência</button>
       </div>
       <div class="dep-editor" x-show="depEditorAberto" x-cloak>
         <div class="campo-form">
@@ -328,11 +328,12 @@
           </template>
         </ul>
         <p class="teia-sub" role="status" x-show="depSemResultado">Nenhum equipamento encontrado.</p>
+        <p class="teia-sub" role="status" x-show="depTruncado">Mostrando 50; refine a busca.</p>
         <p class="dep-escolhido" role="status" x-show="depEscolhido" x-text="depRotuloEscolhido"></p>
         <div class="dep-acoes">
           <button class="botao botao-primario" type="button" @click="salvarDep" :disabled="depSalvarDesabilitado">Salvar</button>
           <button class="botao" type="button" @click="removerDep" :disabled="depSalvando" x-show="equip.dependeDeId">Remover dependência</button>
-          <button class="botao botao-fantasma" type="button" @click="fecharDep" :disabled="depSalvando">Cancelar</button>
+          <button class="botao botao-fantasma" type="button" @click="cancelarDep" :disabled="depSalvando">Cancelar</button>
         </div>
         <p class="alerta" role="alert" x-show="depErro" x-text="depErro"></p>
       </div>
@@ -732,11 +733,11 @@
       <div><dt>Checagem</dt><dd class="mono" x-text="equip.checagem"></dd></div>
       <div><dt>Latência</dt><dd class="mono" x-text="equip.latencia"></dd></div>
       <div x-show="equip.atras"><dt>Gravador</dt><dd class="equip-atras" x-text="equip.atras"></dd></div>
-      <div class="ficha-larga"><dt>Depende de</dt><dd class="equip-dep"><span class="dep-atual" :class="equip.dependeDe ? '' : 'suave'" x-text="equip.dependeDe || 'Nenhum'"></span><span class="dep-nota" x-show="equip.dependeSoLeitura">definido pelo gravador, somente leitura</span></dd></div>
+      <div class="ficha-larga"><dt>Depende de</dt><dd class="equip-dep"><span class="dep-atual" :class="equip.dependeDe ? '' : 'suave'" x-text="equip.dependeDe || 'Nenhum'"></span><span class="dep-nota" x-show="equip.dependeSoLeitura">somente leitura (definido pela descoberta)</span></dd></div>
     </dl>
     <div class="teia-equip-acoes" x-show="admin">
       <button class="botao" type="button" @click="alternarPausa" :disabled="pausando" x-text="rotuloPausa">Pausar</button>
-      <button class="botao" type="button" @click="abrirDep" x-show="depPodeEditar" :aria-expanded="depAriaExpandido">Alterar dependência</button>
+      <button class="botao" type="button" id="dep-alterar-org" @click="abrirDep" x-show="depPodeEditar" :aria-expanded="depAriaExpandido">Alterar dependência</button>
     </div>
     <div class="dep-editor" x-show="depEditorAberto" x-cloak>
       <div class="campo-form">
@@ -749,11 +750,12 @@
         </template>
       </ul>
       <p class="teia-sub" role="status" x-show="depSemResultado">Nenhum equipamento encontrado.</p>
+        <p class="teia-sub" role="status" x-show="depTruncado">Mostrando 50; refine a busca.</p>
       <p class="dep-escolhido" role="status" x-show="depEscolhido" x-text="depRotuloEscolhido"></p>
       <div class="dep-acoes">
         <button class="botao botao-primario" type="button" @click="salvarDep" :disabled="depSalvarDesabilitado">Salvar</button>
         <button class="botao" type="button" @click="removerDep" :disabled="depSalvando" x-show="equip.dependeDeId">Remover dependência</button>
-        <button class="botao botao-fantasma" type="button" @click="fecharDep" :disabled="depSalvando">Cancelar</button>
+        <button class="botao botao-fantasma" type="button" @click="cancelarDep" :disabled="depSalvando">Cancelar</button>
       </div>
       <p class="alerta" role="alert" x-show="depErro" x-text="depErro"></p>
     </div>

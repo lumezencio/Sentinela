@@ -1,6 +1,8 @@
 // "Depende de" (Fase 4): árvore de dependência entre equipamentos, só funções puras sobre o
 // store da lista. A API é quem valida de verdade (ciclo, profundidade); aqui só se evita
-// oferecer ao usuário o que ela recusaria. Não importa nada de lista.js (que importa este).
+// oferecer ao usuário o que ela recusaria. O import circular de lista.js só é usado dentro de
+// funções (nunca na carga do módulo), então é seguro.
+import { ESTADOS } from "./lista.js";
 
 const MAX_CANDIDATOS = 50;
 
@@ -56,12 +58,14 @@ export function candidatosPai(store, id, busca, max = MAX_CANDIDATOS) {
   return achados.slice(0, Math.max(0, max));
 }
 
-/** "Depende de Switch Bloco B (inalcançável)" para item inalcançável; "" nos demais. */
+/** "Depende de Switch Bloco B (offline)": estado real do pai, em minúsculas; "" se não inalcançável. */
 export function motivoInalcancavel(item, store) {
   if (!item || item.estado !== "inalcancavel") return "";
   const causa = typeof item.causa === "string" && item.causa.startsWith("pai:") ? item.causa.slice(4) : "";
   const idPai = causa || item.pai_id;
   if (!idPai) return "";
   const pai = store.itens.get(idPai);
-  return `Depende de ${pai ? pai.nome : "equipamento removido"} (inalcançável)`;
+  if (!pai) return "Depende de equipamento removido";
+  const rotulo = (ESTADOS[pai.estado] || ESTADOS.desconhecido).rotulo.toLowerCase();
+  return `Depende de ${pai.nome} (${rotulo})`;
 }

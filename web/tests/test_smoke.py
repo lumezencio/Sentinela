@@ -1636,3 +1636,39 @@ def test_legenda_tem_inalcancavel_com_icone(page: Page, alvo: Alvo) -> None:
         page.get_by_role("combobox", name="Estado").locator("option", has_text="Inalcançável")
     ).to_have_count(1)
     assert erros == [], erros
+
+
+@pytest.mark.parametrize("largura", [768, 800, 1024, 1199, 1200, 1366])
+def test_lista_cabe_no_cartao_sem_rolagem_interna(
+    browser: Browser, alvo: Alvo, largura: int
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo)
+        expect(linhas(page)).to_have_count(POR_PAGINA)
+        cabe = page.evaluate(
+            "(() => { const c = document.querySelector('.painel-lista');"
+            " return c.scrollWidth <= c.clientWidth; })()"
+        )
+        assert cabe, f"a tabela passa da borda do cartão em {largura} px"
+    finally:
+        contexto.close()
+
+
+def test_cancelar_depende_de_devolve_o_foco_ao_botao(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        alterar = dialogo.get_by_role("button", name="Alterar dependência")
+        alterar.click()
+        dialogo.get_by_role("button", name="Cancelar").click()
+        expect(dialogo.locator(".dep-editor")).to_be_hidden()
+        expect(alterar).to_be_focused()
+        page.keyboard.press("Escape")
+    finally:
+        apagar_equipamentos(page, ids[::-1])
+    demo_de_volta(page)

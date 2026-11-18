@@ -14,6 +14,7 @@ const AVISO_SEM_3D = "Seu navegador não tem 3D; mostrando o Organograma.";
 const MSG_HISTORICO = "Não foi possível carregar o histórico.";
 const MSG_CARGA = "Não foi possível abrir a Teia. Tente de novo ou veja o Organograma.";
 const MSG_PAUSA = "Não foi possível pausar/retomar.";
+const MAX_DEP = 50;
 const MSG_DEPENDENCIA = "Não foi possível salvar a dependência.";
 const TITULOS = {
   lista: "Lista", teia: "Teia", organograma: "Organograma", novos: "Novos",
@@ -75,6 +76,7 @@ export function visoesDoPainel(store) {
     depBusca: "",
     depCandidatos: [],
     depEscolhido: null,
+    depTruncado: false,
     depSalvando: false,
     depErro: "",
 
@@ -429,8 +431,20 @@ export function visoesDoPainel(store) {
         if (campo) campo.focus();
       });
     },
+    /** Cancelar: fecha o editor e devolve o foco ao botão que o abriu. */
+    cancelarDep() {
+      this.fecharDep();
+      this.devolverFocoDep();
+    },
+    devolverFocoDep() {
+      this.$nextTick(() => {
+        const b = document.getElementById(this.aba === "teia" ? "dep-alterar" : "dep-alterar-org");
+        if (b) b.focus();
+      });
+    },
     fecharDep() {
       this.depEditando = false;
+      this.depTruncado = false;
       this.depBusca = "";
       this.depCandidatos = [];
       this.depEscolhido = null;
@@ -438,7 +452,9 @@ export function visoesDoPainel(store) {
     },
     aoBuscarDep() {
       if (!this.equipAberto) return;
-      this.depCandidatos = candidatosPai(store, this.equip.id, this.depBusca);
+      const achados = candidatosPai(store, this.equip.id, this.depBusca, MAX_DEP + 1);
+      this.depTruncado = achados.length > MAX_DEP;
+      this.depCandidatos = achados.slice(0, MAX_DEP);
     },
     escolherPai(id) {
       const c = this.depCandidatos.find((x) => x.id === id);
@@ -471,6 +487,7 @@ export function visoesDoPainel(store) {
       if (!this.equipAberto || this.equip.id !== id) return;
       if (item) this.equip = fichaDoEquipamento(item, store);
       this.fecharDep();
+      this.devolverFocoDep();
     },
     get rotuloPausa() {
       return this.equip.pausado ? "Retomar" : "Pausar";

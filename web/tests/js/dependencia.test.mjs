@@ -72,17 +72,20 @@ test("candidatosPai: nome hostil continua texto puro", () => {
   assert.equal(typeof r[0].nome, "string");
 });
 
-test("motivoInalcancavel: nome do pai pela causa do estado", () => {
+test("motivoInalcancavel: nome do pai pela causa e o estado real dele", () => {
   const store = arvore();
   aplicarEstado(store, { id: "c", estado: "inalcancavel", desde: T, causa: "pai:b" });
+  aplicarEstado(store, { id: "b", estado: "inalcancavel", desde: T, causa: "pai:raiz" });
   assert.equal(motivoInalcancavel(store.itens.get("c"), store), "Depende de Switch Bloco B (inalcançável)");
+  aplicarEstado(store, { id: "b", estado: "offline", desde: T });
+  assert.equal(motivoInalcancavel(store.itens.get("c"), store), "Depende de Switch Bloco B (offline)");
 });
 
 test("motivoInalcancavel: sem causa usa pai_id; fora do estado ou sem pai devolve vazio", () => {
   const store = arvore();
   aplicarEstado(store, { id: "c", estado: "inalcancavel", desde: T });
-  assert.equal(motivoInalcancavel(store.itens.get("c"), store), "Depende de Switch Bloco B (inalcançável)");
+  assert.equal(motivoInalcancavel(store.itens.get("c"), store), "Depende de Switch Bloco B (online)");
   assert.equal(motivoInalcancavel(store.itens.get("b"), store), "");
   aplicarEstado(store, { id: "solto", estado: "inalcancavel", desde: T, causa: "pai:inexistente" });
-  assert.equal(motivoInalcancavel(store.itens.get("solto"), store), "Depende de equipamento removido (inalcançável)");
+  assert.equal(motivoInalcancavel(store.itens.get("solto"), store), "Depende de equipamento removido");
 });

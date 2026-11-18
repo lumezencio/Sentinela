@@ -102,6 +102,6 @@ test("linhaDeTela: inalcançável mostra de quem depende; dependente comum não 
   assert.equal(l.estadoIcone, "#i-inalcancavel");
   assert.equal(l.estadoClasse, "estado st-inalcancavel");
   assert.equal(l.atras, "");
-  assert.equal(l.motivo, "Depende de Switch Bloco B (inalcançável)");
+  assert.equal(l.motivo, "Depende de Switch Bloco B (offline)");
   assert.equal(linhaDeTela(store.itens.get("sw"), store, 0).motivo, "");
 });

@@ -104,6 +104,14 @@ def test_capturar_dependencia(page: Page, alvo: Alvo) -> None:
             page.get_by_role("combobox", name="Estado").select_option("inalcancavel")
             expect(page.locator("#lista tbody tr.linha").first).to_be_visible()
             page.evaluate("window.scrollTo(0, 0)")
+            sobra = page.evaluate(
+                "(() => { const c = document.querySelector('.painel-lista');"
+                " const t = c.querySelector('table');"
+                " return [c.scrollWidth - c.clientWidth,"
+                " Math.round(t.getBoundingClientRect().right"
+                " - c.getBoundingClientRect().right)]; })()"
+            )
+            print("SOBRA", largura, sobra)
             page.screenshot(path=str(saida / f"lista-{largura}.png"))
             page.get_by_role("combobox", name="Estado").select_option("")
             # ficha no Organograma, com o editor de "Depende de" aberto
