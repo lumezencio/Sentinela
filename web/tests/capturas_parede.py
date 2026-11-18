@@ -10,6 +10,8 @@ de 300 caracteres), emparelha um telão de nome longo pela API e captura:
 - ``parede-codigo-<largura>.png``: tela do código (TV ainda não emparelhada);
 - ``parede-teia-<largura>.png``: telão com a Teia (WebGL por software do Chromium);
 - ``parede-organograma-<largura>.png``: telão sem WebGL (Organograma em modo telão);
+- ``parede-cartao-<largura>.png``: os cartões de queda sobre o Organograma (2 à vista: o grupo
+  de 14 afetados e o nome de 300 caracteres; sem IP, MAC, fabricante nem latência);
 - ``parede-sem-conexao-<largura>.png``: servidor fora por mais de 60 s (relógio falso);
 - ``teloes-<tema>-<largura>.png`` e ``...-pagina.png``: o cartão Telões (com a chave HTTP
   ligada, mostrando o aviso de HSTS, um telão ativo e um revogado).
@@ -109,6 +111,35 @@ def _sem_conexao(navegador: Browser, url: str, estado: dict[str, Any], saida: Pa
         contexto.close()
 
 
+def _cartoes(navegador: Browser, url: str, estado: dict[str, Any], saida: Path) -> None:
+    """Injeta no WebSocket do telão a abertura de três quedas abertas (o grupo de 14 afetados,
+    o nome de 300 caracteres e uma simples): só 2 cartões aparecem."""
+    from conftest import PonteWs
+
+    contexto = navegador.new_context(ignore_https_errors=True, base_url=url, storage_state=estado)
+    try:
+        page = contexto.new_page()
+        ponte = PonteWs(page, r".*/ws/parede$")
+        page.goto("/parede/")
+        expect(page.locator("body")).to_have_attribute("data-modo", "telao", timeout=20_000)
+        page.set_viewport_size({"width": 1920, "height": ALTURA})
+        alertas = page.evaluate(
+            "async () => (await (await fetch('/api/v1/parede/snapshot')).json()).alertas"
+        )
+        grupo = max(alertas, key=lambda a: a["afetados"])
+        longo = max((a for a in alertas if a is not grupo), key=lambda a: len(a["texto"]))
+        simples = next(a for a in alertas if a not in (grupo, longo) and a["tipo"] == "queda")
+        for alerta in (simples, longo, grupo):  # o último abre em cima
+            ponte.injetar({"tipo": "alerta", "acao": "aberto", "alerta": alerta})
+        expect(page.locator("#pr-cartoes .pr-ca").first).to_be_visible()
+        for largura in LARGURAS:
+            page.set_viewport_size({"width": largura, "height": ALTURA})
+            page.wait_for_timeout(400)
+            page.screenshot(path=str(saida / f"parede-cartao-{largura}.png"))
+    finally:
+        contexto.close()
+
+
 def _teloes(navegador: Browser, url: str, admin: dict[str, Any], saida: Path) -> None:
     for tema in TEMAS:
         for largura in LARGURAS:
@@ -171,6 +202,7 @@ def capturar(url: str, login: str, senha: str, banco: str, saida: Path) -> None:
                     _telao(contexto.new_page(), saida, f"parede-{nome}", 3000)
                 finally:
                     contexto.close()
+            _cartoes(sem_gl, url, estado, saida)
             _sem_conexao(sem_gl, url, estado, saida)
 
             # cartão Telões: um ativo, um revogado e a chave HTTP ligada (aviso de HSTS)

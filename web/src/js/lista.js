@@ -80,6 +80,7 @@ export function prepararItem(e) {
     estado: e.estado,
     desde: e.desde,
     latencia_ms: e.latencia_ms ?? null,
+    ultima_latencia_ms: e.latencia_ms ?? null, // sobrevive à queda (o cartão de alerta a mostra)
     checagem: e.checagem || "icmp",
     porta: e.porta ?? null,
     pai_id: typeof e.pai_id === "string" ? e.pai_id : null, // "Depende de" / gravador da câmera
@@ -118,6 +119,7 @@ export function aplicarEquipamento(store, msg) {
   const novo = prepararItem(e);
   // a linha do WS não traz a causa: quem continua inalcançável continua com ela
   if (novo.causa === null && anterior && anterior.estado === novo.estado) novo.causa = anterior.causa;
+  if (novo.ultima_latencia_ms === null && anterior) novo.ultima_latencia_ms = anterior.ultima_latencia_ms ?? null;
   store.itens.set(e.id, novo);
   return true;
 }
@@ -133,7 +135,10 @@ export function atrasDoGravador(item, store) {
 export function aplicarLatencias(store, lote) {
   for (const par of lote || []) {
     const item = store.itens.get(par[0]);
-    if (item) item.latencia_ms = par[1];
+    if (item) {
+      item.latencia_ms = par[1];
+      if (typeof par[1] === "number") item.ultima_latencia_ms = par[1];
+    }
   }
 }
 

@@ -1694,6 +1694,22 @@ html[data-aba="teia"] .campo {
     flex: none;
     scroll-snap-align: start;
   }
+  /* os chips quebram linha (nenhum é cortado na borda); a lista de equipamentos da classe, que
+     pode ter 50, mostra 2 linhas e rola na vertical com a borda de baixo esmaecida */
+  .teia-lista-classes,
+  .teia-equips {
+    flex-wrap: wrap;
+    scroll-snap-type: none;
+  }
+  .teia-lista-classes {
+    overflow: visible;
+  }
+  .teia-equips {
+    max-height: 78px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
   .teia-classe,
   .teia-equip {
     grid-template-columns: auto auto auto;
@@ -1732,9 +1748,10 @@ html[data-aba="teia"] .campo {
     justify-content: space-between;
   }
   .teia-estilos {
+    flex-wrap: wrap; /* os 5 estilos quebram linha em vez de sair pela borda */
+    justify-content: center;
     min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
+    border-radius: 22px;
   }
   .teia-estilo {
     padding: 0 10px;
@@ -1750,10 +1767,10 @@ html[data-aba="teia"] .campo {
   .teia-painel-equip {
     top: auto;
     right: var(--vao);
-    bottom: calc(var(--vao) + 64px);
+    bottom: calc(var(--vao) + 108px); /* acima da barra de estilos, que pode ter 2 linhas */
     left: var(--vao);
     width: auto;
-    max-height: 56%;
+    max-height: 62%;
   }
   .teia-legenda {
     display: none;

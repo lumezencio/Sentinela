@@ -113,7 +113,8 @@ async def test_snapshot_sem_ip_mac_fabricante_latencia(
          "pai_id": None}
     ]  # fmt: skip
     (alerta,) = snap["alertas"]  # só o aberto
-    assert set(alerta) == {"id", "tipo", "texto", "aberto_em"}
+    assert set(alerta) == {"id", "tipo", "texto", "aberto_em", "equipamento_id", "afetados"}
+    assert alerta["equipamento_id"] == eq and alerta["afetados"] == 0
     assert alerta["texto"] == "Câmera Portaria caiu"
 
 

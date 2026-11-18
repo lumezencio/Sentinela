@@ -192,7 +192,7 @@ test("bundle da Teia do telão: ESM ES2017 que publica window.SentinelaTeiaPared
 // APIs posteriores ao Chromium 63 (TV Tizen 5.0): o bundle do telão não pode usá-las, salvo as
 // que compat.js completa (Object.hasOwn).
 const DEPOIS_DO_CHROME_63 = [
-  "RelativeTimeFormat", "globalThis", "AbortController", "queueMicrotask", "replaceAll",
+  "globalThis", "AbortController", "queueMicrotask", "replaceAll",
   "structuredClone", ".at(", "Object.fromEntries", "flatMap", "Promise.allSettled", "matchAll",
 ];
 
@@ -200,6 +200,14 @@ test("bundle do telão: nenhuma API posterior ao Chromium 63 (além do que compa
   const texto = readFileSync(new URL("../../src/parede/parede.bundle.js", import.meta.url), "utf8");
   const achadas = DEPOIS_DO_CHROME_63.filter((api) => texto.includes(api));
   assert.deepEqual(achadas, []);
+});
+
+test("bundle do telão: Intl.RelativeTimeFormat (cartões de queda) só atrás de typeof, com texto simples de reserva", () => {
+  const texto = readFileSync(new URL("../../src/parede/parede.bundle.js", import.meta.url), "utf8");
+  const usos = texto.match(/Intl\.RelativeTimeFormat/g) || [];
+  assert.ok(usos.length >= 1);
+  const guardados = texto.match(/typeof Intl\.RelativeTimeFormat\s*(==|===)\s*["']function["']\s*\?\s*new Intl\.RelativeTimeFormat/g) || [];
+  assert.equal(usos.length, guardados.length * 2, "todo uso fica na guarda typeof ... ? new ...");
 });
 
 test("haQuanto: sem Intl.RelativeTimeFormat (TV antiga) cai em texto simples", async () => {

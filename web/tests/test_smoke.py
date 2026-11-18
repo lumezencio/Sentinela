@@ -471,11 +471,27 @@ def test_teia_rotulo_de_classe_longo_quebra_linha_e_fica_no_palco(page: Page, al
     abrir_teia(page)
     page.wait_for_timeout(2500)
     longo = "Equipamentos de monitoramento do prédio anexo, bloco B"[:60]
-    page.evaluate(
-        "(t) => { document.querySelector('#conteudo-teia .teia-rotulo:not(.servidor) > span')"
-        ".textContent = t; }",
+    # um rótulo VISÍVEL (não escondido pela cena nem sob um painel de vidro): o primeiro da
+    # lista pode estar oculto sob o painel de classes e não provaria nada
+    marcado = page.evaluate(
+        """(t) => {
+        const vidros = [...document.querySelectorAll('#conteudo-teia .vidro')]
+            .filter((v) => !v.hidden && v.offsetParent !== null)
+            .map((v) => v.getBoundingClientRect());
+        const livre = (r) => !vidros.some((v) => r.left < v.right && r.right > v.left
+            && r.top < v.bottom && r.bottom > v.top);
+        const alvo = [...document.querySelectorAll(
+            '#conteudo-teia .teia-rotulo:not(.servidor):not([hidden]) > span')]
+            .find((s) => livre(s.getBoundingClientRect())
+                && getComputedStyle(s.parentElement).opacity !== '0');
+        if (!alvo) return false;
+        alvo.textContent = t;
+        alvo.dataset.teste = '1';
+        return true;
+    }""",
         longo,
     )
+    assert marcado, "nenhum rótulo de classe visível fora dos painéis"
     page.wait_for_timeout(600)
     medidas = page.evaluate(
         """() => {
@@ -485,6 +501,7 @@ def test_teia_rotulo_de_classe_longo_quebra_linha_e_fica_no_palco(page: Page, al
             .map((s) => {
                 const r = s.getBoundingClientRect();
                 return {
+                    medido: s.dataset.teste === '1',
                     ellipsis: getComputedStyle(s).textOverflow === 'ellipsis',
                     cortado: s.scrollWidth > s.clientWidth + 1,
                     dentro: r.left >= palco.left - 1 && r.right <= palco.right + 1
@@ -493,7 +510,7 @@ def test_teia_rotulo_de_classe_longo_quebra_linha_e_fica_no_palco(page: Page, al
             });
     }"""
     )
-    assert medidas, "nenhum rótulo de classe visível"
+    assert any(m["medido"] for m in medidas), "o rótulo medido sumiu da cena"
     assert not any(m["ellipsis"] or m["cortado"] for m in medidas), medidas
     assert all(m["dentro"] for m in medidas), medidas
 
@@ -2565,3 +2582,283 @@ def test_teloes_lista_recarrega_ao_voltar_e_a_cada_30s(page: Page, alvo: Alvo) -
     page.wait_for_timeout(500)
     assert len(pedidos) == 3, pedidos  # fora de Configurações não busca
     assert erros == [], erros
+
+
+# ---- Fase 4A: cartão de alerta na tela (painel e telão) -----------------------------------------
+ESPIA_AUDIO = """() => {
+    window.__bips = 0;
+    window.AudioContext = function () {
+        this.currentTime = 0;
+        this.state = 'running';
+        this.destination = {};
+        this.resume = () => {};
+        this.createOscillator = () => {
+            window.__bips += 1;
+            return { type: '', frequency: {}, connect() {}, start() {}, stop() {} };
+        };
+        this.createGain = () => ({
+            gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+            connect() {},
+        });
+    };
+}"""
+
+
+def agora_iso() -> str:
+    import datetime as dt
+
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
+def cartoes(page: Page) -> Any:
+    return page.locator("#cartoes-alerta article.ca")
+
+
+def cartao_de(page: Page, alerta_id: int) -> Any:
+    return page.locator(f'#cartoes-alerta article.ca[data-id="{alerta_id}"]')
+
+
+def alerta_da_api(page: Page, alerta_id: int) -> dict[str, Any]:
+    r = api_json(page, "GET", f"/alertas/{alerta_id}")
+    assert r["status"] == 200, r
+    dados: dict[str, Any] = dict(r["dados"])
+    dados.pop("afetados", None)  # a mensagem do WS traz só a linha, sem a lista
+    return dados
+
+
+def injetar(page: Page, ponte: Any, acao: str, alerta_id: int, **mudancas: Any) -> dict[str, Any]:
+    """Mensagem ``alerta`` no WebSocket do painel, com a linha real do banco (+ ``mudancas``)."""
+    alerta = {**alerta_da_api(page, alerta_id), **mudancas}
+    ponte.injetar({"tipo": "alerta", "acao": acao, "id": alerta_id, "alerta": alerta, "abertos": 9})
+    return alerta
+
+
+def entrar_com_ponte(page: Page, alvo: Alvo, login: str = "", senha: str = "") -> Any:
+    from conftest import PonteWs
+
+    ponte = PonteWs(page)
+    entrar(page, alvo, login, senha)
+    expect(page.locator("#cartoes-alerta")).to_be_attached()
+    expect(cartoes(page)).to_have_count(0)  # o que já estava aberto na carga não vira cartão
+    return ponte
+
+
+def test_cartao_aparece_ao_vivo_com_ip_e_dados(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    eq = api_json(page, "GET", f"/equipamentos/{a['equipamento_id']}")["dados"]
+    alerta = injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    expect(cartao).to_be_visible(timeout=10_000)
+    expect(cartao.locator(".ca-nome")).to_have_text(alerta["equipamento_nome"])
+    expect(cartao.locator(".ca-marca")).to_have_text("Fora do ar")
+    expect(cartao).to_contain_text(eq["ip"])
+    expect(cartao.locator(".ca-dados dt", has_text="MAC")).to_be_visible(timeout=10_000)
+    expect(cartao.locator(".ca-dados dt", has_text="Checagem")).to_be_visible()
+    expect(cartao.locator(".ca-dados dt", has_text="Desde")).to_be_visible()
+    expect(cartao.locator(".ca-sub")).to_contain_text("Online")  # estado em texto + ícone
+    # papel de alerta só no título; ações do admin
+    expect(cartao.locator('[role="alert"]:visible')).to_have_count(1)
+    for nome in ("Ver na Teia", "Ver alerta", "Reconhecer", "Silenciar…"):
+        expect(cartao.get_by_role("button", name=re.compile(f"^{nome}"))).to_be_visible()
+    # o foco não é roubado e Esc num botão do cartão o fecha
+    assert page.evaluate("document.activeElement.closest('#cartoes-alerta')") is None
+    cartao.get_by_role("button", name="Ver alerta").focus()
+    page.keyboard.press("Escape")
+    expect(cartao).to_have_count(0)
+    # fechado por Esc: a mesma mensagem não o reabre sozinho
+    injetar(page, ponte, "aberto", a["id"])
+    page.wait_for_timeout(500)
+    expect(cartao).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_cartao_nao_abre_para_silenciado_nem_para_o_que_ja_estava_aberto(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", alertas_semeados["silenciado"]["id"])  # silenciado=true
+    injetar(page, ponte, "atualizado", alertas_semeados["aberto"]["id"])  # já aberto na carga
+    injetar(page, ponte, "atualizado", alertas_semeados["pendente"]["id"], afetados_total=4)
+    page.wait_for_timeout(800)
+    expect(cartoes(page)).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_cartao_pilha_de_3_mais_n_e_transicoes(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    ids = [novo_alerta()["id"] for _ in range(5)]
+    ponte = entrar_com_ponte(page, alvo)
+    for i in ids:
+        injetar(page, ponte, "aberto", i)
+        injetar(page, ponte, "aberto", i)  # repetida: um cartão por alerta
+    expect(cartoes(page)).to_have_count(3, timeout=10_000)
+    expect(page.locator("#cartoes-alerta .ca-mais")).to_have_text("e mais 2 alertas")
+    # os 3 mais novos à vista (o mais novo em cima)
+    assert [c.get_attribute("data-id") for c in cartoes(page).all()] == [str(i) for i in ids[:1:-1]]
+    # removido (absorvido pelo pai): o cartão some e o seguinte da pilha assume
+    ponte.injetar(
+        {"tipo": "alerta", "acao": "removido", "id": ids[4], "alerta": None, "abertos": 4}
+    )
+    expect(cartao_de(page, ids[4])).to_have_count(0)
+    expect(cartoes(page)).to_have_count(3)
+    expect(page.locator("#cartoes-alerta .ca-mais")).to_have_text("e mais 1 alerta")
+    # fechado: fica verde, "voltou após ...", e some sozinho em 10 s
+    injetar(page, ponte, "fechado", ids[3], fechado_em=agora_iso())
+    voltou = cartao_de(page, ids[3])
+    expect(voltou).to_have_class(re.compile(r"\bca-ok\b"))
+    expect(voltou.locator(".ca-marca")).to_have_text("Voltou")
+    expect(voltou).to_contain_text("voltou após")
+    expect(voltou).to_have_count(0, timeout=15_000)
+    page.locator("#cartoes-alerta .ca-mais").click()
+    assert page.url.endswith("#alertas"), page.url
+    assert erros == [], erros
+
+
+def test_cartao_de_grupo_lista_afetados_com_ip(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    ponte = entrar_com_ponte(page, alvo)
+    alerta = injetar(page, ponte, "aberto", alertas_semeados["aberto"]["id"])
+    cartao = cartao_de(page, alerta["id"])
+    expect(cartao.locator(".ca-ver")).to_contain_text("3 equipamentos afetados", timeout=10_000)
+    expect(cartao.locator(".ca-afetados li")).to_have_count(0)  # recolhida até o clique
+    cartao.locator(".ca-ver").click()
+    expect(cartao.locator(".ca-afetados li")).to_have_count(3, timeout=10_000)
+    expect(cartao.locator(".ca-afetados li").first).to_contain_text("10.99.")
+    expect(cartao.locator(".ca-ver")).to_have_attribute("aria-expanded", "true")
+    assert erros == [], erros
+
+
+def test_cartao_instavel_tem_estilo_de_aviso(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta(tipo="instavel")
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    expect(cartao).to_have_class(re.compile(r"\bca-aviso\b"))
+    expect(cartao.locator(".ca-marca")).to_have_text("Instável")
+    assert erros == [], erros
+
+
+def test_cartao_reconhecer_e_silenciar_pelo_cartao(
+    page: Page, alvo: Alvo, novo_alerta: Any
+) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    cartao.get_by_role("button", name=re.compile("^Reconhecer")).click()
+    expect(cartao).to_contain_text("Reconhecido por admin", timeout=10_000)
+    expect(cartao.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(0)
+    assert api_json(page, "GET", f"/alertas/{a['id']}")["dados"]["reconhecido_por"] == "admin"
+    cartao.get_by_role("button", name="Silenciar…").click()
+    dialogo = page.locator("dialog[open]")
+    expect(dialogo).to_be_visible()
+    expect(dialogo.locator("#sil-alvo-nome")).to_have_text(re.compile(r"\S"))
+    page.keyboard.press("Escape")
+    expect(dialogo).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_cartao_ver_na_teia_abre_a_ficha(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    alerta = injetar(page, ponte, "aberto", a["id"])
+    cartao_de(page, a["id"]).get_by_role("button", name="Ver na Teia").click()
+    assert page.url.endswith("#teia"), page.url
+    ficha = page.locator("#painel-equipamento")
+    expect(ficha).to_be_visible(timeout=20_000)
+    expect(ficha.locator("#titulo-equip")).to_have_text(alerta["equipamento_nome"])
+    assert erros == [], erros
+
+
+def test_cartao_visualizador_so_ve_os_botoes_de_leitura(
+    page: Page, alvo: Alvo, novo_alerta: Any
+) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador neste alvo")
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    expect(cartao.get_by_role("button", name="Ver na Teia")).to_be_visible(timeout=10_000)
+    expect(cartao.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(0)
+    expect(cartao.get_by_role("button", name="Silenciar…")).to_have_count(0)
+
+
+def test_som_nos_alertas_so_depois_do_gesto_e_lembrado(
+    page: Page, alvo: Alvo, novo_alerta: Any
+) -> None:
+    erros = vigiar_console(page)
+    page.add_init_script(f"({ESPIA_AUDIO})()")
+    a, b = novo_alerta(), novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", a["id"])
+    expect(cartao_de(page, a["id"])).to_be_visible(timeout=10_000)
+    assert page.evaluate("window.__bips") == 0  # desligado por padrão
+    abrir_alertas(page)
+    caixa = page.get_by_label("Som nos alertas")
+    expect(caixa).not_to_be_checked()
+    caixa.check()  # o clique é o gesto: um bip de confirmação
+    assert page.evaluate("window.__bips") == 1
+    injetar(page, ponte, "aberto", b["id"])
+    expect(cartao_de(page, b["id"])).to_be_visible(timeout=10_000)
+    assert page.evaluate("window.__bips") == 2
+    page.reload()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    abrir_alertas(page)
+    expect(page.get_by_label("Som nos alertas")).to_be_checked()
+    assert erros == [], erros
+
+
+def test_parede_cartao_de_queda_sem_ip_mac_nem_fabricante(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    from conftest import PonteWs
+
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        ponte = PonteWs(tv, r".*/ws/parede$")
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        snap = tv.evaluate("async () => (await (await fetch('/api/v1/parede/snapshot')).json())")
+        eq = snap["equipamentos"][0]
+        expect(tv.locator("#pr-cartoes .pr-ca")).to_have_count(0)
+        alerta = {
+            "id": 987001, "tipo": "queda", "texto": f"{eq['nome']} caiu · 14 afetados",
+            "aberto_em": agora_iso(), "equipamento_id": eq["id"], "afetados": 14,
+        }  # fmt: skip
+        ponte.injetar({"tipo": "alerta", "acao": "aberto", "alerta": alerta})
+        cartao = tv.locator("#pr-cartoes .pr-ca")
+        expect(cartao).to_have_count(1)
+        expect(cartao.locator(".pr-ca-nome")).to_have_text(eq["nome"])
+        expect(cartao).to_contain_text("14 equipamentos afetados")
+        expect(cartao.locator(".pr-ca-dados")).to_contain_text("Desde")
+        dentro = cartao.inner_text() + cartao.inner_html()
+        for proibido in ("10.99.", "02:00:00", "Fabricante", "Checagem", "latência"):
+            assert proibido not in dentro, proibido
+        assert "10.99." not in texto_e_dom(tv)
+        # no máximo 2 cartões; fechado some sozinho em 10 s
+        for n in (987002, 987003):
+            ponte.injetar({"tipo": "alerta", "acao": "aberto", "alerta": {**alerta, "id": n}})
+        expect(cartao).to_have_count(2)
+        for n in (987003, 987002, 987001):
+            ponte.injetar({"tipo": "alerta", "acao": "fechado", "id": n})
+        expect(cartao).to_have_count(0, timeout=17_000)
+        assert erros == [], erros
+    finally:
+        navegador.close()

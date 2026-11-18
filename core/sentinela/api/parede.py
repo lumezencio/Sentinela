@@ -77,11 +77,16 @@ def item_equipamento(eq: Equipamento, slug: str) -> dict[str, Any]:
 
 
 async def item_alerta(db: AsyncSession, a: Alerta) -> dict[str, Any]:
+    """Alerta reduzido: ``equipamento_id`` (opaco, o mesmo do snapshot) e o total de afetados
+    deixam o telão montar o cartão de queda com dados do próprio snapshot (sem IP)."""
+    d = await dados_do_alerta(db, a)
     return {
         "id": a.id,
         "tipo": a.tipo,
-        "texto": texto_painel(await dados_do_alerta(db, a)),
+        "texto": texto_painel(d),
         "aberto_em": a.aberto_em.isoformat(),
+        "equipamento_id": a.equipamento_id,
+        "afetados": d.afetados,
     }
 
 

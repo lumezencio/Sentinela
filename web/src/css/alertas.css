@@ -468,3 +468,260 @@ html[data-aba="configuracoes"] {
 .cfg-tel-hsts p {
   margin: 0;
 }
+
+/* ---------- cartões de alerta ao vivo (qualquer aba) ----------
+   Canto superior direito no desktop, largura total embaixo no celular; até 3 à vista. Nome
+   e dados quebram linha (nunca reticências); a lista de afetados rola dentro do cartão. */
+.al-som {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.al-som input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--primaria);
+}
+
+.ca-pilha {
+  position: fixed;
+  top: 72px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  pointer-events: none;
+}
+
+.ca-pilha > .ca-mais,
+.ca {
+  pointer-events: auto;
+}
+
+/* os cartões rolam se não couberem (o "e mais N" fica sempre à vista, fora da rolagem) */
+.ca-cartoes {
+  display: grid;
+  flex: 0 1 auto;
+  gap: 12px;
+  min-height: 0;
+  padding: 12px;
+  margin: -12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: none;
+}
+
+.ca {
+  display: grid;
+  gap: 6px;
+  padding: 10px 16px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--cor-status, var(--offline));
+  border-radius: 16px;
+  background: var(--superficie);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.ca-queda {
+  --cor-status: var(--offline);
+}
+
+.ca-aviso {
+  --cor-status: var(--instavel);
+}
+
+.ca-ok {
+  --cor-status: var(--online);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ca {
+    animation: ca-entrada 0.25s ease-out;
+  }
+}
+
+@keyframes ca-entrada {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+.ca-cabeca {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -8px -8px 0 0;
+}
+
+.ca-titulo {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 4px 0 0;
+}
+
+.ca-marca {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--texto-suave);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ca-marca .icone-status {
+  color: var(--cor-status);
+}
+
+.ca-nome {
+  font-size: 17px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.ca-cabeca .botao-icone {
+  flex: none;
+}
+
+.ca-alternar svg {
+  transition: transform 0.15s ease;
+}
+
+.ca-alternar[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.ca-corpo-aberto {
+  display: grid;
+  gap: 6px;
+}
+
+.ca-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.ca-dados {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.ca-dados > div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.ca-dados dt {
+  color: var(--texto-suave);
+}
+
+.ca-dados dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ca-nota {
+  margin: 0;
+  color: var(--texto-suave);
+  font-size: 13px;
+}
+
+.ca-ver {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 12px;
+  border-color: var(--borda);
+  text-align: left;
+}
+
+.ca-afetados {
+  display: grid;
+  gap: 8px;
+  max-height: min(240px, 32vh);
+  margin: 8px 0 0;
+  padding: 0 8px 0 0;
+  overflow-y: auto;
+  list-style: none;
+  font-size: 14px;
+}
+
+/* lista que rola: a borda de baixo esmaece (a última linha não parece cortada por engano) */
+.ca-afetados.ca-rola {
+  padding-bottom: 20px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+
+.ca-afetados li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ca-afetados .icone-status {
+  margin-top: 4px;
+}
+
+.ca-afetado-texto {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ca-acoes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ca-acoes .botao {
+  min-height: 36px;
+  padding: 0 8px;
+}
+
+.ca-mais {
+  flex: none;
+  width: 100%;
+  box-shadow: var(--sombra);
+}
+
+/* o cabeçalho quebra em duas linhas (abas na 2ª) até ~1000 px: o cartão desce para não cobri-las */
+@media (max-width: 999px) {
+  .ca-pilha {
+    top: 112px;
+    max-height: calc(100vh - 120px);
+  }
+}
+
+@media (max-width: 560px) {
+  .ca-pilha {
+    top: auto;
+    right: 16px;
+    bottom: 16px;
+    left: 16px;
+    width: auto;
+    max-height: calc(100vh - 32px);
+  }
+}

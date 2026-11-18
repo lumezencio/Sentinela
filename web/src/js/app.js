@@ -1,6 +1,7 @@
 // Painel (Alpine CSP): sessão, conexão ao vivo, contadores, lista e cadastro (admin).
 import { alertasDoPainel } from "./alertas.js";
 import { api, irParaLogin } from "./api.js";
+import { cartoesDoPainel } from "./cartoes-painel.js";
 import { paredesDoPainel } from "./config-paredes.js";
 import { telegramDoPainel } from "./config-telegram.js";
 import { configuracoesDoPainel } from "./configuracoes.js";
@@ -112,6 +113,7 @@ function painel() {
       this.liberarTeia(); // só agora a Teia monta (e o bundle é pedido) e Novos/Config carregam
       this.carregarVarredura();
       this.carregarGeral(); // fuso dos horários de alertas e silêncios
+      this.iniciarCartoes();
       conexao = criarConexao({
         aoMensagem: (msg) => this.receber(msg),
         aoMudarEstado: (estado) => {
@@ -120,7 +122,10 @@ function painel() {
         aoExpirar: irParaLogin,
       });
       conexao.iniciar();
-      relogio = window.setInterval(() => this.agendarRender(), 30000);
+      relogio = window.setInterval(() => {
+        this.agendarRender();
+        this.renderizarCartoes(); // "há N min" dos cartões de alerta
+      }, 30000);
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) this.agendarRender();
       });
@@ -156,6 +161,7 @@ function painel() {
         return;
       } else if (msg.tipo === "alerta" || msg.tipo === "silencio") {
         this.alertasAoMensagem(msg);
+        if (msg.tipo === "alerta") this.cartoesAoMensagem(msg);
         return;
       } else if (msg.tipo === "fonte") {
         this.cfgAoMensagem(msg);
@@ -188,6 +194,7 @@ function painel() {
         this.renderizarParedes(); // "último acesso há N min" dos telões
       }
       if (this.aba === "alertas") this.renderizarAlertas(); // "há N min" e silêncios vencidos
+      if (this.cartoes.length) this.renderizarCartoes(); // estado atual do equipamento no cartão
       if (this.aba !== "lista") return; // a lista só é montada na aba dela
       const filtrada = filtrar(
         store,
@@ -538,6 +545,7 @@ function painel() {
     novosDoPainel(store),
     configuracoesDoPainel(),
     alertasDoPainel(store),
+    cartoesDoPainel(store),
     telegramDoPainel(),
     paredesDoPainel(),
   ]) {

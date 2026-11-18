@@ -8,6 +8,9 @@
 //
 // O telão só recebe nome, classe, estado e pai de cada equipamento (o servidor já filtra) e
 // todo texto vindo da rede entra no DOM por textContent. Nada clicável, nada focável.
+import {
+  aplicarNaPilha, dadosDoCartao, expirarDaPilha, MAX_NO_TELAO, pilhaVazia, visiveisDaPilha,
+} from "../cartoes.js";
 import { aplicarEquipamento, aplicarEstado, aplicarSnapshot, criarStore, ESTADOS, grupoDe } from "../lista.js";
 import { montarOrganograma } from "../organograma.js";
 import { webglDisponivel } from "../visoes.js";
@@ -99,6 +102,7 @@ export function iniciarParede(doc = document) {
     teia: $("pr-teia"),
     org: $("pr-org"),
     alertas: $("pr-alertas"),
+    cartoes: $("pr-cartoes"),
     semAlertas: $("pr-sem-alertas"),
     semConexao: $("pr-sem-conexao"),
   };
@@ -109,6 +113,7 @@ export function iniciarParede(doc = document) {
 
   const store = criarStore();
   const alertas = new Map();
+  let pilha = pilhaVazia(); // cartões de queda (só os que chegam ao vivo)
   let fuso = "";
   let modo = "carregando";
   let contato = Date.now();
@@ -186,14 +191,18 @@ export function iniciarParede(doc = document) {
       if (!aplicarEstado(store, msg)) return;
       if (controle) controle.atualizarEstado(msg.id);
       renderizarEquipamentos();
+      renderizarCartoes();
     } else if (msg.tipo === "equipamento") {
       if (!aplicarEquipamento(store, msg)) return;
       if (controle) controle.sincronizar(store);
       renderizarEquipamentos();
+      renderizarCartoes();
     } else if (msg.tipo === "alerta") {
       if (msg.acao === "fechado" || msg.acao === "removido") alertas.delete(msg.id);
       else if (msg.alerta && msg.alerta.id !== undefined) alertas.set(msg.alerta.id, msg.alerta);
       renderizarFaixa();
+      pilha = aplicarNaPilha(pilha, msg, Date.now());
+      renderizarCartoes();
     }
   }
 
@@ -271,6 +280,7 @@ export function iniciarParede(doc = document) {
     aplicarSnapshot(store, msg);
     alertas.clear();
     for (const a of msg.alertas || []) alertas.set(a.id, a);
+    pilha = pilhaVazia(); // o que já estava aberto no snapshot fica só na faixa, sem cartão
     fuso = typeof msg.fuso === "string" ? msg.fuso : "";
     el.nome.textContent = typeof msg.nome === "string" ? msg.nome : "";
     const primeiraVez = modo !== "telao";
@@ -279,6 +289,7 @@ export function iniciarParede(doc = document) {
     else if (controle) controle.sincronizar(store);
     renderizarEquipamentos(true);
     renderizarFaixa();
+    renderizarCartoes();
     tique();
   }
 
@@ -544,6 +555,51 @@ export function iniciarParede(doc = document) {
     el.semAlertas.hidden = visiveis.length > 0;
   }
 
+  /** Cartões de queda (até 2): reduzidos, sem IP, MAC, fabricante, checagem nem latência. */
+  function renderizarCartoes() {
+    const agora = Date.now();
+    pilha = expirarDaPilha(pilha, agora);
+    const { visiveis } = visiveisDaPilha(pilha, MAX_NO_TELAO);
+    const frag = doc.createDocumentFragment();
+    for (const entrada of visiveis) {
+      const c = dadosDoCartao(entrada, store, {
+        agora,
+        hora: (iso) => (Number.isNaN(Date.parse(iso)) ? "—" : horaNoFuso(new Date(iso), fuso)),
+        reduzido: true,
+      });
+      const cartao = elemento(doc, "article", `pr-ca pr-ca-${c.estilo}`);
+      const marca = elemento(doc, "p", "pr-ca-marca");
+      marca.appendChild(icone(doc, c.icone.slice(1)));
+      marca.appendChild(elemento(doc, "span", "", c.rotuloMarca));
+      cartao.appendChild(marca);
+      cartao.appendChild(elemento(doc, "h3", `pr-ca-nome${c.tamanhoTitulo ? ` pr-ca-nome-${c.tamanhoTitulo}` : ""}`, c.titulo));
+      if (c.temEstado) {
+        const sub = elemento(doc, "p", "pr-ca-sub");
+        sub.appendChild(elemento(doc, "span", "", c.classeNome));
+        const estado = elemento(doc, "span", c.estadoClasse);
+        estado.appendChild(icone(doc, c.estadoIcone.slice(1)));
+        estado.appendChild(elemento(doc, "span", "", c.estadoRotulo));
+        sub.appendChild(estado);
+        cartao.appendChild(sub);
+      }
+      const dados = elemento(doc, "dl", "pr-ca-dados");
+      for (const l of c.linhas) {
+        const linha = elemento(doc, "div");
+        linha.appendChild(elemento(doc, "dt", "", l.rotulo));
+        linha.appendChild(elemento(doc, "dd", "", l.valor));
+        dados.appendChild(linha);
+      }
+      cartao.appendChild(dados);
+      if (c.afetados) cartao.appendChild(elemento(doc, "p", "pr-ca-afetados", c.rotuloAfetados));
+      frag.appendChild(cartao);
+    }
+    trocarFilhos(el.cartoes, frag);
+    // o que não cabe no palco não aparece pela metade: sai o cartão de baixo (a faixa o mostra)
+    while (el.cartoes.childNodes.length > 1 && el.cartoes.scrollHeight > el.cartoes.clientHeight + 1) {
+      el.cartoes.removeChild(el.cartoes.lastChild);
+    }
+  }
+
   // ---------- relógio e "sem conexão" ----------
   function atualizarConexao() {
     const sem = !recusadoAgora && estadoDaConexao(contato, Date.now()) === "sem_conexao";
@@ -551,11 +607,18 @@ export function iniciarParede(doc = document) {
     corpo.classList.toggle("pr-desconectado", sem);
   }
 
+  let tiques = 0;
   function tique() {
     el.relogio.textContent = horaNoFuso(new Date(), fuso);
     atualizarConexao();
+    // "voltou" some em 10 s; o "há N min" dos cartões se renova a cada 5 s
+    tiques += 1;
+    if (modo === "telao" && (pilha.cartoes.length || el.cartoes.firstChild) && tiques % 5 === 0) {
+      renderizarCartoes();
+    }
   }
 
+  window.addEventListener("resize", renderizarCartoes); // o palco mudou: refaz o encaixe dos cartões
   window.addEventListener("error", aoErroNaTeia);
   window.addEventListener("unhandledrejection", aoErroNaTeia);
   doc.addEventListener("visibilitychange", () => {

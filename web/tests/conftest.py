@@ -20,7 +20,9 @@ import asyncio
 import datetime as dt
 import ipaddress
 import itertools
+import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -336,6 +338,82 @@ async def inserir_alerta(
             return saida
     finally:
         await motor.dispose()
+
+
+NOME_60 = "Switch de distribuição do bloco administrativo, sala de rede"  # 60 caracteres
+
+
+async def semear_cartoes(banco_url: str) -> dict[str, Any]:
+    """Alertas para as capturas dos cartões: uma queda de grupo (principal de 60 caracteres e
+    14 afetados, um deles de nome comprido), uma instabilidade e uma queda simples. Devolve
+    ``{chave: id}``. Só no banco do core local (nunca no compose)."""
+    from sqlalchemy import update
+
+    from sentinela.db.modelos import Alerta, Equipamento
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            eqs = await _equipamentos_online(db, 60)
+            principal, afetados = eqs[40], eqs[41:55]
+            await db.execute(
+                update(Equipamento).where(Equipamento.id == principal.id).values(nome=NOME_60)
+            )
+            await db.execute(
+                update(Equipamento)
+                .where(Equipamento.id == afetados[3].id)
+                .values(nome="Câmera do corredor central do prédio anexo, canal 14, lado leste")
+            )
+            agora = dt.datetime.now(dt.UTC)
+            grupo = Alerta(
+                tipo="queda",
+                equipamento_id=principal.id,
+                quedas=[principal.id],
+                afetados=[e.id for e in afetados],
+                aberto_em=agora - dt.timedelta(minutes=4),
+                envio="enviado",
+            )
+            instavel = Alerta(
+                tipo="instavel",
+                equipamento_id=eqs[55].id,
+                aberto_em=agora - dt.timedelta(minutes=9),
+                envio="enviado",
+            )
+            simples = Alerta(
+                tipo="queda",
+                equipamento_id=eqs[56].id,
+                quedas=[eqs[56].id],
+                aberto_em=agora - dt.timedelta(minutes=1),
+                envio="pendente",
+            )
+            db.add_all([grupo, instavel, simples])
+            await db.flush()
+            saida = {"grupo": grupo.id, "instavel": instavel.id, "simples": simples.id}
+            await db.commit()
+            return saida
+    finally:
+        await motor.dispose()
+
+
+class PonteWs:
+    """Rota do WebSocket da página: repassa tudo ao servidor e deixa o teste injetar mensagens
+    (o servidor não é tocado). Instale antes de ``page.goto``."""
+
+    def __init__(self, page: Any, caminho: str = r".*/ws$") -> None:
+        self.rotas: list[Any] = []
+
+        def ao_ws(ws: Any) -> None:
+            servidor = ws.connect_to_server()
+            ws.on_message(lambda m: servidor.send(m))
+            servidor.on_message(lambda m: ws.send(m))
+            self.rotas.append(ws)
+
+        page.route_web_socket(re.compile(caminho), ao_ws)
+
+    def injetar(self, mensagem: dict[str, Any]) -> None:
+        assert self.rotas, "o navegador ainda não abriu o WebSocket"
+        self.rotas[-1].send(json.dumps(mensagem))
 
 
 async def apagar_alertas(

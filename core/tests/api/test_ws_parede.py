@@ -51,7 +51,9 @@ async def test_ws_parede_snapshot_reduzido(
     assert set(snap) == {"tipo", "nome", "fuso", "classes", "equipamentos", "alertas"}
     assert snap["tipo"] == "snapshot" and snap["nome"] == "TV Portaria"
     assert set(snap["equipamentos"][0]) == {"id", "nome", "classe", "estado", "pai_id"}
-    assert set(snap["alertas"][0]) == {"id", "tipo", "texto", "aberto_em"}
+    assert set(snap["alertas"][0]) == {
+        "id", "tipo", "texto", "aberto_em", "equipamento_id", "afetados",
+    }  # fmt: skip
 
 
 async def test_sem_token_ou_token_invalido_4401(abrir_ws_parede: AbrirWsParede) -> None:
@@ -118,7 +120,7 @@ async def test_alertas_reduzidos(app: FastAPI, token: str, abrir_ws_parede: Abri
         "acao": "aberto",
         "alerta": {
             "id": aberto, "tipo": "queda", "texto": "Câmera Portaria caiu",
-            "aberto_em": DESDE.isoformat(),
+            "aberto_em": DESDE.isoformat(), "equipamento_id": eq, "afetados": 0,
         },
     }  # fmt: skip
     fechado = await alerta_no_banco(app, eq, fechado=True)

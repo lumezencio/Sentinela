@@ -44,6 +44,9 @@ DESTINOS = (
     "teia",
     "teia-perto",
     "organograma",
+    "cartao-1",
+    "cartao-3",
+    "cartao-grupo",
 )
 NOME_LONGO = "Switch de distribuição do bloco administrativo B, sala de telecom do 2º andar"
 NOME_EXTREMO = (
@@ -111,6 +114,42 @@ def _abrir_teia(page: Page, perto: bool) -> None:
         page.wait_for_timeout(2500)
 
 
+LISTAR_ALERTAS = "async () => (await (await fetch('/api/v1/alertas?por_pagina=100')).json()).itens"
+
+
+def _abrir_cartoes(page: Page, destino: str, ids: dict[str, int], ponte: Any) -> None:
+    """Abre a Lista e injeta no WebSocket as mensagens ``aberto`` de alertas do banco local:
+    ``cartao-1`` (uma queda), ``cartao-3`` (cinco: 3 à vista + "e mais 2") e ``cartao-grupo``
+    (queda de 14 afetados, com a lista aberta)."""
+    page.goto("/index.html#lista")
+    expect(page.locator("#lista tbody tr.linha").first).to_be_visible(timeout=20_000)
+    por_id = {a["id"]: a for a in page.evaluate(LISTAR_ALERTAS)}
+    escolha = {
+        "cartao-1": ["aberto"],
+        "cartao-3": ["pendente", "falhou", "instavel_novo", "aberto", "grupo"],
+        "cartao-grupo": ["grupo"],
+    }[destino]
+    chaves = {**ids, "instavel_novo": ids["instavel"]}
+    for i, chave in enumerate(escolha):
+        alerta = por_id[chaves[chave]]
+        ponte.injetar(
+            {
+                "tipo": "alerta",
+                "acao": "aberto",
+                "id": alerta["id"],
+                "alerta": alerta,
+                "abertos": 9 + i,
+            }
+        )
+        page.wait_for_timeout(80)
+    esperados = 1 if destino != "cartao-3" else 3
+    expect(page.locator("#cartoes-alerta article.ca")).to_have_count(esperados, timeout=10_000)
+    if destino == "cartao-grupo":
+        page.locator("#cartoes-alerta .ca-ver").first.click()
+        expect(page.locator("#cartoes-alerta .ca-afetados li")).to_have_count(14, timeout=10_000)
+    page.wait_for_timeout(600)  # fim da animação de entrada e das buscas de MAC/afetados
+
+
 def _abrir(page: Page, destino: str) -> None:
     if destino in ("teia", "teia-perto"):
         _abrir_teia(page, destino == "teia-perto")
@@ -142,8 +181,16 @@ def _preparar_dialogo(page: Page) -> None:
     page.wait_for_timeout(500)
 
 
-def _capturar_tela(page: Page, destino: str, saida: Path, tema: str, largura: int) -> None:
+def _capturar_tela(
+    page: Page, destino: str, saida: Path, tema: str, largura: int, ids: dict[str, int]
+) -> None:
     base = saida / f"{destino}-{tema}-{largura}"
+    if destino.startswith("cartao-"):
+        from conftest import PonteWs
+
+        _abrir_cartoes(page, destino, ids, PonteWs(page))
+        page.screenshot(path=f"{base}.png")
+        return
     _abrir(page, destino)
     if destino == "configuracoes":
         page.locator("#cfg-telegram").scroll_into_view_if_needed()
@@ -202,7 +249,13 @@ ARGS_GPU = ["--use-angle=d3d11", "--enable-gpu", "--ignore-gpu-blocklist", "--en
 
 
 def capturar(
-    url: str, login: str, senha: str, destinos: list[str], saida: Path, gpu: bool = False
+    url: str,
+    login: str,
+    senha: str,
+    destinos: list[str],
+    saida: Path,
+    gpu: bool = False,
+    semeados: dict[str, int] | None = None,
 ) -> None:
     with sync_playwright() as p:
         navegador = p.chromium.launch(args=ARGS_GPU if gpu else [])
@@ -223,7 +276,7 @@ def capturar(
                             page = contexto.new_page()
                             if destino == "alertas-silencio":
                                 ids = _criar_silencios(page)
-                            _capturar_tela(page, destino, saida, tema, largura)
+                            _capturar_tela(page, destino, saida, tema, largura, semeados or {})
                         finally:
                             if ids:
                                 _encerrar_silencios(page, ids)
@@ -234,7 +287,9 @@ def capturar(
 
 def _subir_local(pasta: Path) -> tuple[str, str, str, Any]:
     """Demo do smoke (HTTPS local, banco temporário) com alertas fictícios; devolve
-    (url, login, senha, servidor)."""
+    (url, login, senha, servidor). ``servidor.ids`` guarda os ids dos alertas semeados
+    (``aberto``, ``falhou``, ``pendente`` e os dos cartões: ``grupo``, ``instavel``,
+    ``simples``)."""
     import asyncio
 
     from conftest import (
@@ -243,6 +298,7 @@ def _subir_local(pasta: Path) -> tuple[str, str, str, Any]:
         _porta_livre,
         _preparar_banco,
         semear_alertas,
+        semear_cartoes,
     )
     from sentinela.demo import simulador
 
@@ -255,7 +311,8 @@ def _subir_local(pasta: Path) -> tuple[str, str, str, Any]:
     chave, cert = _certificado(pasta)
     servidor = ServidorLocal(banco, _porta_livre(), chave, cert)
     servidor.levantar()
-    asyncio.run(semear_alertas(banco, NOME_LONGO, NOME_EXTREMO))
+    semeados = asyncio.run(semear_alertas(banco, NOME_LONGO, NOME_EXTREMO))
+    servidor.ids = {k: v["id"] for k, v in semeados.items()} | asyncio.run(semear_cartoes(banco))
     return f"https://127.0.0.1:{servidor.porta}", login, senha, servidor
 
 
@@ -277,7 +334,7 @@ def main() -> None:
         with tempfile.TemporaryDirectory(prefix="sentinela-capt-") as tmp:
             url, login, senha, servidor = _subir_local(Path(tmp))
             try:
-                capturar(url, login, senha, destinos, saida, args.gpu)
+                capturar(url, login, senha, destinos, saida, args.gpu, servidor.ids)
             finally:
                 servidor.derrubar()
     else:
@@ -286,6 +343,8 @@ def main() -> None:
         senha = os.environ.get("SENTINELA_SMOKE_SENHA", "")
         if not (url and login and senha):
             sys.exit("informe --url (ou SENTINELA_URL_SMOKE) e SENTINELA_SMOKE_LOGIN/SENHA")
+        if any(d.startswith("cartao-") for d in destinos):
+            sys.exit("os destinos cartao-* precisam do banco local: use --local")
         capturar(url, login, senha, destinos, saida, args.gpu)
     print(f"capturas em {saida}")
 
