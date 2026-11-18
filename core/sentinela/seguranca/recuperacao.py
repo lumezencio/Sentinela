@@ -5,6 +5,7 @@ import secrets
 from datetime import datetime
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinela.db.modelos import CodigoRecuperacao
@@ -20,7 +21,9 @@ def gerar_codigos() -> list[str]:
     while len(codigos) < QUANTIDADE:
         letras = "".join(secrets.choice(ALFABETO) for _ in range(2 * _METADE))
         codigos.add(f"{letras[:_METADE]}-{letras[_METADE:]}")
-    return sorted(codigos, key=lambda _: secrets.randbits(32))
+    lista = list(codigos)
+    secrets.SystemRandom().shuffle(lista)
+    return lista
 
 
 def normalizar(texto: str) -> str | None:
@@ -59,12 +62,18 @@ async def consumir(db: AsyncSession, usuario_id: int, texto: str, agora: datetim
     for id_, hash_codigo in linhas:
         if not await verificar_async(hash_codigo, codigo):
             continue
-        res = await db.execute(
-            update(CodigoRecuperacao)
-            .where(CodigoRecuperacao.id == id_, CodigoRecuperacao.usado_em.is_(None))
-            .values(usado_em=agora)
-        )
-        await db.commit()
+        # o UPDATE condicional é a primeira escrita; banco ocupado/bloqueado conta como
+        # tentativa que não gastou o código (o chamador responde 401 genérico)
+        try:
+            res = await db.execute(
+                update(CodigoRecuperacao)
+                .where(CodigoRecuperacao.id == id_, CodigoRecuperacao.usado_em.is_(None))
+                .values(usado_em=agora)
+            )
+            await db.commit()
+        except OperationalError:
+            await db.rollback()
+            return False
         return bool(res.rowcount == 1)  # type: ignore[attr-defined]
     await db.rollback()
     return False

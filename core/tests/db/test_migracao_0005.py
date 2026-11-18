@@ -131,3 +131,64 @@ def test_downgrade_remove_colunas_e_tabela_e_a_chave_seguranca_do_config(tmp_pat
     assert _consultar(banco, "SELECT chave FROM config") == [("outra",)]
     _alembic(banco, "upgrade", "head")
     assert _consultar(banco, "SELECT totp_cifrado FROM usuario") == [(None,)]
+
+
+def _popular_vinculos(banco: Path) -> None:
+    _executar(banco, USUARIO.format(id=1))
+    _executar(
+        banco,
+        "INSERT INTO sessao (jti, usuario_id, expira_em, revogada) VALUES ('j1', 1, :t, 0)",
+        t=T,
+    )
+    _executar(
+        banco,
+        "INSERT INTO auditoria (usuario_id, acao, em) VALUES (1, 'x', :t)",
+        t=T,
+    )
+    _executar(
+        banco,
+        "INSERT INTO alerta (tipo, quedas, afetados, voltaram, aberto_em, breve, silenciado,"
+        " envio, envio_tentativas, enviado_para, telegram_msgs, reconhecido_por) VALUES"
+        " ('queda', '[]', '[]', '[]', :t, 0, 0, 'pendente', 0, '[]', '{}', 1)",
+        t=T,
+    )
+    _executar(
+        banco,
+        "INSERT INTO classe (id, slug, nome, cor, icone, intervalo_s, critica, ordem)"
+        " VALUES (9, 'c9', 'c', '#000000', 'i', 30, 0, 0)",
+    )
+    _executar(
+        banco,
+        "INSERT INTO silencio (tipo, alvo_tipo, classe_id, inicio, fim, pausados, criado_por)"
+        " VALUES ('silencio', 'classe', 9, :t, '2026-11-18 13:00:00', '[]', 1)",
+        t=T,
+    )
+
+
+def _vinculos(banco: Path) -> list[object]:
+    return [
+        _consultar(banco, "SELECT usuario_id FROM sessao"),
+        _consultar(banco, "SELECT usuario_id FROM auditoria"),
+        _consultar(banco, "SELECT reconhecido_por FROM alerta"),
+        _consultar(banco, "SELECT criado_por FROM silencio"),
+    ]
+
+
+ESPERADO = [[(1,)], [(1,)], [(1,)], [(1,)]]
+
+
+def test_downgrade_preserva_sessoes_e_vinculos_ao_usuario(tmp_path: Path) -> None:
+    banco = tmp_path / "m5.db"
+    _alembic(banco, "upgrade", "head")
+    _popular_vinculos(banco)
+    _alembic(banco, "downgrade", "0004")
+    assert _vinculos(banco) == ESPERADO
+    assert _consultar(banco, "PRAGMA foreign_key_check") == []
+
+
+def test_upgrade_preserva_sessoes_e_vinculos_ao_usuario(tmp_path: Path) -> None:
+    banco = tmp_path / "m5.db"
+    _alembic(banco, "upgrade", "0004")
+    _popular_vinculos(banco)
+    _alembic(banco, "upgrade", "0005")
+    assert _vinculos(banco) == ESPERADO

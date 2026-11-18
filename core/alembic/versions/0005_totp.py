@@ -48,6 +48,7 @@ def downgrade() -> None:
     op.execute(sa.text("DELETE FROM config WHERE chave = 'seguranca'"))
     op.drop_index(op.f("ix_codigo_recuperacao_usuario_id"), table_name="codigo_recuperacao")
     op.drop_table("codigo_recuperacao")
-    with op.batch_alter_table("usuario") as lote:
-        lote.drop_column("totp_ultimo_contador")
-        lote.drop_column("totp_cifrado")
+    # DROP COLUMN nativo (SQLite >= 3.35): o `batch_alter_table` recriaria `usuario` com as
+    # chaves estrangeiras ligadas e o CASCADE/SET NULL apagaria sessões e vínculos
+    op.execute(sa.text("ALTER TABLE usuario DROP COLUMN totp_ultimo_contador"))
+    op.execute(sa.text("ALTER TABLE usuario DROP COLUMN totp_cifrado"))
