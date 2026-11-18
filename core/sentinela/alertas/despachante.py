@@ -6,7 +6,8 @@ cada alerta ``pendente`` e não silenciado, em ordem de abertura:
 
 - queda espera ``CONFIRMAR_QUEDA_S`` depois de aberta (tempo para agrupar e para o
   caiu-e-voltou); volta, instável, fonte e queda já fechada como caiu-e-voltou saem na hora;
-- ``pendente`` + ``breve`` + ``telegram_msgs`` é o caiu-e-voltou de uma queda já enviada:
+- ``pendente`` + fechado (``fechado_em``) + ``telegram_msgs`` é o fim de uma queda já enviada
+  (caiu-e-voltou ou queda fechada depois):
   ``editMessageText`` em cada chat guardado que segue configurado, e ``sendMessage`` do texto do
   caiu-e-voltou só aos chats configurados que nunca receberam a queda (nem em
   ``telegram_msgs`` nem em ``enviado_para``). Falha temporária tenta de novo com a mesma espera
@@ -25,8 +26,8 @@ cada alerta ``pendente`` e não silenciado, em ordem de abertura:
 
 Concorrência com o agrupador (contrato no ``Alerta``): toda escrita aqui é um UPDATE só das
 colunas de envio, guardado por ``envio='pendente'`` (e, ao concluir um envio, pelo ``breve``
-lido), com conferência do ``rowcount``. ``quedas``/``afetados``/``voltaram``/``fechado_em``
-nunca são escritos.
+lido e por ``fechado_em IS NULL`` se o alerta foi lido aberto), com conferência do
+``rowcount``. ``quedas``/``afetados``/``voltaram``/``fechado_em`` nunca são escritos.
 
 Segredo: o token só existe em memória durante o ciclo; o status e o log levam só os textos fixos
 de ``ErroTelegram`` (ou o nome do tipo da exceção inesperada).
@@ -76,6 +77,7 @@ class _Item:
     id: int
     texto: str
     breve: bool
+    fechado: bool  # lido já fechado (``fechado_em``): a conclusão só guarda o aberto
     tentativas: int
     enviado_para: list[str]
     msgs: dict[str, int]
@@ -182,11 +184,12 @@ class Despachante:
                 id=a.id,
                 texto=texto_telegram(dados, self._fuso, incluir_ip),
                 breve=a.breve,
+                fechado=a.fechado_em is not None,
                 tentativas=a.envio_tentativas,
                 enviado_para=list(a.enviado_para),
                 msgs=dict(a.telegram_msgs),
             )
-            if a.breve and a.telegram_msgs:
+            if a.fechado_em is not None and a.telegram_msgs:
                 # só os chats ainda configurados (chat removido não recebe mais nada)
                 item.editar = [c for c in item.msgs if c in chats]
                 item.faltam = [
@@ -297,12 +300,13 @@ class Despachante:
             await self._escrever(item.id, enviado_para=enviado_para, telegram_msgs=msgs)
 
     async def _concluir(self, item: _Item, enviado_para: list[str], msgs: dict[str, int]) -> None:
-        """``enviado``, guardado também pelo ``breve`` lido: se o agrupador fechou como
-        caiu-e-voltou durante o envio, o alerta fica ``pendente`` com as mensagens guardadas e o
-        próximo ciclo edita."""
+        """``enviado``, guardado também pelo ``breve`` lido e, se lido aberto, por ``fechado_em IS
+        NULL``: se o agrupador fechou o alerta durante o envio, ele fica ``pendente`` com as
+        mensagens guardadas e o próximo ciclo edita."""
         if await self._escrever(
             item.id,
             breve=item.breve,
+            aberto=not item.fechado,
             envio="enviado",
             enviado_para=enviado_para,
             telegram_msgs=msgs,
@@ -376,12 +380,17 @@ class Despachante:
             **valores,
         )
 
-    async def _escrever(self, id_: int, breve: bool | None = None, **valores: Any) -> bool:
-        """UPDATE só das colunas de envio, só se o alerta segue ``pendente`` (e com o ``breve``
-        lido, se dado). ``False``: o agrupador mudou o alerta antes."""
+    async def _escrever(
+        self, id_: int, breve: bool | None = None, aberto: bool = False, **valores: Any
+    ) -> bool:
+        """UPDATE só das colunas de envio, só se o alerta segue ``pendente`` (com o ``breve``
+        lido, se dado, e ainda aberto, se ``aberto``). ``False``: o agrupador mudou o alerta
+        antes."""
         condicoes = [Alerta.id == id_, Alerta.envio == "pendente"]
         if breve is not None:
             condicoes.append(Alerta.breve.is_(breve))
+        if aberto:
+            condicoes.append(Alerta.fechado_em.is_(None))
         async with self._sessoes() as db:
             resultado = await db.execute(update(Alerta).where(*condicoes).values(**valores))
             await db.commit()

@@ -6,7 +6,7 @@ import { horaNoFuso } from "./alertas.js";
 import { api } from "./api.js";
 import {
   aplicarNaPilha, dadosDoCartao, dispensarDaPilha, expirarDaPilha, listaDeAfetados, MAX_NO_PAINEL,
-  pilhaVazia, textoDoMais, visiveisDaPilha,
+  pilhaVazia, renovarNaPilha, textoDoMais, visiveisDaPilha,
 } from "./cartoes.js";
 
 const CHAVE_SOM = "sentinela-som-alertas";
@@ -32,6 +32,8 @@ export function cartoesDoPainel(store) {
   let pilha = pilhaVazia();
   const extras = new Map(); // id do alerta -> {mac, fabricante, afetados, ...}
   let expirar = 0;
+  let snapshots = 0;
+  const retidos = new Map(); // id do cartão -> fontes que o seguram ("mouse", "foco")
   let audio = null;
   let interagiu = false; // WebAudio só depois de um gesto do usuário
 
@@ -87,6 +89,18 @@ export function cartoesDoPainel(store) {
       document.addEventListener("keydown", marcar, true);
     },
 
+    /** Reconexão (do 2º snapshot em diante): o que passou fora vem do servidor e o que estava
+     * na tela é velho; recomeça sem cartões, como o telão. */
+    cartoesAoSnapshot() {
+      if (snapshots++ > 0) this.reiniciarCartoes();
+    },
+    reiniciarCartoes() {
+      pilha = pilhaVazia();
+      extras.clear();
+      retidos.clear();
+      this.renderizarCartoes();
+    },
+
     // ---------- mensagens ao vivo ----------
     cartoesAoMensagem(msg) {
       const antes = pilha;
@@ -100,7 +114,7 @@ export function cartoesDoPainel(store) {
     renderizarCartoes() {
       window.clearTimeout(expirar);
       const agora = Date.now();
-      pilha = expirarDaPilha(pilha, agora);
+      pilha = expirarDaPilha(pilha, agora, new Set(retidos.keys()));
       const { visiveis, mais } = visiveisDaPilha(pilha, MAX_NO_PAINEL);
       this.cartoes = visiveis.map((entrada, i) => {
         const e = extrasDe(entrada.id);
@@ -130,7 +144,7 @@ export function cartoesDoPainel(store) {
       for (const id of [...extras.keys()]) {
         if (!pilha.cartoes.some((c) => c.id === id)) extras.delete(id);
       }
-      const prazos = pilha.cartoes.filter((c) => c.fechado).map((c) => c.expiraEm);
+      const prazos = pilha.cartoes.filter((c) => c.fechado && !retidos.has(c.id)).map((c) => c.expiraEm);
       if (prazos.length) {
         expirar = window.setTimeout(() => this.renderizarCartoes(), Math.max(200, Math.min(...prazos) - agora));
       }
@@ -172,7 +186,35 @@ export function cartoesDoPainel(store) {
 
     // ---------- ações ----------
     dispensarCartao(id) {
+      // o foco estava no cartão que sai: vai ao próximo cartão (ou ao conteúdo) em vez de se perder
+      const ordem = this.cartoes.map((c) => c.id);
+      const i = ordem.indexOf(id);
+      const proximo = i >= 0 ? (i + 1 < ordem.length ? ordem[i + 1] : i > 0 ? ordem[i - 1] : null) : null;
+      const atual = document.querySelector(`#cartoes-alerta article[data-id="${id}"]`);
+      const tinhaFoco = Boolean(atual && document.activeElement && atual.contains(document.activeElement));
+      retidos.delete(id);
       pilha = dispensarDaPilha(pilha, id);
+      this.renderizarCartoes();
+      if (!tinhaFoco) return;
+      window.setTimeout(() => {
+        const alvo = (proximo !== null && document.querySelector(`#cartoes-alerta article[data-id="${proximo}"]`))
+          || document.getElementById("conteudo");
+        if (alvo) alvo.focus();
+      }, 0);
+    },
+    /** Foco ou mouse em cima do cartão: o "voltou" espera (fonte: "mouse" ou "foco"). */
+    reterCartao(id, fonte = "mouse") {
+      const fontes = retidos.get(id) || new Set();
+      fontes.add(fonte);
+      retidos.set(id, fontes);
+    },
+    soltarCartao(id, fonte = "mouse") {
+      const fontes = retidos.get(id);
+      if (!fontes) return;
+      fontes.delete(fonte);
+      if (fontes.size) return;
+      retidos.delete(id);
+      pilha = renovarNaPilha(pilha, id, Date.now());
       this.renderizarCartoes();
     },
     alternarDadosDoCartao(id) {

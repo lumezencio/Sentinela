@@ -1125,7 +1125,7 @@ export function montarTeia(container, opcoes = {}) {
     rotulos.clear();
     selecionado = null;
     nos.clear(); hubs.clear(); grupos.clear(); ligacoes.clear();
-    container.replaceChildren();
+    while (container.firstChild) container.removeChild(container.firstChild); // sem replaceChildren (Chromium 63)
     container.style.cursor = "";
     container.classList.remove("teia-cena");
     delete container.dataset.nos;

@@ -12,15 +12,15 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import ColumnElement, or_, select, update
+from sqlalchemy import ColumnElement, String, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.api import comum
 from sentinela.barramento import Barramento, Mensagem
-from sentinela.db.modelos import Auditoria, Equipamento, Evento, Silencio, Usuario
+from sentinela.db.modelos import Alerta, Auditoria, Equipamento, Evento, Fonte, Silencio, Usuario
 from sentinela.descoberta.mescla import auditar_sistema
 from sentinela.horario import amanha_8h
-from sentinela.monitor.agendador import CAUSA_FORA, Agendador, Alvo
+from sentinela.monitor.agendador import CAUSA_FORA, PROFUNDIDADE_MAX_PAI, Agendador, Alvo
 from sentinela.monitor.checagens import GRAVADOR
 from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de
@@ -66,13 +66,36 @@ class Cobertura:
     equipamentos: frozenset[str]
     classes: frozenset[int]
 
-    def cobre(self, equipamento_id: str, classe_id: int, ancestrais: Iterable[str]) -> bool:
-        """Silêncio ou manutenção ativos no próprio, na classe ou em qualquer ancestral."""
+    def cobre(
+        self, equipamento_id: str, classe_id: int, ancestrais: Iterable[tuple[str, int]]
+    ) -> bool:
+        """Silêncio ou manutenção ativos no próprio, na classe ou em qualquer ancestral (ou na
+        classe de um ancestral). ``ancestrais``: pares (id, classe_id)."""
         return (
             equipamento_id in self.equipamentos
             or classe_id in self.classes
-            or any(a in self.equipamentos for a in ancestrais)
+            or any(a in self.equipamentos or c in self.classes for a, c in ancestrais)
         )
+
+
+async def ancestrais(db: AsyncSession, eq: Equipamento) -> list[tuple[str, int]]:
+    """(id, classe_id) dos ancestrais: sobe ``pai_id`` até ``PROFUNDIDADE_MAX_PAI`` níveis,
+    parando em ciclo."""
+    vistos = [eq.id]
+    achados: list[tuple[str, int]] = []
+    pai = eq.pai_id
+    while pai is not None and pai not in vistos and len(vistos) <= PROFUNDIDADE_MAX_PAI:
+        vistos.append(pai)
+        linha = (
+            await db.execute(
+                select(Equipamento.pai_id, Equipamento.classe_id).where(Equipamento.id == pai)
+            )
+        ).first()
+        if linha is None:
+            break
+        achados.append((pai, linha[1]))
+        pai = linha[0]
+    return achados
 
 
 def _ativo(agora: datetime) -> tuple[ColumnElement[bool], ...]:
@@ -148,8 +171,64 @@ class Silencios:
         if registrados:
             self._agendador.pausar_lote(registrados, causa=CAUSA_MANUTENCAO)
             await self._agendador.aguardar_gravacoes()
+        silenciados = await self._calar_pendentes(db, agora)
         self._barramento.publicar(Mensagem("silencio", {"acao": "criado", "id": sil.id}))
+        if silenciados:
+            abertos = await db.scalar(
+                select(func.count()).select_from(Alerta).where(Alerta.fechado_em.is_(None))
+            )
+            for id_ in silenciados:
+                self._barramento.publicar(
+                    Mensagem(
+                        "alerta", {"acao": "atualizado", "id": id_, "abertos": int(abertos or 0)}
+                    )
+                )
         return sil
+
+    async def _calar_pendentes(self, db: AsyncSession, agora: datetime) -> list[int]:
+        """Quem silencia um alerta que ainda espera para ir ao Telegram impede o envio: alertas
+        abertos, ``pendente`` e sem nenhum chat atendido, com o principal coberto, viram
+        ``silenciado`` + ``nao_aplica``. UPDATE guardado (contrato de envio do ``Alerta``): se o
+        despachante já mandou ou o agrupador fechou, o alerta fica como está."""
+        cobertura = await self.cobertura(db, agora)
+        pendentes = (
+            (
+                await db.execute(
+                    select(Alerta).where(
+                        Alerta.fechado_em.is_(None),
+                        Alerta.envio == "pendente",
+                        Alerta.silenciado.is_(False),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        silenciados: list[int] = []
+        for a in pendentes:
+            if a.enviado_para or a.telegram_msgs:
+                continue
+            eid = a.equipamento_id
+            if eid is None and a.fonte_id is not None:
+                eid = await db.scalar(select(Fonte.equipamento_id).where(Fonte.id == a.fonte_id))
+            eq = await db.get(Equipamento, eid) if eid is not None else None
+            if eq is None or not cobertura.cobre(eq.id, eq.classe_id, await ancestrais(db, eq)):
+                continue
+            r = await db.execute(
+                update(Alerta)
+                .where(
+                    Alerta.id == a.id,
+                    Alerta.fechado_em.is_(None),
+                    Alerta.envio == "pendente",
+                    cast(Alerta.enviado_para, String) == "[]",
+                    cast(Alerta.telegram_msgs, String) == "{}",
+                )
+                .values(silenciado=True, envio="nao_aplica")
+            )
+            if r.rowcount == 1:  # type: ignore[attr-defined]
+                silenciados.append(a.id)
+        await db.commit()
+        return silenciados
 
     async def _resolver_alvo(
         self, db: AsyncSession, pedido: PedidoSilencio

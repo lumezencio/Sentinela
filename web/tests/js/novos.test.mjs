@@ -204,3 +204,16 @@ test("dadosDeAprovacao/foiEditada: padrão é a classe sugerida (ou desconhecido
   assert.equal(foiEditada(x, { classe: "desconhecido", nome: "n" }), false);
   assert.equal(foiEditada(x, { nome: "outro" }), true);
 });
+
+test("sanitização única: limparTexto tira controle, bidi (U+202E) e largura zero; os outros usam a mesma", async () => {
+  const { limparTexto } = await import("../../src/js/lista.js");
+  const { limpar } = await import("../../src/js/cartoes.js");
+  const hostil = "Sw‮itch​ A\u0007⁦B﻿";
+  assert.equal(limparTexto(hostil), "Switch AB");
+  assert.equal(textoSeguro(hostil), "Switch AB");
+  assert.equal(limpar(hostil), "Switch AB");
+  assert.equal(limparTexto(null), "");
+  assert.equal(limparTexto("abcdef", 3), "abc");
+  assert.equal(textoSeguro("a".repeat(300)).length, 200); // limites de cada módulo seguem
+  assert.equal(limpar("a".repeat(500)).length, 400);
+});

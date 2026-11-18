@@ -16,7 +16,8 @@ from sentinela.alertas.silencios import (
     Silencios,
     fim_do_atalho,
 )
-from sentinela.db.modelos import Auditoria, Classe, Equipamento, Evento, Silencio, Usuario
+from sentinela.barramento import Mensagem
+from sentinela.db.modelos import Alerta, Auditoria, Classe, Equipamento, Evento, Silencio, Usuario
 from sentinela.monitor.estados import Estado
 
 EQUIP = "/api/v1/equipamentos"
@@ -257,9 +258,10 @@ async def test_cobertura_inclui_ancestrais(app: FastAPI, cliente_admin: httpx.As
         cob = await _servico(app).cobertura(db, datetime.now(UTC))
         classes = {c.slug: c.id for c in (await db.execute(select(Classe))).scalars()}
     assert cob.cobre(pai, classes["camera"], [])
-    assert cob.cobre(filho, classes["camera"], [pai])
+    assert cob.cobre(filho, classes["camera"], [(pai, classes["camera"])])
     assert not cob.cobre(filho, classes["camera"], [])
     assert cob.cobre(filho, classes["servidor"], [])
+    assert cob.cobre(filho, classes["camera"], [("x", classes["servidor"])])  # classe do ancestral
 
 
 # ---- ajustes da revisão -----------------------------------------------------------------------
@@ -356,3 +358,76 @@ async def test_encerrar_concorrente_libera_e_audita_uma_vez(
     async with _sessoes(app)() as db:
         consulta = select(Auditoria).where(Auditoria.acao == "silencio.encerrar")
         assert len((await db.execute(consulta)).scalars().all()) == 1
+
+
+# ---- silenciar impede o envio do alerta que ainda espera ---------------------------------------
+
+
+async def _alerta_de(app: FastAPI, eid: str, **kw: object) -> int:
+    async with _sessoes(app)() as db:
+        a = Alerta(
+            tipo=str(kw.pop("tipo", "queda")),
+            equipamento_id=eid,
+            quedas=[eid],
+            afetados=[],
+            aberto_em=datetime.now(UTC),
+            **kw,  # type: ignore[arg-type]
+        )
+        db.add(a)
+        await db.commit()
+        return a.id
+
+
+async def _alerta_lido(app: FastAPI, id: int) -> Alerta:
+    async with _sessoes(app)() as db:
+        a = await db.get(Alerta, id)
+        assert a is not None
+        return a
+
+
+async def test_silenciar_impede_envio_do_alerta_pendente(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alvo = await _equip(cliente_admin, 30)
+    filho = await _equip(cliente_admin, 31)
+    outro = await _equip(cliente_admin, 32)
+    async with _sessoes(app)() as db:
+        eq = await db.get(Equipamento, filho)
+        assert eq is not None
+        eq.pai_id = alvo
+        await db.commit()
+    pendente = await _alerta_de(app, alvo, envio="pendente")
+    do_filho = await _alerta_de(app, filho, envio="pendente")
+    de_outro = await _alerta_de(app, outro, envio="pendente")
+    enviado = await _alerta_de(app, alvo, envio="enviado", enviado_para=["-1001"])
+    parcial = await _alerta_de(app, alvo, envio="pendente", enviado_para=["-1001"])
+    fechado = await _alerta_de(app, alvo, envio="pendente", fechado_em=datetime.now(UTC))
+    publicadas: list[Mensagem] = []
+    original = app.state.barramento.publicar
+    monkeypatch.setattr(
+        app.state.barramento, "publicar", lambda m: (publicadas.append(m), original(m))[1]
+    )
+    await _criar(app, _pedido(alvo, tipo="silencio"))
+    for id_ in (pendente, do_filho):
+        a = await _alerta_lido(app, id_)
+        assert a.silenciado and a.envio == "nao_aplica"
+    for id_, envio in ((de_outro, "pendente"), (enviado, "enviado"), (parcial, "pendente")):
+        a = await _alerta_lido(app, id_)
+        assert not a.silenciado and a.envio == envio
+    assert (await _alerta_lido(app, fechado)).envio == "pendente"  # fechado: não é deste caminho
+    atualizados = {
+        m.dados["id"]
+        for m in publicadas
+        if m.tipo == "alerta" and m.dados.get("acao") == "atualizado"
+    }
+    assert atualizados == {pendente, do_filho}
+
+
+async def test_silenciar_a_classe_cobre_alerta_pendente_da_classe(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    cam = await _equip(cliente_admin, 33)
+    a = await _alerta_de(app, cam, envio="pendente")
+    await _criar(app, _pedido("camera", tipo="silencio", alvo_tipo="classe"))
+    lido = await _alerta_lido(app, a)
+    assert lido.silenciado and lido.envio == "nao_aplica"

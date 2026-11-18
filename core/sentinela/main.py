@@ -133,7 +133,12 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
         app.state.sessoes, monitor.agendador, monitor.barramento, app.state.relogio, agora_utc
     )
     app.state.agrupador = Agrupador(
-        app.state.sessoes, monitor.barramento, app.state.silencios, app.state.relogio, agora_utc
+        app.state.sessoes,
+        monitor.barramento,
+        app.state.silencios,
+        app.state.relogio,
+        agora_utc,
+        enviar=not settings.demo,  # demonstração não tem Telegram: nada fica "pendente"
     )
     _montar_descoberta(app, settings, monitor)
     _montar_telegram(app, settings, monitor)

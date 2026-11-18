@@ -281,6 +281,12 @@ async def test_aprovar_e_revogar_auditados(
     assert ("parede.revogar", str(ident)) in acoes
 
 
+async def test_revogar_id_enorme_e_422_nao_500(cliente_admin: httpx.AsyncClient) -> None:
+    for ident in (2**63, 2**31 + 1, 0, -1):
+        assert (await cliente_admin.delete(f"{PAREDES}/{ident}")).status_code == 422
+    assert (await cliente_admin.delete(f"{PAREDES}/999")).status_code == 404
+
+
 async def test_codigo_errado_404_generico(
     abrir_tv: AbrirTv, cliente_admin: httpx.AsyncClient
 ) -> None:

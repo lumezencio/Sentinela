@@ -39,10 +39,9 @@ from typing import Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.alertas.silencios import Cobertura, Silencios
+from sentinela.alertas.silencios import Cobertura, Silencios, ancestrais
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte
-from sentinela.monitor.agendador import PROFUNDIDADE_MAX_PAI
 from sentinela.monitor.estados import CAUSA_PAI, Estado
 from sentinela.relogio import Relogio
 
@@ -75,7 +74,12 @@ class Agrupador:
         silencios: Silencios,
         relogio: Relogio,
         agora_parede: Callable[[], datetime],
+        *,
+        enviar: bool = True,
     ) -> None:
+        self._enviar = (
+            enviar  # False (demonstração): nada vai ao Telegram, alertas nascem nao_aplica
+        )
         self._sessoes = sessoes
         self._barramento = barramento
         self._silencios = silencios
@@ -181,7 +185,7 @@ class Agrupador:
                 self._instavel_desde.pop(eid, None)
                 continue
             silenciado = await _silenciado(db, cobertura, eq)
-            await _abrir(db, eventos, "instavel", eid, [], desde, silenciado)
+            await _abrir(db, eventos, "instavel", eid, [], desde, silenciado, enviar=self._enviar)
 
     async def _fechar_orfaos(self, db: AsyncSession, eventos: Eventos, agora: datetime) -> None:
         """Quedas cujos pendentes foram todos pausados/removidos; instável sem equipamento;
@@ -279,7 +283,9 @@ class Agrupador:
             if eq_pai is not None:
                 cobertura = await self._silencios.cobertura(db, t)
                 silenciado = await _silenciado(db, cobertura, eq_pai)
-            await _abrir(db, eventos, "queda", pai, [], t, silenciado, [eid, *levar])
+            await _abrir(
+                db, eventos, "queda", pai, [], t, silenciado, [eid, *levar], enviar=self._enviar
+            )
             return
         novos = [x for x in (eid, *levar) if x not in alvo.afetados and x != alvo.equipamento_id]
         if novos:
@@ -303,7 +309,7 @@ class Agrupador:
                     eventos.append(("atualizado", a.id))
                 return
         silenciado = await _silenciado(db, await self._silencios.cobertura(db, t), eq)
-        envio = "nao_aplica" if silenciado else "pendente"
+        envio = "nao_aplica" if silenciado or not self._enviar else "pendente"
         limite = t - timedelta(seconds=JANELA_AGRUPAR_S)
         for a in abertos:  # do mais recente para o mais antigo
             if not a.quedas or a.aberto_em < limite:
@@ -320,7 +326,7 @@ class Agrupador:
             )
             eventos.append(("atualizado", a.id))
             return
-        await _abrir(db, eventos, "queda", eid, [eid], t, silenciado)
+        await _abrir(db, eventos, "queda", eid, [eid], t, silenciado, enviar=self._enviar)
 
     async def _voltou(self, db: AsyncSession, eventos: Eventos, eid: str, t: datetime) -> None:
         for a in await _abertos(db):
@@ -357,7 +363,7 @@ class Agrupador:
         await _gravar(db, a, **valores)
         eventos.append(("fechado", a.id))
         if lido == "enviado" and voltou and not breve:
-            await _abrir_volta(db, eventos, a, t)
+            await _abrir_volta(db, eventos, a, t, self._enviar)
 
     async def _fechar_instavel(
         self, db: AsyncSession, eventos: Eventos, a: Alerta, t: datetime, estado: str | None
@@ -369,7 +375,7 @@ class Agrupador:
         await _gravar(db, a, **valores)
         eventos.append(("fechado", a.id))
         if lido == "enviado" and estado == Estado.ONLINE.value:
-            await _abrir_volta(db, eventos, a, t)  # ao cair, a queda é que avisa
+            await _abrir_volta(db, eventos, a, t, self._enviar)  # ao cair, a queda é que avisa
 
     # ---- fonte ----------------------------------------------------------------------------
 
@@ -407,7 +413,17 @@ class Agrupador:
                 if eq is not None:
                     cobertura = await self._silencios.cobertura(db, agora)
                     silenciado = await _silenciado(db, cobertura, eq)
-            await _abrir(db, eventos, "fonte_falhou", None, [], agora, silenciado, fonte_id=fid)
+            await _abrir(
+                db,
+                eventos,
+                "fonte_falhou",
+                None,
+                [],
+                agora,
+                silenciado,
+                fonte_id=fid,
+                enviar=self._enviar,
+            )
 
         await self._transacao(corpo)
 
@@ -477,6 +493,7 @@ async def _abrir(
     afetados: list[str] | None = None,
     *,
     fonte_id: str | None = None,
+    enviar: bool = True,
 ) -> None:
     a = Alerta(
         tipo=tipo,
@@ -487,14 +504,16 @@ async def _abrir(
         voltaram=[],
         aberto_em=aberto_em,
         silenciado=silenciado,
-        envio="nao_aplica" if silenciado else "pendente",
+        envio="nao_aplica" if silenciado or not enviar else "pendente",
     )
     db.add(a)
     await db.flush()
     eventos.append(("aberto", a.id))
 
 
-async def _abrir_volta(db: AsyncSession, eventos: Eventos, origem: Alerta, t: datetime) -> None:
+async def _abrir_volta(
+    db: AsyncSession, eventos: Eventos, origem: Alerta, t: datetime, enviar: bool = True
+) -> None:
     volta = Alerta(
         tipo="volta",
         equipamento_id=origem.equipamento_id,
@@ -505,7 +524,7 @@ async def _abrir_volta(db: AsyncSession, eventos: Eventos, origem: Alerta, t: da
         fechado_em=t,
         alerta_origem_id=origem.id,
         silenciado=False,
-        envio="pendente",
+        envio="pendente" if enviar else "nao_aplica",
     )
     db.add(volta)
     await db.flush()
@@ -565,15 +584,5 @@ async def _critico(db: AsyncSession, eid: str) -> bool:
     return bool(critica)
 
 
-async def _ancestrais(db: AsyncSession, eq: Equipamento) -> list[str]:
-    """Sobe ``pai_id`` até ``PROFUNDIDADE_MAX_PAI`` níveis, parando em ciclo."""
-    vistos = [eq.id]
-    pai = eq.pai_id
-    while pai is not None and pai not in vistos and len(vistos) <= PROFUNDIDADE_MAX_PAI:
-        vistos.append(pai)
-        pai = await db.scalar(select(Equipamento.pai_id).where(Equipamento.id == pai))
-    return vistos[1:]
-
-
 async def _silenciado(db: AsyncSession, cobertura: Cobertura, eq: Equipamento) -> bool:
-    return cobertura.cobre(eq.id, eq.classe_id, await _ancestrais(db, eq))
+    return cobertura.cobre(eq.id, eq.classe_id, await ancestrais(db, eq))

@@ -34,6 +34,7 @@ class DadosAlerta:
     fechado_em: datetime | None
     breve: bool
     fonte: str | None
+    voltou: bool = False  # alguém de ``quedas`` voltou (fechado sem volta = pausa/remoção)
 
 
 def _duracao(d: DadosAlerta) -> str | None:
@@ -55,6 +56,13 @@ def texto_painel(d: DadosAlerta) -> str:
         dur = _duracao(d)
         base = f"{d.quedas} equipamentos caíram e voltaram" if grupo else f"{d.nome} caiu e voltou"
         return base + (f" ({dur})" if dur else "")
+    if d.fechado_em is not None and d.voltou:  # fechada (>= 2 min) e ainda não enviada
+        dur = _duracao(d)
+        base = f"{d.quedas} equipamentos caíram e voltaram" if grupo else f"{d.nome} caiu e voltou"
+        base += f" (fora por {dur})" if dur else ""
+        if d.afetados and not grupo:
+            base += f" · {d.afetados} {'afetado' if d.afetados == 1 else 'afetados'}"
+        return base
     if grupo:
         return f"{d.quedas} equipamentos caíram"
     if d.afetados:
@@ -80,12 +88,21 @@ def texto_telegram(d: DadosAlerta, fuso: ZoneInfo, incluir_ip: bool) -> str:
         base = f"{d.quedas} equipamentos caíram e voltaram" if grupo else f"{nome} caiu e voltou"
         return f"🟡 {base}" + (f" ({dur})" if dur else "")
     hora = hora_local(d.aberto_em, fuso)
+    # queda já fechada (>= 2 min) que ainda não tinha ido ao Telegram: um aviso só
+    volta = ""
+    if d.fechado_em is not None and d.voltou:
+        dur = _duracao(d)
+        volta = f" e voltou às {hora_local(d.fechado_em, fuso)}" + (
+            f" (fora por {dur})" if dur else ""
+        )
+        if grupo:
+            volta = volta.replace(" e voltou", " e voltaram", 1)
     if grupo:
-        return f"🔴 {d.quedas} equipamentos caíram às {hora}"
+        return f"🔴 {d.quedas} equipamentos caíram às {hora}{volta}"
     if d.afetados:
         plural = "equipamento afetado" if d.afetados == 1 else "equipamentos afetados"
-        return f"🔴 {nome} caiu às {hora} — {d.afetados} {plural}"
-    return f"🔴 {nome} caiu às {hora}"
+        return f"🔴 {nome} caiu às {hora}{volta} — {d.afetados} {plural}"
+    return f"🔴 {nome} caiu às {hora}{volta}"
 
 
 def texto_resumo(n: int) -> str:
@@ -142,4 +159,5 @@ async def dados_do_alerta(db: AsyncSession, alerta: Alerta) -> DadosAlerta:
         fechado_em=fechado_em,
         breve=alerta.breve,
         fonte=fonte,
+        voltou=bool(alerta.voltaram),
     )

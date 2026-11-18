@@ -26,6 +26,7 @@ def _d(**kw: object) -> DadosAlerta:
         "fechado_em": None,
         "breve": False,
         "fonte": None,
+        "voltou": False,
     }
     return DadosAlerta(**(base | kw))  # type: ignore[arg-type]
 
@@ -163,3 +164,23 @@ def test_texto_resumo_e_teste() -> None:
     assert texto_resumo(12) == "… e mais 12 alertas, veja no painel"
     assert texto_resumo(1) == "… e mais 1 alerta, veja no painel"
     assert TEXTO_TESTE == "✅ Teste do Sentinela: as mensagens estão chegando."
+
+
+def test_queda_fechada_nao_breve_diz_que_voltou() -> None:
+    d = _d(afetados=3, voltou=True, fechado_em=T0 + timedelta(seconds=600))
+    assert texto_painel(d) == "Switch Bloco B caiu e voltou (fora por 10 min) · 3 afetados"
+    assert (
+        texto_telegram(d, SP, False)
+        == "🔴 Switch Bloco B caiu às 14:00 e voltou às 14:10 (fora por 10 min)"
+        " — 3 equipamentos afetados"
+    )
+    simples = _d(voltou=True, fechado_em=T0 + timedelta(seconds=600))
+    assert texto_telegram(simples, SP, False) == (
+        "🔴 Switch Bloco B caiu às 14:00 e voltou às 14:10 (fora por 10 min)"
+    )
+
+
+def test_queda_fechada_sem_volta_segue_caiu() -> None:
+    d = _d(fechado_em=T0 + timedelta(seconds=600))  # pausa/remoção: ninguém voltou
+    assert texto_painel(d) == "Switch Bloco B caiu"
+    assert texto_telegram(d, SP, False) == "🔴 Switch Bloco B caiu às 14:00"

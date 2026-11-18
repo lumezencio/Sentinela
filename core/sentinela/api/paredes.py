@@ -8,7 +8,7 @@ a chave HTTP publica ``paredes_http_desligado`` e os telÃµes por HTTP caem tambÃ
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 from pydantic import BaseModel, ConfigDict, StrictBool, StringConstraints
 from sqlalchemy import select
 
@@ -96,7 +96,9 @@ async def aprovar_codigo(
 
 
 @router.delete("/api/v1/paredes/{id}", status_code=status.HTTP_204_NO_CONTENT)
-async def revogar_parede(id: int, request: Request, db: SessaoDB, admin: Admin) -> Response:
+async def revogar_parede(
+    id: Annotated[int, Path(ge=1, le=2**31)], request: Request, db: SessaoDB, admin: Admin
+) -> Response:
     if not await revogar(db, id, agora_utc()):
         raise nao_encontrado()
     auditar(db, request, admin, "parede.revogar", str(id))

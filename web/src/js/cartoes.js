@@ -4,7 +4,7 @@
 // (Chromium 63): sem Object.hasOwn, flatMap, ?. nem regex \p{...}, e só importa o que o telão
 // já carrega. Texto da rede (nome, MAC, fabricante) vai à tela só por textContent/x-text e nunca
 // é cortado: o cartão cresce.
-import { ESTADOS, formatarLatencia, haQuanto, rotuloChecagem, textoDoIp } from "./lista.js";
+import { ESTADOS, formatarLatencia, haQuanto, limparTexto, rotuloChecagem, textoDoIp } from "./lista.js";
 import { formatarDuracao } from "./visoes.js";
 
 export const TIPOS_DO_CARTAO = ["queda", "instavel", "fonte_falhou"];
@@ -15,11 +15,8 @@ const MAX_GUARDADOS = 50; // cartões na memória (os de cima aparecem, o resto 
 const MAX_DISPENSADOS = 200;
 const MAX_TEXTO = 400; // nome de equipamento vai até 300 caracteres
 
-const CONTROLES = /[\u0000-\u001f\u007f-\u009f­؜​-‏‪-‮⁠-⁯﻿￹-￻]/g;
-
 export function limpar(texto, max) {
-  if (texto === null || texto === undefined) return "";
-  return String(texto).replace(CONTROLES, "").slice(0, max || MAX_TEXTO);
+  return limparTexto(texto, max || MAX_TEXTO);
 }
 
 const MARCAS = {
@@ -88,10 +85,19 @@ export function dispensarDaPilha(pilha, id) {
   return { cartoes, dispensados: [...pilha.dispensados, id].slice(-MAX_DISPENSADOS) };
 }
 
-/** Tira os cartões "voltou" que já cumpriram os 10 s. */
-export function expirarDaPilha(pilha, agora) {
-  const cartoes = pilha.cartoes.filter((c) => !(c.fechado && c.expiraEm <= agora));
+/** Tira os cartões "voltou" que já cumpriram os 10 s (menos os `retidos`: foco ou mouse em cima). */
+export function expirarDaPilha(pilha, agora, retidos) {
+  const cartoes = pilha.cartoes.filter(
+    (c) => !(c.fechado && c.expiraEm <= agora && !(retidos && retidos.has(c.id))),
+  );
   return cartoes.length === pilha.cartoes.length ? pilha : { ...pilha, cartoes };
+}
+
+/** Cartão "voltou" que deixou de ser retido volta a ter os 10 s inteiros. */
+export function renovarNaPilha(pilha, id, agora) {
+  const atual = pilha.cartoes.find((c) => c.id === id);
+  if (!atual || !atual.fechado) return pilha;
+  return { ...pilha, cartoes: pilha.cartoes.map((c) => (c.id === id ? { ...c, expiraEm: agora + VOLTOU_MS } : c)) };
 }
 
 /** Até `max` cartões à vista (os mais novos primeiro) e quantos ficaram de fora. */

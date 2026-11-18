@@ -725,3 +725,9 @@ html[data-aba="configuracoes"] {
     max-height: calc(100vh - 32px);
   }
 }
+
+/* foco movido por programa (ao fechar um cartão): o alvo é só ponto de partida do teclado */
+#conteudo:focus,
+.ca:focus {
+  outline: none;
+}

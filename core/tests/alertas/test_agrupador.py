@@ -425,12 +425,55 @@ async def test_silencio_ativo_registra_sem_enviar(ctx: Ctx) -> None:
     assert len(alertas) == 1 and alertas[0].fechado_em is not None  # sem ``volta``
 
 
+async def test_sem_envio_alertas_nascem_nao_aplica(ctx: Ctx) -> None:
+    """Demonstração (``enviar=False``): nada vai ao Telegram, então nenhum alerta nasce
+    ``pendente`` (o painel não mostra "Telegram pendente"); o agrupamento segue igual."""
+    ctx.agrupador = Agrupador(
+        ctx.sessoes,
+        ctx.barramento,
+        Silencios(ctx.sessoes, cast(Any, None), ctx.barramento, ctx.relogio, ctx.parede),
+        ctx.relogio,
+        ctx.parede,
+        enviar=False,
+    )
+    x = await _eq(ctx, "x")
+    y = await _eq(ctx, "y")
+    await _enviar(ctx, x, "offline", 0)
+    await _enviar(ctx, y, "offline", 5)
+    [a] = await _alertas(ctx)
+    assert a.envio == "nao_aplica" and not a.silenciado and a.quedas == [x, y]
+
+
 async def test_filho_de_pai_em_manutencao_silenciado(ctx: Ctx) -> None:
     """Review Focus 1: o pai pausado em manutenção cobre a cadeia de descendentes."""
     pai = await _eq(ctx, "pai", pausado=True, estado="pausado")
     filho = await _eq(ctx, "filho", pai=pai)
     neto = await _eq(ctx, "neto", "camera", pai=filho)
     await _silencio(ctx, "manutencao", eq=pai)
+    await _enviar(ctx, filho, "offline", 0)
+    await _enviar(ctx, neto, "offline", 40)
+    alertas = await _alertas(ctx)
+    assert len(alertas) == 2
+    assert all(a.silenciado and a.envio == "nao_aplica" for a in alertas)
+
+
+async def test_filho_de_pai_em_manutencao_de_classe_silenciado(ctx: Ctx) -> None:
+    """Manutenção/silêncio de CLASSE cobre também os descendentes do equipamento da classe."""
+    pai = await _eq(ctx, "pai", "switch", pausado=True, estado="pausado")
+    filho = await _eq(ctx, "filho", "camera", pai=pai)
+    neto = await _eq(ctx, "neto", "camera", pai=filho)
+    async with ctx.sessoes() as s:
+        s.add(
+            Silencio(
+                tipo="manutencao",
+                alvo_tipo="classe",
+                classe_id=ctx.classes["switch"],
+                inicio=T0 - timedelta(hours=1),
+                fim=T0 + timedelta(hours=4),
+                pausados=[],
+            )
+        )
+        await s.commit()
     await _enviar(ctx, filho, "offline", 0)
     await _enviar(ctx, neto, "offline", 40)
     alertas = await _alertas(ctx)

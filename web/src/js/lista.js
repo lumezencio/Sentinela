@@ -39,7 +39,19 @@ function ipNumerico(ip) {
 // controle (C0/C1) e formatação invisível (bidi, largura zero, BOM); sem \p{...}: o bundle do
 // telão (Chromium 63) também carrega este módulo
 const CONTROLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
-const IP_MAX = 45; // o mais longo IPv6 (com IPv4 embutido) tem 45 caracteres
+const IP_MAX = 45;
+
+/**
+ * Texto da rede para a tela (única sanitização do front): sem controle nem formatação
+ * invisível (bidi como U+202E, largura zero, BOM) e, com `max`, no máximo `max` caracteres.
+ * Só vai à tela por textContent/x-text.
+ */
+export function limparTexto(texto, max) {
+  if (texto === null || texto === undefined) return "";
+  const limpo = String(texto).replace(CONTROLE, "");
+  return max === undefined ? limpo : limpo.slice(0, max);
+}
+ // o mais longo IPv6 (com IPv4 embutido) tem 45 caracteres
 
 /**
  * IP para rótulo (Teia e Organograma do painel): o texto que a API mandou, sem caracteres de
@@ -48,7 +60,7 @@ const IP_MAX = 45; // o mais longo IPv6 (com IPv4 embutido) tem 45 caracteres
  */
 export function textoDoIp(ip) {
   if (typeof ip !== "string") return "";
-  const texto = ip.replace(CONTROLE, "").trim();
+  const texto = limparTexto(ip).trim();
   return texto.length > IP_MAX ? "" : texto;
 }
 

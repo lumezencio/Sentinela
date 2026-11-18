@@ -584,6 +584,7 @@ async def test_demo_nao_inicia_despachante(settings: Settings) -> None:
         assert "sentinela-alertas" in nomes
         assert "sentinela-telegram" not in nomes
         assert app.state.despachante is None
+        assert app.state.agrupador._enviar is False  # alertas nascem nao_aplica
 
 
 async def test_fora_do_demo_inicia_despachante(settings: Settings) -> None:
@@ -594,6 +595,7 @@ async def test_fora_do_demo_inicia_despachante(settings: Settings) -> None:
         assert "sentinela-telegram" in nomes
         assert isinstance(app.state.despachante, Despachante)
         assert isinstance(app.state.cliente_telegram, ClienteTelegram)
+        assert app.state.agrupador._enviar is True
 
 
 async def test_edicao_so_nos_chats_ainda_configurados(ctx: Ctx) -> None:
@@ -722,6 +724,62 @@ async def test_ca_adicional_invalida_nao_impede_o_core_de_subir(
 async def test_token_recusado_na_edicao_nao_vira_falhou(ctx: Ctx) -> None:
     a = await _queda_enviada_e_voltou(ctx, [CHAT_A])
     ctx.cliente.erro_edicao = ErroTelegram("Token do bot recusado pelo Telegram.", temporario=False)
+    await ctx.despachante.ciclo()
+    lido = await _ler(ctx, a)
+    assert lido.envio == "pendente" and lido.envio_tentativas == 1
+
+
+async def _fechar_como_voltou(ctx: Ctx, a: int, seg: float, **extra: Any) -> None:
+    lido = await _ler(ctx, a)
+    await _alterar(
+        ctx,
+        a,
+        voltaram=list(lido.quedas),
+        fechado_em=T0 + timedelta(seconds=seg),
+        **extra,
+    )
+
+
+async def test_queda_fechada_nao_breve_ainda_pendente_sai_com_caiu_e_voltou(ctx: Ctx) -> None:
+    await _configurar(ctx)
+    a = await _alerta(ctx, "queda", nome="NVR Garagem")
+    await _fechar_como_voltou(ctx, a, 600)
+    ctx.em(600)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.enviados == [
+        (CHAT_A, "🔴 NVR Garagem caiu às 14:00 e voltou às 14:10 (fora por 10 min)")
+    ]
+
+
+async def test_queda_fechada_nao_breve_com_mensagens_edita(ctx: Ctx) -> None:
+    """Agrupador fecha (>= 2 min) durante o envio: o alerta fica pendente com as mensagens e o
+    próximo ciclo edita, sem sendMessage novo."""
+    await _configurar(ctx)
+    a = await _alerta(ctx, "queda", nome="NVR Garagem")
+    ctx.em(CONFIRMAR_QUEDA_S)
+    original = ctx.cliente.enviar
+
+    async def enviar_e_agrupador_fecha(token: str, chat: str, texto: str) -> int | None:
+        mid = await original(token, chat, texto)
+        await _fechar_como_voltou(ctx, a, 600)
+        return mid
+
+    ctx.cliente.enviar = enviar_e_agrupador_fecha  # type: ignore[method-assign]
+    await ctx.despachante.ciclo()
+    lido = await _ler(ctx, a)
+    assert lido.envio == "pendente" and lido.telegram_msgs == {CHAT_A: 1}
+    ctx.em(601)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.editados == [
+        (CHAT_A, 1, "🔴 NVR Garagem caiu às 14:00 e voltou às 14:10 (fora por 10 min)")
+    ]
+    assert (await _ler(ctx, a)).envio == "enviado"
+    assert len(ctx.cliente.enviados) == 1
+
+
+async def test_edicao_erro_em_um_chat_nao_marca_enviado(ctx: Ctx) -> None:
+    a = await _queda_enviada_e_voltou(ctx, [CHAT_A, CHAT_B])
+    ctx.cliente.erro_edicao = ErroTelegram("Telegram indisponível no momento.", temporario=True)
     await ctx.despachante.ciclo()
     lido = await _ler(ctx, a)
     assert lido.envio == "pendente" and lido.envio_tentativas == 1

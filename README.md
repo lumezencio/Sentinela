@@ -271,6 +271,8 @@ por classe, com atalhos de 1 h, 4 h e "até amanhã 08:00" (no seu fuso), ou per
 também **pausa a checagem** e cobre os filhos do equipamento; ao fim, retoma só o que ela mesma
 pausou (o que você pausou à mão continua pausado).
 
+**Só para testes e reversão.** `SENTINELA_CA_ADICIONAL` (caminho de um PEM dentro do contêiner; exige montar o arquivo) existe só para testes: em produção fica vazia. Desfazer a migração 0004 (downgrade) apaga alertas, silêncios e telões; as manutenções em andamento ficam pausadas (retome à mão) e o "Depende de" dos equipamentos permanece.
+
 **Fuso.** O banco guarda UTC; os textos (Telegram, telão, painel) e o atalho "até amanhã 08:00"
 usam `SENTINELA_FUSO` (padrão `America/Sao_Paulo`).
 

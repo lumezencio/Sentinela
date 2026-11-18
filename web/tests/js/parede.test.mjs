@@ -194,12 +194,18 @@ test("bundle da Teia do telão: ESM ES2017 que publica window.SentinelaTeiaPared
 const DEPOIS_DO_CHROME_63 = [
   "globalThis", "AbortController", "queueMicrotask", "replaceAll",
   "structuredClone", ".at(", "Object.fromEntries", "flatMap", "Promise.allSettled", "matchAll",
+  "replaceChildren",
 ];
 
 test("bundle do telão: nenhuma API posterior ao Chromium 63 (além do que compat.js completa)", () => {
   const texto = readFileSync(new URL("../../src/parede/parede.bundle.js", import.meta.url), "utf8");
   const achadas = DEPOIS_DO_CHROME_63.filter((api) => texto.includes(api));
   assert.deepEqual(achadas, []);
+});
+
+test("bundle da Teia do telão: sem replaceChildren (Chromium 63 não tem; destruir esvazia no laço)", () => {
+  const texto = readFileSync(new URL("../../src/parede/teia-parede.bundle.js", import.meta.url), "utf8");
+  assert.equal(texto.includes("replaceChildren"), false);
 });
 
 test("bundle do telão: Intl.RelativeTimeFormat (cartões de queda) só atrás de typeof, com texto simples de reserva", () => {

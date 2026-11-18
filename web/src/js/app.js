@@ -144,6 +144,7 @@ function painel() {
         this.teiaAoMudarStore();
         this.novosAoMensagem(msg);
         this.alertasAoSnapshot(msg);
+        this.cartoesAoSnapshot();
       } else if (msg.tipo === "estado") {
         if (aplicarEstado(store, msg)) this.teiaAoEstado(msg.id);
         else this.pedirRessincronizacao();
