@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import sentinela.alertas.agrupador as agrupador_mod
 from sentinela.alertas.agrupador import Agrupador
 from sentinela.alertas.silencios import Silencios
 from sentinela.barramento import Barramento, Mensagem
@@ -461,7 +462,7 @@ async def test_suspeito_e_pausado_nao_geram_alerta(ctx: Ctx) -> None:
 
 
 async def test_reinicio_recarrega_abertos(ctx: Ctx) -> None:
-    x = await _eq(ctx, "x")
+    x = await _eq(ctx, "x", estado="offline")  # o banco também o tem caído
     cam = await _eq(ctx, "cam", "camera", estado="instavel", desde=T0)
     await _enviar(ctx, x, "offline", 0)
     # reinício: outro agrupador sobre o mesmo banco, com o laço completo
@@ -469,7 +470,10 @@ async def test_reinicio_recarrega_abertos(ctx: Ctx) -> None:
     tarefa = asyncio.create_task(ctx.agrupador.executar())
     try:
         await asyncio.wait_for(ctx.agrupador.pronto.wait(), 2)
-        await ctx.relogio.avancar(0)  # o primeiro tick (nada vencido) e o laço dormindo
+        for _ in range(200):  # o primeiro tick passa pelo banco antes de dormir
+            if ctx.relogio.proximo_prazo() is not None:
+                break
+            await asyncio.sleep(0.01)
         ctx.parede.agora = T0 + timedelta(seconds=300)
         ctx.barramento.publicar(_msg(x, "online", 300))
         await _ate(ctx, lambda al: al[0].fechado_em is not None)
@@ -483,3 +487,231 @@ async def test_reinicio_recarrega_abertos(ctx: Ctx) -> None:
     finally:
         tarefa.cancel()
         await asyncio.gather(tarefa, return_exceptions=True)
+
+
+# ---- correção 1: reconciliação ao subir -------------------------------------------------------
+
+
+async def _mudar_eq(c: Ctx, eid: str, **campos: Any) -> None:
+    async with c.sessoes() as s:
+        eq = await s.get(Equipamento, eid)
+        assert eq is not None
+        for k, v in campos.items():
+            setattr(eq, k, v)
+        await s.commit()
+
+
+async def _reiniciar(c: Ctx) -> None:
+    c.agrupador = c.novo_agrupador()
+    await c.agrupador.carregar()
+
+
+async def test_voltou_enquanto_o_agrupador_estava_parado(ctx: Ctx) -> None:
+    x, a_id, b_id = await _eq(ctx, "x"), await _eq(ctx, "a"), await _eq(ctx, "b")
+    cam = await _eq(ctx, "cam", "camera")
+    await _enviar(ctx, x, "offline", 0)
+    await _enviar(ctx, a_id, "offline", 100)
+    await _enviar(ctx, b_id, "offline", 105)  # grupo [a, b]
+    await _enviar(ctx, cam, "instavel", 0)
+    ctx.parede.agora = T0 + timedelta(seconds=300)
+    await ctx.agrupador.tick()
+    queda_x, grupo, instavel = await _alertas(ctx)
+    await _alterar(ctx, queda_x.id, envio="enviado", telegram_msgs={"-1001": 7})
+    await _alterar(ctx, instavel.id, envio="enviado", telegram_msgs={"-1001": 8})
+    # parado: as voltas chegaram ao banco, mas o agrupador não as viu
+    volta_em = T0 + timedelta(seconds=400)
+    await _mudar_eq(ctx, x, estado="online", estado_desde=volta_em)
+    await _mudar_eq(ctx, a_id, estado="online", estado_desde=volta_em)
+    await _mudar_eq(ctx, b_id, estado="offline", estado_desde=T0 + timedelta(seconds=105))
+    await _mudar_eq(ctx, cam, estado="online", estado_desde=volta_em)
+    ctx.parede.agora = T0 + timedelta(seconds=900)
+    await _reiniciar(ctx)
+    queda_x, grupo, instavel, volta_1, volta_2 = await _alertas(ctx)
+    assert queda_x.fechado_em == volta_em and not queda_x.breve
+    assert grupo.fechado_em is None and grupo.voltaram == [a_id]
+    assert instavel.fechado_em == volta_em
+    voltas = {volta_1.alerta_origem_id, volta_2.alerta_origem_id}
+    assert voltas == {queda_x.id, instavel.id} and {volta_1.tipo, volta_2.tipo} == {"volta"}
+
+
+# ---- correção 2: disputa com o despachante pelo ``envio`` --------------------------------------
+
+
+def _despachante_no_meio(monkeypatch: pytest.MonkeyPatch, c: Ctx, alerta_id: int) -> None:
+    """Na primeira leitura dos abertos, o despachante reivindica o alerta (outra conexão)."""
+    original = agrupador_mod._abertos
+    disparou = False
+
+    async def com_disputa(db: AsyncSession) -> list[Alerta]:
+        nonlocal disparou
+        lidos = await original(db)
+        if not disparou:
+            disparou = True
+            async with c.sessoes() as outra:
+                await outra.execute(
+                    update(Alerta)
+                    .where(Alerta.id == alerta_id, Alerta.envio == "pendente")
+                    .values(envio="enviado")
+                )
+                await outra.commit()
+        return lidos
+
+    monkeypatch.setattr(agrupador_mod, "_abertos", com_disputa)
+
+
+async def test_disputa_nao_remove_alerta_ja_enviado(
+    ctx: Ctx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pai = await _eq(ctx, "pai")
+    c = await _eq(ctx, "c", "camera", pai=pai)
+    await _enviar(ctx, c, "offline", 0)
+    await _enviar(ctx, pai, "offline", 40)
+    proprio, do_pai = await _alertas(ctx)
+    _despachante_no_meio(monkeypatch, ctx, proprio.id)
+    await _enviar(ctx, c, "inalcancavel", 40, causa=f"pai:{pai}")
+    proprio, do_pai = await _alertas(ctx)  # não foi apagado
+    assert proprio.envio == "enviado" and proprio.quedas == [c]
+    assert do_pai.afetados == [c]
+
+
+async def test_disputa_nao_agrupa_em_alerta_ja_enviado(
+    ctx: Ctx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    x, y = await _eq(ctx, "x"), await _eq(ctx, "y")
+    await _enviar(ctx, x, "offline", 0)
+    [a] = await _alertas(ctx)
+    _despachante_no_meio(monkeypatch, ctx, a.id)
+    await _enviar(ctx, y, "offline", 5)
+    a, b = await _alertas(ctx)
+    assert a.quedas == [x] and a.envio == "enviado"
+    assert b.quedas == [y]
+
+
+async def test_disputa_no_fechamento_cria_volta(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) -> None:
+    x = await _eq(ctx, "x")
+    await _enviar(ctx, x, "offline", 0)
+    [a] = await _alertas(ctx)
+    _despachante_no_meio(monkeypatch, ctx, a.id)
+    await _enviar(ctx, x, "online", 300)
+    queda, volta = await _alertas(ctx)
+    assert queda.fechado_em is not None and queda.envio == "enviado"
+    assert volta.tipo == "volta" and volta.alerta_origem_id == queda.id
+
+
+# ---- correção 3: volta do instável enviado -----------------------------------------------------
+
+
+async def _instavel_enviado(c: Ctx, cam: str) -> None:
+    await _enviar(c, cam, "instavel", 0)
+    c.parede.agora = T0 + timedelta(seconds=300)
+    await c.agrupador.tick()
+    [a] = await _alertas(c)
+    await _alterar(c, a.id, envio="enviado")
+
+
+async def test_instavel_enviado_que_volta_cria_volta(ctx: Ctx) -> None:
+    cam = await _eq(ctx, "cam", "camera")
+    await _instavel_enviado(ctx, cam)
+    await _enviar(ctx, cam, "online", 400)
+    instavel, volta = await _alertas(ctx)
+    assert instavel.fechado_em == T0 + timedelta(seconds=400) and instavel.envio == "enviado"
+    assert volta.tipo == "volta" and volta.alerta_origem_id == instavel.id
+    assert volta.envio == "pendente" and volta.equipamento_id == cam
+
+
+async def test_instavel_enviado_que_cai_nao_cria_volta(ctx: Ctx) -> None:
+    cam = await _eq(ctx, "cam", "camera")
+    await _instavel_enviado(ctx, cam)
+    await _enviar(ctx, cam, "offline", 400)
+    instavel, queda = await _alertas(ctx)
+    assert instavel.fechado_em is not None and queda.tipo == "queda"
+
+
+# ---- correções 4 a 6 --------------------------------------------------------------------------
+
+
+async def test_inalcancavel_ja_afetado_que_cai_nao_duplica(ctx: Ctx) -> None:
+    x, y = await _eq(ctx, "x"), await _eq(ctx, "y")
+    await _enviar(ctx, x, "offline", 0)
+    await _enviar(ctx, y, "inalcancavel", 1, causa=f"pai:{x}")
+    await _enviar(ctx, y, "offline", 5)  # sem pai caído: queda própria no mesmo grupo
+    [a] = await _alertas(ctx)
+    assert a.quedas == [x, y] and a.afetados == [y]
+
+
+async def test_queda_pausada_conta_como_resolvida(ctx: Ctx) -> None:
+    a_id, b_id = await _eq(ctx, "a"), await _eq(ctx, "b")
+    await _enviar(ctx, a_id, "offline", 0)
+    await _enviar(ctx, b_id, "offline", 5)
+    [g] = await _alertas(ctx)
+    await _alterar(ctx, g.id, envio="enviado")
+    await _enviar(ctx, a_id, "online", 200)
+    await _mudar_eq(ctx, b_id, pausado=True, estado="pausado")
+    await _enviar(ctx, b_id, "pausado", 210)
+    g, volta = await _alertas(ctx)
+    assert g.fechado_em == T0 + timedelta(seconds=210) and g.voltaram == [a_id]
+    assert volta.tipo == "volta"
+
+
+async def test_queda_so_pausada_fecha_sem_aviso(ctx: Ctx) -> None:
+    x = await _eq(ctx, "x")
+    await _enviar(ctx, x, "offline", 0)
+    await _mudar_eq(ctx, x, pausado=True, estado="pausado")
+    await _enviar(ctx, x, "pausado", 30)
+    [a] = await _alertas(ctx)
+    assert a.fechado_em is not None and not a.breve and a.envio == "nao_aplica"
+
+
+async def _fonte(c: Ctx, equipamento_id: str | None = None) -> None:
+    async with c.sessoes() as s:
+        s.add(
+            Fonte(
+                id="f1",
+                tipo="snmp",
+                nome="Switch",
+                host="10.99.0.250",
+                porta=161,
+                credencial_cifrada=b"x",
+                equipamento_id=equipamento_id,
+            )
+        )
+        await s.commit()
+
+
+async def _falhar_fonte(c: Ctx, vezes: int = 3) -> None:
+    for _ in range(vezes):
+        await c.agrupador.processar(
+            Mensagem("fonte", {"acao": "coletada", "id": "f1", "ok": False})
+        )
+
+
+async def test_equipamento_ou_fonte_removidos_fecham_no_tick(ctx: Ctx) -> None:
+    x = await _eq(ctx, "x")
+    await _fonte(ctx)
+    await _enviar(ctx, x, "offline", 0)
+    await _falhar_fonte(ctx)
+    async with ctx.sessoes() as s:
+        await s.execute(delete(Equipamento).where(Equipamento.id == x))
+        await s.execute(delete(Fonte).where(Fonte.id == "f1"))
+        await s.commit()
+    ctx.parede.agora = T0 + timedelta(seconds=60)
+    await ctx.agrupador.tick()
+    queda, fonte = await _alertas(ctx)
+    assert queda.fechado_em == ctx.parede.agora and queda.envio == "nao_aplica"
+    assert fonte.fechado_em == ctx.parede.agora
+
+
+async def test_fonte_falhou_silenciada_pelo_equipamento(ctx: Ctx) -> None:
+    sw = await _eq(ctx, "sw")
+    await _silencio(ctx, eq=sw)
+    await _fonte(ctx, sw)
+    await _falhar_fonte(ctx)
+    [a] = await _alertas(ctx)
+    assert a.tipo == "fonte_falhou" and a.silenciado and a.envio == "nao_aplica"
+
+
+async def test_inalcancavel_sem_pai_na_causa_vira_queda(ctx: Ctx) -> None:
+    x = await _eq(ctx, "x")
+    await _enviar(ctx, x, "inalcancavel", 0)
+    [a] = await _alertas(ctx)
+    assert a.tipo == "queda" and a.quedas == [x] and a.equipamento_id == x

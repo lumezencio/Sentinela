@@ -226,6 +226,13 @@ class Alerta(Base):
     mantendo ``telegram_msgs`` (não vazio): o despachante trata ``pendente`` + ``breve`` +
     ``telegram_msgs`` como edição (``editMessageText``) da mensagem já enviada, sem alerta
     ``volta``. Volta depois de 2 min de uma queda enviada gera um alerta ``volta``.
+
+    Concorrência pelo ``envio`` (contrato agrupador × despachante): o agrupador só altera ou
+    apaga um alerta com ``UPDATE/DELETE ... WHERE id=:id AND envio=<valor lido> AND fechado_em
+    IS NULL`` (apagar só com ``envio IN ('pendente', 'nao_aplica')``) e confere o
+    ``rowcount``; se perder, relê e decide de novo. O despachante reivindica com
+    ``UPDATE ... SET envio=... WHERE id=:id AND envio='pendente'`` e também confere o
+    ``rowcount``.
     """
 
     __tablename__ = "alerta"
