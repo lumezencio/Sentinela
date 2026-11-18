@@ -300,9 +300,12 @@ async def semear_alertas(
         await motor.dispose()
 
 
-async def inserir_alerta(banco_url: str, indice: int, **campos: Any) -> dict[str, Any]:
+async def inserir_alerta(
+    banco_url: str, indice: int, renomear: str = "", **campos: Any
+) -> dict[str, Any]:
     """Um alerta de queda aberto sobre o ``indice``-ésimo equipamento livre do demo (a partir
-    do 13º, longe dos de ``semear_alertas``); ``campos`` sobrescreve as colunas."""
+    do 13º, longe dos de ``semear_alertas``); ``campos`` sobrescreve as colunas. ``renomear``
+    troca o nome do equipamento (texto hostil); o nome original volta em ``nome_original``."""
     from sentinela.db.modelos import Alerta
     from sentinela.db.sessao import criar_motor, fabrica_sessao
 
@@ -317,26 +320,38 @@ async def inserir_alerta(banco_url: str, indice: int, **campos: Any) -> dict[str
                 "aberto_em": dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1),
                 "envio": "pendente",
             }
+            nome_original = eq.nome
+            if renomear:
+                eq.nome = renomear
             alerta = Alerta(**{**padrao, **campos})
             db.add(alerta)
             await db.flush()
-            saida = {"id": alerta.id, "equipamento_id": eq.id, "texto": f"{eq.nome} caiu"}
+            saida = {
+                "id": alerta.id,
+                "equipamento_id": eq.id,
+                "texto": f"{eq.nome} caiu",
+                "nome_original": nome_original,
+            }
             await db.commit()
             return saida
     finally:
         await motor.dispose()
 
 
-async def apagar_alertas(banco_url: str, ids: list[int]) -> None:
-    from sqlalchemy import delete
+async def apagar_alertas(
+    banco_url: str, ids: list[int], nomes: dict[str, str] | None = None
+) -> None:
+    from sqlalchemy import delete, update
 
-    from sentinela.db.modelos import Alerta
+    from sentinela.db.modelos import Alerta, Equipamento
     from sentinela.db.sessao import criar_motor, fabrica_sessao
 
     motor = criar_motor(banco_url)
     try:
         async with fabrica_sessao(motor)() as db:
             await db.execute(delete(Alerta).where(Alerta.id.in_(ids)))
+            for eid, nome in (nomes or {}).items():  # devolve o nome trocado por ``renomear``
+                await db.execute(update(Equipamento).where(Equipamento.id == eid).values(nome=nome))
             await db.commit()
     finally:
         await motor.dispose()
@@ -536,17 +551,20 @@ def alertas_semeados(alvo: Alvo) -> dict[str, dict[str, Any]]:
 def novo_alerta(alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]) -> Iterator[Any]:
     """Fábrica de alertas descartáveis (os testes que mudam o alerta não mexem nos semeados)."""
     criados: list[int] = []
+    renomeados: dict[str, str] = {}
 
     def criar(**campos: Any) -> dict[str, Any]:
         saida: dict[str, Any] = {}
         n = next(_EQUIPAMENTO_DO_ALERTA)  # um equipamento diferente a cada alerta
         _em_thread(lambda: saida.update(asyncio.run(inserir_alerta(alvo.banco_url, n, **campos))))
         criados.append(saida["id"])
+        if campos.get("renomear"):
+            renomeados[saida["equipamento_id"]] = saida["nome_original"]
         return saida
 
     yield criar
     if criados:
-        _em_thread(lambda: asyncio.run(apagar_alertas(alvo.banco_url, criados)))
+        _em_thread(lambda: asyncio.run(apagar_alertas(alvo.banco_url, criados, renomeados)))
 
 
 @pytest.fixture(scope="session")

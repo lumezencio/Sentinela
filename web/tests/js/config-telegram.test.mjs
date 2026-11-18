@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   chatsDoTexto, montarRemoverToken, montarTelegram, textoDosChats, validarTelegram,
+  telegramDoPainel,
 } from "../../src/js/config-telegram.js";
+import { api } from "../../src/js/api.js";
 
 // token fictício, só no formato
 const TOKEN = "1234567890:AAExampleExampleExampleExampleExample12";
@@ -49,4 +51,30 @@ test("montarTelegram: campo de token vazio não manda token (não apaga)", () =>
 
 test("montarRemoverToken apaga só o token", () => {
   assert.deepEqual(montarRemoverToken(), { token: "" });
+});
+
+test("entrarEmTelegram: carga que falhou tenta de novo na próxima visita; a que deu certo não repete", async () => {
+  const original = api.verTelegram;
+  let chamadas = 0;
+  api.verTelegram = async () => {
+    chamadas += 1;
+    return chamadas === 1
+      ? { ok: false, status: 0, dados: null, erro: "Sem conexão com o servidor." }
+      : { ok: true, status: 200, dados: { token_definido: true, chats: ["1"], incluir_ip: false, ultimo_envio: null, ultimo_erro: null }, erro: "" };
+  };
+  try {
+    const painel = telegramDoPainel();
+    painel.admin = true;
+    await painel.entrarEmTelegram();
+    assert.equal(chamadas, 1);
+    assert.equal(painel.tgErroGeral, "Sem conexão com o servidor.");
+    await painel.entrarEmTelegram(); // visita seguinte: tenta de novo
+    assert.equal(chamadas, 2);
+    assert.equal(painel.tgErroGeral, "");
+    assert.equal(painel.tg.definido, true);
+    await painel.entrarEmTelegram(); // já carregou: não repete
+    assert.equal(chamadas, 2);
+  } finally {
+    api.verTelegram = original;
+  }
 });

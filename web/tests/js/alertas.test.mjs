@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   abertosDaMensagem, aplicarMensagemAlerta, ATALHOS, contarAbertos, filtrarAlertas,
-  instanteNoFuso, linhaDoAlerta, montarSilencio, rotuloEnvio, validarSilencio,
+  instanteNoFuso, linhaDoAlerta, montarSilencio, reaplicarMensagens, rotuloEnvio, validarSilencio,
 } from "../../src/js/alertas.js";
 import { ABAS } from "../../src/js/visoes.js";
 
@@ -197,4 +197,31 @@ test("instanteNoFuso: horário digitado vale no fuso configurado", () => {
   assert.equal(instanteNoFuso("2026-11-18T20:00", "UTC"), "2026-11-18T20:00:00.000Z");
   assert.equal(instanteNoFuso("", "UTC"), "");
   assert.equal(instanteNoFuso("lixo", "UTC"), "");
+});
+
+test("linha leva o nome do equipamento (fallback do diálogo de silêncio)", () => {
+  assert.equal(linhaDoAlerta(alerta(), AGORA, FUSO).equipamentoNome, "Switch Bloco B");
+  assert.equal(linhaDoAlerta(alerta({ equipamento_nome: null }), AGORA, FUSO).equipamentoNome, "");
+});
+
+test("reaplicarMensagens: o que chegou com o GET no ar entra sobre o resultado, em ordem", () => {
+  const doGet = [alerta({ id: 1 })];
+  const msgs = [
+    { tipo: "alerta", acao: "aberto", id: 2, alerta: alerta({ id: 2, aberto_em: "2026-11-18T17:39:00Z" }) },
+    { tipo: "alerta", acao: "atualizado", id: 1, alerta: alerta({ id: 1, reconhecido_por: "admin", reconhecido_em: "2026-11-18T17:38:00Z" }) },
+    { tipo: "alerta", acao: "removido", id: 3, alerta: null },
+  ];
+  const lista = reaplicarMensagens(doGet, msgs);
+  assert.deepEqual(lista.map((a) => a.id), [2, 1]);
+  assert.equal(lista.find((a) => a.id === 1).reconhecido_por, "admin");
+  assert.equal(doGet.length, 1); // não muta
+});
+
+test("reaplicarMensagens: mensagem velha não reabre alerta que o GET já trouxe fechado", () => {
+  const doGet = [alerta({ id: 1, fechado_em: "2026-11-18T17:39:00Z" })];
+  const velha = { tipo: "alerta", acao: "atualizado", id: 1, alerta: alerta({ id: 1 }) };
+  assert.ok(reaplicarMensagens(doGet, [velha])[0].fechado_em);
+  const fecha = { tipo: "alerta", acao: "fechado", id: 1, alerta: alerta({ id: 1, fechado_em: "2026-11-18T17:39:30Z" }) };
+  assert.equal(reaplicarMensagens([alerta({ id: 1 })], [fecha])[0].fechado_em, "2026-11-18T17:39:30Z");
+  assert.deepEqual(reaplicarMensagens(doGet, []), doGet);
 });

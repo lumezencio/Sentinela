@@ -25,6 +25,7 @@ html[data-aba="configuracoes"] .conteudo {
 html[data-aba="alertas"],
 html[data-aba="configuracoes"] {
   scrollbar-gutter: stable;
+  background: var(--fundo); /* a calha reservada tem a mesma cor da página */
 }
 
 /* idem para o título da própria aba (só quando visível: o atributo hidden continua mandando) */
@@ -224,10 +225,14 @@ html[data-aba="configuracoes"] {
   background: var(--superficie);
 }
 
+.dialogo-rolavel form {
+  gap: 12px;
+}
+
 .al-candidatos {
   display: grid;
   gap: 4px;
-  max-height: 176px;
+  max-height: 132px; /* três resultados à vista; o resto rola */
   overflow-y: auto;
 }
 
@@ -240,6 +245,13 @@ html[data-aba="configuracoes"] {
   text-align: left;
   white-space: normal;
   overflow-wrap: anywhere;
+  border: 1px solid var(--borda);
+  background: var(--superficie-2);
+}
+
+.al-candidato:hover:not(:disabled),
+.al-candidato:focus-visible {
+  border-color: var(--primaria);
 }
 
 .al-alvo {
@@ -264,7 +276,7 @@ html[data-aba="configuracoes"] {
   font-size: 13px;
 }
 
-textarea {
+.campo-form textarea {
   width: 100%;
   min-height: 84px;
   padding: 10px 12px;
@@ -276,7 +288,7 @@ textarea {
   resize: vertical;
 }
 
-textarea:focus-visible {
+.campo-form textarea:focus-visible {
   outline: 2px solid var(--primaria);
   outline-offset: 0;
   border-color: transparent;
@@ -351,7 +363,23 @@ textarea:focus-visible {
   }
 }
 
+.cfg-bloco {
+  scroll-margin-top: 112px; /* o cabeçalho fixo não cobre o título do cartão ao rolar até ele */
+}
+
 @media (max-width: 559px) {
+  /* celular: o cabeçalho (2 linhas de abas) rola junto, a tela é para o conteúdo */
+  .topo {
+    position: static;
+  }
+  /* seis abas em no máximo duas linhas, mesmo em 360 px */
+  .abas {
+    gap: 0;
+  }
+  .aba {
+    padding: 0 8px;
+    font-size: 14px;
+  }
   .al-linha,
   .al-silencio {
     grid-template-columns: minmax(0, 1fr);

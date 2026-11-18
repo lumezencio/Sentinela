@@ -57,7 +57,8 @@ const FORM_VAZIO = () => ({ token: "", chats: "", incluir_ip: false });
 
 /** Estado e métodos do cartão Telegram; mesmo `this` do componente "painel". */
 export function telegramDoPainel() {
-  let carregado = false;
+  let carregado = false; // só depois de uma carga que deu certo (senão tenta de novo na próxima visita)
+  let carregando = false;
 
   return {
     tg: { definido: false, ultimoEnvio: "", ultimoErro: "" },
@@ -70,10 +71,14 @@ export function telegramDoPainel() {
     tgTestando: false,
     tgTeste: null, // {ok, texto} do último "Enviar teste"
 
-    entrarEmTelegram() {
-      if (!this.admin || carregado) return;
-      carregado = true;
-      this.carregarTelegram();
+    async entrarEmTelegram() {
+      if (!this.admin || carregado || carregando) return;
+      carregando = true;
+      try {
+        carregado = await this.carregarTelegram();
+      } finally {
+        carregando = false;
+      }
     },
 
     async carregarTelegram(comFormulario = true) {
@@ -82,13 +87,14 @@ export function telegramDoPainel() {
       this.tgCarregando = false;
       if (!r.ok || !r.dados) {
         this.tgErroGeral = r.erro || MSG_FALHA;
-        return;
+        return false;
       }
       this.tgErroGeral = "";
       this.aplicarTelegram(r.dados);
       if (comFormulario) {
         this.tgForm = { token: "", chats: textoDosChats(r.dados.chats), incluir_ip: Boolean(r.dados.incluir_ip) };
       }
+      return true;
     },
 
     aplicarTelegram(d) {

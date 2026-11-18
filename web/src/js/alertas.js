@@ -134,6 +134,7 @@ export function linhaDoAlerta(a, agora = Date.now(), fuso = FUSO_PADRAO) {
       : "",
     fechado: fechadoTexto,
     equipamentoId: a.equipamento_id || "",
+    equipamentoNome: textoSeguro(a.equipamento_nome, 200),
     classe: a.classe || "",
   };
 }
@@ -150,6 +151,21 @@ export function aplicarMensagemAlerta(lista, msg) {
   if (!novo) return resto.length === lista.length ? lista : resto;
   if (!Number.isInteger(novo.id) || typeof novo.aberto_em !== "string") return lista;
   return [...resto, novo].sort(maisRecente);
+}
+
+/**
+ * Mensagens "alerta" que chegaram enquanto o primeiro GET estava no ar, reaplicadas sobre o
+ * resultado dele em ordem. Alerta que já veio FECHADO do GET não reabre por mensagem velha.
+ */
+export function reaplicarMensagens(lista, mensagens) {
+  let saida = lista;
+  for (const msg of mensagens) {
+    const id = msg && Number.isInteger(msg.id) ? msg.id : msg && msg.alerta && msg.alerta.id;
+    const atual = saida.find((a) => a.id === id);
+    if (atual && atual.fechado_em && msg.alerta && !msg.alerta.fechado_em) continue;
+    saida = aplicarMensagemAlerta(saida, msg);
+  }
+  return saida;
 }
 
 export const contarAbertos = (lista) => lista.reduce((n, a) => n + (a.fechado_em ? 0 : 1), 0);
@@ -245,6 +261,7 @@ export function alertasDoPainel(store) {
   const expandidos = new Set();
   let focoAntesDoSilencio = null;
   let snapshots = 0;
+  let enquantoCarrega = []; // mensagens que chegam com o GET inicial no ar
 
   const desdeAtual = (ctx) => desdeDoPeriodo(ctx.periodoAlertas);
 
@@ -291,6 +308,7 @@ export function alertasDoPainel(store) {
     async recarregarAlertas() {
       carregada = true;
       const meu = ++pedido;
+      enquantoCarrega = [];
       this.alertasCarregando = true;
       const desde = desdeAtual(this);
       const r = await api.listarAlertas({
@@ -307,8 +325,9 @@ export function alertasDoPainel(store) {
         return;
       }
       this.alertasErro = "";
-      bruta = r.dados.itens;
-      this.alertasTotal = Number(r.dados.total) || bruta.length;
+      bruta = reaplicarMensagens(r.dados.itens, enquantoCarrega);
+      enquantoCarrega = [];
+      this.alertasTotal = Math.max(Number(r.dados.total) || 0, bruta.length);
       this.alertasPagina = 1;
       this.renderizarAlertas();
     },
@@ -367,6 +386,7 @@ export function alertasDoPainel(store) {
       }
       this.alertasAbertos = abertosDaMensagem(msg, this.alertasAbertos);
       if (!carregada) return;
+      if (this.alertasCarregando) enquantoCarrega.push(msg);
       const filtros = { filtro: this.filtroAlertas, classe: this.classeAlertas, desde: desdeAtual(this) };
       const antes = filtrarAlertas(bruta, filtros).length;
       bruta = aplicarMensagemAlerta(bruta, msg);
@@ -515,7 +535,9 @@ export function alertasDoPainel(store) {
       const l = this.alertasLinhas.find((x) => x.id === id);
       if (!l || !l.equipamentoId) return;
       const item = store.itens.get(l.equipamentoId);
-      this.abrirSilencio({ equipamentoId: l.equipamentoId, nome: item ? item.nome : "" });
+      // fora do store (ainda não chegou pelo WS): o nome do próprio alerta, senão um genérico
+      const nome = item ? item.nome : l.equipamentoNome || "Equipamento";
+      this.abrirSilencio({ equipamentoId: l.equipamentoId, nome });
     },
     fecharSilencio() {
       this.$refs.dlgSilencio.close();
@@ -584,17 +606,30 @@ export function alertasDoPainel(store) {
       return this.silForm.tipo === tipo ? "true" : "false";
     },
 
+    /** Depois de pintar, rola o diálogo até o primeiro erro visível (o rodapé fixo cobre o fim). */
+    mostrarPrimeiroErro() {
+      this.$nextTick(() => {
+        const erros = this.$refs.dlgSilencio.querySelectorAll(".campo-erro, .alerta");
+        const primeiro = [...erros].find((e) => e.offsetParent !== null);
+        if (primeiro) primeiro.scrollIntoView({ block: "nearest", behavior: "auto" });
+      });
+    },
+
     async criarSilencio() {
       if (this.silEnviando) return;
       this.silErroGeral = "";
       const form = { ...this.silForm, fim: instanteNoFuso(this.silForm.fimLocal, this.fuso) };
       this.silErros = validarSilencio(form, Date.now());
-      if (Object.keys(this.silErros).length) return;
+      if (Object.keys(this.silErros).length) {
+        this.mostrarPrimeiroErro();
+        return;
+      }
       this.silEnviando = true;
       const r = await api.criarSilencio(montarSilencio(form));
       this.silEnviando = false;
       if (!r.ok) {
         this.silErroGeral = r.erro;
+        this.mostrarPrimeiroErro();
         return;
       }
       this.$refs.dlgSilencio.close();

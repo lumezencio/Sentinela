@@ -1995,3 +1995,36 @@ def test_configuracoes_mostra_fuso(page: Page, alvo: Alvo) -> None:
     expect(secao.locator("#cfg-fuso")).to_have_text("America/Sao_Paulo")
     expect(secao.get_by_role("heading", name="Fuso horário")).to_be_visible()
     assert erros == [], erros
+
+
+HOSTIL = "<img src=x onerror=window.__xss=1>" + "A" * 300  # noqa: E501
+
+
+def test_texto_hostil_do_alerta_vira_texto_e_cabe_em_360(
+    browser: Browser, alvo: Alvo, novo_alerta: Any
+) -> None:
+    alerta = novo_alerta(renomear=HOSTIL)
+    contexto = browser.new_context(
+        viewport={"width": 360, "height": 740}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        erros = vigiar_console(page)
+        dialogos: list[str] = []
+        page.on("dialog", lambda d: (dialogos.append(d.message), d.dismiss()))
+        entrar(page, alvo)
+        secao = abrir_alertas(page)
+        linha = linha_do_alerta(secao, alerta)
+        expect(linha.locator(".al-texto")).to_have_text(f"{HOSTIL} caiu")
+        assert linha.locator("img").count() == 0
+        assert page.evaluate("window.__xss") is None
+        largura = page.evaluate(
+            "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+        )
+        assert largura[0] <= largura[1], largura
+        sobra = linha.evaluate("e => e.scrollWidth - e.clientWidth")
+        assert sobra <= 0, sobra  # o cartão contém a palavra de 300 letras
+        page.wait_for_timeout(500)
+        assert dialogos == [] and erros == [], (dialogos, erros)
+    finally:
+        contexto.close()
