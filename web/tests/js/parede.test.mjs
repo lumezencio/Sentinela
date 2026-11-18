@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { criarMedidorFps } from "../../src/js/parede/fps.js";
+import { criarMedidorFps, criarVigiaDaCena } from "../../src/js/parede/fps.js";
 import {
   contadoresDaParede, estadoDaConexao, faixaDeAlertas, horaNoFuso, textoDosRestantes,
 } from "../../src/js/parede/estado.js";
@@ -49,12 +49,45 @@ test("fps: limite e janela configuráveis", () => {
   assert.equal(m.deveTrocar(), true);
 });
 
-test("fps: aba oculta (intervalo enorme entre quadros) não conta como lentidão", () => {
+test("fps: TV travada com a página visível (lacuna > 2 s) conta como lentidão", () => {
   const m = criarMedidorFps();
-  m.quadro(0);
-  m.quadro(60000); // a TV não desenhou por 1 min (aba oculta): recomeça a medida
-  quadros(m, 60016, 63000, 16);
-  assert.equal(m.deveTrocar(), false);
+  quadros(m, 0, 1000, 16);
+  m.quadro(12000); // 11 s sem desenhar nenhum quadro
+  assert.equal(m.deveTrocar(), true);
+});
+
+test("fps: reiniciar() (troca de visibilidade) zera a medida; aba oculta não é lentidão", () => {
+  const m = criarMedidorFps();
+  quadros(m, 0, 8000, 50); // 8 s lentos
+  m.reiniciar(); // aba oculta
+  m.quadro(60000); // visível de novo, 52 s depois
+  quadros(m, 60050, 63000, 50);
+  assert.equal(m.deveTrocar(), false, "só 3 s lentos desde a volta");
+  const n = criarMedidorFps();
+  n.quadro(0);
+  n.reiniciar();
+  quadros(n, 60000, 63000, 16);
+  assert.equal(n.deveTrocar(), false);
+});
+
+test("vigia: câmera parada 5 s com a rotação ligada = cena congelada", () => {
+  const v = criarVigiaDaCena();
+  assert.equal(v.amostra("0,260,520", true, 0), false);
+  assert.equal(v.amostra("10,260,519", true, 1000), false);
+  assert.equal(v.amostra("10,260,519", true, 5999), false);
+  assert.equal(v.amostra("10,260,519", true, 6000), true);
+  assert.equal(v.amostra("20,260,518", true, 7000), false, "voltou a mexer");
+});
+
+test("vigia: sem rotação, sem leitura ou depois de reiniciar() não acusa", () => {
+  const v = criarVigiaDaCena({ paradaMs: 2000 });
+  v.amostra("1,1,1", false, 0);
+  assert.equal(v.amostra("1,1,1", false, 10000), false, "rotação desligada: parada é normal");
+  assert.equal(v.amostra(undefined, true, 20000), false, "cena ainda sem data-camera");
+  v.amostra("2,2,2", true, 30000);
+  v.reiniciar();
+  assert.equal(v.amostra("2,2,2", true, 33000), false, "reiniciar recomeça a contagem");
+  assert.equal(v.amostra("2,2,2", true, 35000), true);
 });
 
 test("contadores: online (com suspeito), instável, offline e inalcançável", () => {
@@ -151,4 +184,33 @@ test("bundle da Teia do telão: ESM ES2017 que publica window.SentinelaTeiaPared
   assert.doesNotMatch(texto, /createElement\(["']style["']\)/);
   assert.doesNotMatch(texto, /WebGPURenderer/);
   assert.doesNotMatch(texto, /window\.scene\s*=/);
+});
+
+// APIs posteriores ao Chromium 63 (TV Tizen 5.0): o bundle do telão não pode usá-las, salvo as
+// que compat.js completa (Object.hasOwn).
+const DEPOIS_DO_CHROME_63 = [
+  "RelativeTimeFormat", "globalThis", "AbortController", "queueMicrotask", "replaceAll",
+  "structuredClone", ".at(", "Object.fromEntries", "flatMap", "Promise.allSettled", "matchAll",
+];
+
+test("bundle do telão: nenhuma API posterior ao Chromium 63 (além do que compat.js completa)", () => {
+  const texto = readFileSync(new URL("../../src/parede/parede.bundle.js", import.meta.url), "utf8");
+  const achadas = DEPOIS_DO_CHROME_63.filter((api) => texto.includes(api));
+  assert.deepEqual(achadas, []);
+});
+
+test("haQuanto: sem Intl.RelativeTimeFormat (TV antiga) cai em texto simples", async () => {
+  const original = Intl.RelativeTimeFormat;
+  try {
+    delete Intl.RelativeTimeFormat;
+    const { haQuanto } = await import(`../../src/js/lista.js?sem-rtf=${Date.now()}`);
+    const agora = Date.parse("2026-11-18T12:00:00Z");
+    assert.equal(haQuanto("2026-11-18T11:57:00Z", agora), "há 3 minutos");
+    assert.equal(haQuanto("2026-11-18T11:59:00Z", agora), "há 1 minuto");
+    assert.equal(haQuanto("2026-11-18T09:00:00Z", agora), "há 3 horas");
+    assert.equal(haQuanto("2026-11-16T12:00:00Z", agora), "há 2 dias");
+    assert.equal(haQuanto("2026-11-18T12:30:00Z", agora), "em 30 minutos");
+  } finally {
+    Intl.RelativeTimeFormat = original;
+  }
 });

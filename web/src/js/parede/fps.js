@@ -1,9 +1,18 @@
-// Medidor de FPS do telão: a Teia só fica se a TV der conta. Abaixo de `limite` FPS por
-// `janelaMs` seguidos, deveTrocar() vira true (o telão passa para o Organograma). Uma subida
-// acima do limite zera a contagem. O FPS é a média do último segundo de quadros.
+// Medidor de FPS e vigia da cena do telão: a Teia só fica se a TV der conta e se ela estiver
+// de fato desenhando.
+//
+// criarMedidorFps: abaixo de `limite` FPS por `janelaMs` seguidos, deveTrocar() vira true (o
+// telão passa para o Organograma). Uma subida acima do limite zera a contagem. O FPS é a média
+// do último segundo de quadros. Uma lacuna longa entre quadros com a página visível (a TV
+// travou) conta como lentidão desde o último quadro; só reiniciar() (chamado na troca de
+// visibilidade da página: aba oculta não desenha) zera a medida.
+//
+// criarVigiaDaCena: a cena grava a posição da câmera (data-camera) enquanto desenha; girando
+// sozinha, ela muda o tempo todo. Parada por `paradaMs` com a rotação ligada = o laço de
+// desenho morreu (exceção dentro do three/3d-force-graph) e o telão estaria congelado.
 
 const JANELA_MEDIA_MS = 1000;
-const LACUNA_MS = 2000; // sem quadro por mais que isso (aba oculta, TV em espera): recomeça
+const LACUNA_MS = 2000;
 
 export function criarMedidorFps({ limite = 30, janelaMs = 10000 } = {}) {
   let tempos = [];
@@ -14,8 +23,9 @@ export function criarMedidorFps({ limite = 30, janelaMs = 10000 } = {}) {
     /** Chamar a cada quadro com o instante do requestAnimationFrame (ms). */
     quadro(ts) {
       if (ultimo !== null && ts - ultimo > LACUNA_MS) {
-        tempos = [];
-        abaixoDesde = null;
+        // TV travada com a página visível: lento desde o último quadro desenhado
+        if (abaixoDesde === null) abaixoDesde = ultimo;
+        tempos = [ultimo];
       }
       ultimo = ts;
       tempos.push(ts);
@@ -30,6 +40,36 @@ export function criarMedidorFps({ limite = 30, janelaMs = 10000 } = {}) {
     },
     deveTrocar() {
       return abaixoDesde !== null && ultimo - abaixoDesde >= janelaMs;
+    },
+    /** Página oculta e visível de novo: a medida recomeça do zero. */
+    reiniciar() {
+      tempos = [];
+      abaixoDesde = null;
+      ultimo = null;
+    },
+  };
+}
+
+export function criarVigiaDaCena({ paradaMs = 5000 } = {}) {
+  let ultima = null;
+  let desde = 0;
+
+  return {
+    /** true = câmera parada há `paradaMs` com a rotação ligada (cena congelada). */
+    amostra(camera, girando, agora) {
+      if (!girando || !camera) {
+        ultima = null;
+        return false;
+      }
+      if (camera !== ultima) {
+        ultima = camera;
+        desde = agora;
+        return false;
+      }
+      return agora - desde >= paradaMs;
+    },
+    reiniciar() {
+      ultima = null;
     },
   };
 }

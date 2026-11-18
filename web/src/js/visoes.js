@@ -48,7 +48,7 @@ export function salvarEstilo(estilo, armazenamento) {
 }
 
 /** Há contexto WebGL (2 ou 1) neste navegador? */
-export function webglDisponivel(doc = globalThis.document) {
+export function webglDisponivel(doc = document) {
   try {
     const canvas = doc.createElement("canvas");
     const ctx = canvas.getContext("webgl2") || canvas.getContext("webgl");

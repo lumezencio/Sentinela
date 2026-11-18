@@ -9,6 +9,7 @@ const ALFABETO = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const METADE = 4;
 const MAX_NOME = 64;
 const MSG_FALHA = "Não foi possível concluir. Tente de novo.";
+const ATUALIZAR_MS = 30000; // com Configurações aberta, a lista (último acesso) se atualiza
 
 /** "k7mq 2xdp" → "K7MQ-2XDP"; null se não forem 8 caracteres do alfabeto. */
 export function normalizarCodigo(texto) {
@@ -55,8 +56,8 @@ export function linhaDoTelao(p, agora = Date.now()) {
 
 /** Estado e métodos do cartão Telões; mesmo `this` do componente "painel". */
 export function paredesDoPainel() {
-  let carregado = false;
   let carregando = false;
+  let timer = 0;
   let dados = [];
 
   return {
@@ -69,18 +70,35 @@ export function paredesDoPainel() {
     telEnviando: false,
     telHttp: false,
 
+    /** A cada entrada na aba: lista nova (último acesso, telões aprovados em outra aba) e,
+     * enquanto ela estiver aberta e visível, de novo a cada 30 s. */
     async entrarEmParedes() {
-      if (!this.admin || carregado || carregando) return;
+      if (!this.admin) return;
+      if (!timer) {
+        timer = window.setInterval(() => {
+          if (this.aba !== "configuracoes") {
+            window.clearInterval(timer);
+            timer = 0;
+            return;
+          }
+          if (!document.hidden) this.recarregarParedes(false);
+        }, ATUALIZAR_MS);
+      }
+      await this.recarregarParedes(this.telLinhas.length === 0);
+    },
+
+    async recarregarParedes(comAviso) {
+      if (carregando) return;
       carregando = true;
       try {
-        carregado = await this.carregarParedes();
+        await this.carregarParedes(comAviso);
       } finally {
         carregando = false;
       }
     },
 
-    async carregarParedes() {
-      this.telCarregando = true;
+    async carregarParedes(comAviso = true) {
+      if (comAviso) this.telCarregando = true;
       const [lista, config] = await Promise.all([api.listarParedes(), api.verConfigParedes()]);
       this.telCarregando = false;
       if (!lista.ok || !config.ok) {

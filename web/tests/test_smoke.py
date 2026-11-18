@@ -2381,3 +2381,125 @@ def test_permitir_http_mostra_aviso_hsts(page: Page, alvo: Alvo) -> None:
     finally:
         api_json(page, "PATCH", "/config/paredes", {"permitir_http": False})
     assert erros == [], erros
+
+
+# ---- Fase 4, rodada de correção: TV antiga, cena que quebra, 4403 e lista de telões viva ----
+
+# Chromium 63 (TV Tizen 5.0) não tem nada disto; o telão tem de funcionar sem eles
+TV_ANTIGA = """
+delete Intl.RelativeTimeFormat;
+delete window.AbortController;
+delete window.queueMicrotask;
+delete String.prototype.replaceAll;
+delete window.structuredClone;
+delete Array.prototype.at;
+delete Object.fromEntries;
+delete Array.prototype.flatMap;
+delete Object.hasOwn;
+"""
+QUEBRAR_WEBGL = """() => {
+    for (const ctx of [WebGLRenderingContext, window.WebGL2RenderingContext]) {
+        if (!ctx) continue;
+        for (const nome of ['drawElements', 'drawArrays', 'clear']) {
+            ctx.prototype[nome] = () => { throw new Error('falha de desenho simulada'); };
+        }
+    }
+}"""
+
+
+def test_parede_tv_antiga_mostra_codigo_e_entra_com_a_teia(
+    page: Page, browser: Browser, alvo: Alvo
+) -> None:
+    entrar(page, alvo)
+    contexto = browser.new_context(
+        viewport={"width": 1920, "height": 1080}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        contexto.add_init_script(TV_ANTIGA)
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        tv.goto("/parede/")
+        assert tv.evaluate("typeof Intl.RelativeTimeFormat") == "undefined"
+        aprovar_pelo_painel(page, codigo_da_tv(tv), "TV Antiga")
+        esperar_telao(tv, timeout=10_000)
+        for grupo in ("online", "instavel", "offline", "inalcancavel"):
+            expect(tv.locator(f"#pr-r-{grupo}")).not_to_be_empty()
+        # com os esboços de compat-teia.js o bundle ES2017 da Teia monta (não é a queda)
+        expect(tv.locator("#pr-teia canvas")).to_have_count(1, timeout=15_000)
+        expect(tv.locator("#pr-teia")).to_have_attribute("data-girando", "sim")
+        tv.wait_for_timeout(1500)
+        assert erros == [], erros
+    finally:
+        revogar_via_api(page, "TV Antiga")
+        contexto.close()
+
+
+def test_parede_cena_que_quebra_vai_para_o_organograma(
+    browser: Browser, alvo: Alvo, telao_pareado: dict[str, Any]
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": 1280, "height": 900},
+        ignore_https_errors=True,
+        base_url=alvo.url,
+        storage_state=telao_pareado["estado"],
+    )
+    try:
+        tv = contexto.new_page()
+        erros: list[str] = []
+        tv.on("pageerror", lambda e: erros.append(str(e)))
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        expect(tv.locator("#pr-teia canvas")).to_have_count(1, timeout=15_000)
+        expect(tv.locator("body")).to_have_attribute("data-visao", "teia")
+        tv.evaluate(QUEBRAR_WEBGL)  # o próximo quadro do three lança dentro do laço dele
+        expect(tv.locator("body")).to_have_attribute("data-visao", "organograma", timeout=10_000)
+        expect(tv.locator("#pr-org .pr-org-classe").first).to_be_visible()
+        expect(tv.locator("#pr-teia")).to_be_hidden()
+        assert any("falha de desenho simulada" in e for e in erros), erros
+    finally:
+        contexto.close()
+
+
+def test_parede_recusado_nao_mostra_sem_conexao_por_cima(browser: Browser, alvo: Alvo) -> None:
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        tv = contexto.new_page()
+        tv.route_web_socket(re.compile(r"/ws/parede$"), lambda ws: ws.close(code=4403))
+        tv.clock.install()
+        tv.goto("/parede/")
+        status = tv.locator("#pr-codigo-status")
+        expect(status).to_contain_text("O servidor recusou este telão")
+        expect(tv.locator("#pr-codigo-valor")).to_be_hidden()
+        tv.clock.run_for(61_000)  # passa dos 60 s e a nova tentativa também é recusada
+        expect(status).to_contain_text("O servidor recusou este telão")
+        tv.clock.run_for(61_000)
+        expect(tv.locator("#pr-sem-conexao")).to_be_hidden()
+        expect(tv.locator("body")).not_to_have_class(re.compile(r"\bpr-desconectado\b"))
+    finally:
+        contexto.close()
+
+
+def test_teloes_lista_recarrega_ao_voltar_e_a_cada_30s(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    pedidos: list[str] = []
+    page.on(
+        "request",
+        lambda r: pedidos.append(r.url) if r.url.endswith("/api/v1/paredes") else None,
+    )
+    page.clock.install()
+    entrar(page, alvo)
+    abrir_teloes(page)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 1, pedidos
+    page.get_by_role("tab", name="Lista").click()
+    abrir_teloes(page)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 2, pedidos  # cada entrada na aba busca a lista de novo
+    page.clock.run_for(31_000)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 3, pedidos  # e, com a aba aberta, a cada 30 s
+    page.get_by_role("tab", name="Lista").click()
+    page.clock.run_for(61_000)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 3, pedidos  # fora de Configurações não busca
+    assert erros == [], erros

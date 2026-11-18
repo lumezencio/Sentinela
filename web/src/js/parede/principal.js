@@ -16,7 +16,7 @@ import { proximoPasso, validadeDoCodigoMs } from "./emparelhar.js";
 import {
   contadoresDaParede, estadoDaConexao, faixaDeAlertas, horaNoFuso, textoDosRestantes,
 } from "./estado.js";
-import { criarMedidorFps } from "./fps.js";
+import { criarMedidorFps, criarVigiaDaCena } from "./fps.js";
 
 const API = "/api/v1/parede";
 const BUNDLE_TEIA = "/parede/teia-parede.bundle.js";
@@ -29,6 +29,7 @@ const RECUO_PEDIDO_MS = [5000, 10000, 20000, 30000];
 const ESPERA_RECUSADO_MS = 60000;
 const ROLAGEM_PX_S = 24; // Organograma: rolagem automática lenta
 const PAUSA_ROLAGEM_MS = 4000;
+const VIGIA_MS = 1000; // de quanto em quanto a vigia olha a câmera da cena
 const SVG = "http://www.w3.org/2000/svg";
 
 const ROTULOS_CONTADOR = {
@@ -122,6 +123,9 @@ export function iniciarParede(doc = document) {
   let controle = null;
   let medidor = null;
   let rafFps = 0;
+  let vigia = null;
+  let timerVigia = 0;
+  let recusadoAgora = false; // 4403: a tela já explica; "sem conexão" por cima seria falso
   let ultimoOrg = 0;
   let timerOrg = 0;
   let rafRolagem = 0;
@@ -140,6 +144,8 @@ export function iniciarParede(doc = document) {
   // ---------- conexão ao vivo ----------
   function conectar() {
     if (conexao) conexao.parar();
+    recusadoAgora = false;
+    contato = Date.now(); // a contagem dos 60 s recomeça a cada tentativa nova
     conexao = criarConexao(
       {
         aoMensagem: receber,
@@ -159,6 +165,7 @@ export function iniciarParede(doc = document) {
   /** 4403: origem diferente ou telão sem HTTPS desligado. Tenta de novo daqui a 1 min. */
   function recusado() {
     conexao = null;
+    recusadoAgora = true;
     pararTelao();
     mostrar("codigo");
     mostrarCodigo("");
@@ -340,12 +347,32 @@ export function iniciarParede(doc = document) {
       rafFps = window.requestAnimationFrame(quadro);
     };
     rafFps = window.requestAnimationFrame(quadro);
+    // exceção dentro do laço do three não chega aqui: a vigia percebe a câmera parada
+    vigia = criarVigiaDaCena();
+    timerVigia = window.setInterval(() => {
+      if (visao !== "teia" || !vigia) return;
+      if (doc.hidden) {
+        vigia.reiniciar();
+        return;
+      }
+      if (vigia.amostra(el.teia.dataset.camera, el.teia.dataset.girando === "sim", Date.now())) {
+        usarOrganograma();
+      }
+    }, VIGIA_MS);
+  }
+
+  /** Erro solto (ex.: no laço de desenho do three) com a Teia na tela: Organograma. */
+  function aoErroNaTeia() {
+    if (visao === "teia") usarOrganograma();
   }
 
   function pararTeia() {
     window.cancelAnimationFrame(rafFps);
     rafFps = 0;
     medidor = null;
+    window.clearInterval(timerVigia);
+    timerVigia = 0;
+    vigia = null;
     if (controle) {
       try {
         controle.destruir();
@@ -519,7 +546,7 @@ export function iniciarParede(doc = document) {
 
   // ---------- relógio e "sem conexão" ----------
   function atualizarConexao() {
-    const sem = estadoDaConexao(contato, Date.now()) === "sem_conexao";
+    const sem = !recusadoAgora && estadoDaConexao(contato, Date.now()) === "sem_conexao";
     el.semConexao.hidden = !sem;
     corpo.classList.toggle("pr-desconectado", sem);
   }
@@ -529,6 +556,12 @@ export function iniciarParede(doc = document) {
     atualizarConexao();
   }
 
+  window.addEventListener("error", aoErroNaTeia);
+  window.addEventListener("unhandledrejection", aoErroNaTeia);
+  doc.addEventListener("visibilitychange", () => {
+    if (medidor) medidor.reiniciar(); // aba oculta não desenha: não é lentidão
+    if (vigia) vigia.reiniciar();
+  });
   mostrar("carregando");
   window.setInterval(tique, TIQUE_MS);
   conectar();

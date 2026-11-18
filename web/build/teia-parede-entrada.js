@@ -3,6 +3,7 @@
 // injeta este arquivo com <script type="module"> e o encontra em window.SentinelaTeiaParede;
 // se a carga falhar, der erro de sintaxe ou a TV não tiver WebGL, o telão usa o Organograma.
 import "../src/js/parede/compat.js";
+import "../src/js/parede/compat-teia.js";
 import { montarTeia } from "../src/js/teia/cena.js";
 
 window.SentinelaTeiaParede = { montarTeia };

@@ -166,7 +166,22 @@ export function paginar(lista, pagina) {
   return { itens: lista.slice(inicio, inicio + POR_PAGINA), pagina: atual, paginas };
 }
 
-const relativo = new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" });
+// Criado só no 1º uso: Intl.RelativeTimeFormat não existe no Chromium 63 (TV Tizen 5.0) e,
+// no topo do módulo, derrubaria o bundle do telão inteiro antes de qualquer coisa.
+let relativo;
+const UNIDADES = { minute: ["minuto", "minutos"], hour: ["hora", "horas"], day: ["dia", "dias"] };
+
+function formatarRelativo(n, unidade) {
+  if (relativo === undefined) {
+    relativo = typeof Intl.RelativeTimeFormat === "function"
+      ? new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" })
+      : null;
+  }
+  if (relativo) return relativo.format(n, unidade);
+  const abs = Math.abs(n);
+  const texto = `${abs} ${UNIDADES[unidade][abs === 1 ? 0 : 1]}`;
+  return n < 0 ? `há ${texto}` : `em ${texto}`;
+}
 
 export function haQuanto(iso, agora = Date.now()) {
   const t = Date.parse(iso);
@@ -174,9 +189,9 @@ export function haQuanto(iso, agora = Date.now()) {
   const s = Math.round((t - agora) / 1000);
   const abs = Math.abs(s);
   if (abs < 45) return "agora";
-  if (abs < 3600) return relativo.format(Math.round(s / 60), "minute");
-  if (abs < 86400) return relativo.format(Math.round(s / 3600), "hour");
-  return relativo.format(Math.round(s / 86400), "day");
+  if (abs < 3600) return formatarRelativo(Math.round(s / 60), "minute");
+  if (abs < 86400) return formatarRelativo(Math.round(s / 3600), "hour");
+  return formatarRelativo(Math.round(s / 86400), "day");
 }
 
 export function formatarLatencia(ms) {
