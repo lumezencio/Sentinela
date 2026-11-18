@@ -25,11 +25,14 @@ from sentinela.api import (
     equipamentos,
     fontes,
     importacao,
+    parede,
+    paredes,
     saude,
     silencios,
     subredes,
     varredura,
     ws,
+    ws_parede,
 )
 from sentinela.api.deps import agora_utc, verificar_csrf
 from sentinela.config import Settings, obter_settings
@@ -317,6 +320,8 @@ def criar_app(
     app.state.falhas_fantasma = BloqueioFantasma(relogio)
     # testar/coletar/sondar/varredura: 10 por minuto por usuário (mesma janela do login)
     app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
+    # telão: no máximo 10 pedidos de emparelhamento por IP por hora (rota sem sessão)
+    app.state.pedidos_ip = LimitadorIP(relogio, max_falhas=10, janela_s=3600)
     app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
@@ -332,5 +337,8 @@ def criar_app(
     app.include_router(config_descoberta.router)
     app.include_router(config_geral.router)
     app.include_router(config_telegram.router)
+    app.include_router(parede.router)
+    app.include_router(paredes.router)
     app.include_router(ws.router)
+    app.include_router(ws_parede.router)
     return app

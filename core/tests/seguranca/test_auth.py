@@ -465,7 +465,9 @@ async def test_csrf_global_em_toda_escrita_da_api(app: FastAPI, cliente: httpx.A
     caminhos: dict[str, dict[str, object]] = app.openapi()["paths"]
     verificadas = 0
     for caminho, operacoes in caminhos.items():
-        if not caminho.startswith("/api/v1") or caminho == LOGIN_URL:
+        # isentas por desenho: o login e o pedido de emparelhamento do telão (TV sem sessão,
+        # limitado por IP)
+        if not caminho.startswith("/api/v1") or caminho in (LOGIN_URL, "/api/v1/parede/pedido"):
             continue
         concreto = re.sub(r"\{[^}]+\}", "1", caminho)
         for metodo in {m.upper() for m in operacoes} - {"GET", "HEAD", "OPTIONS"}:
