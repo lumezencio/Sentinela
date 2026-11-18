@@ -9,6 +9,7 @@
 As funções só fazem ``flush``: quem chama confirma (junto da auditoria, quando houver).
 """
 
+import math
 import secrets
 from datetime import datetime, timedelta
 from typing import Literal
@@ -29,7 +30,8 @@ COOKIE_PAREDE = "sentinela_parede"  # HTTPS
 COOKIE_PAREDE_HTTP = "sentinela_parede_http"
 PAREDES_HTTP = "paredes_http"  # chave da tabela ``config`` (bool)
 INTERVALO_ACESSO = timedelta(minutes=1)  # ``ultimo_acesso`` gravado no máximo 1x/min
-# vencidos há mais que isso são apagados (o aprovado ainda pode ser entregue até lá)
+# aprovado perto do fim: o token ainda é entregue até ``expira_em + RETENCAO_PEDIDO``;
+# depois o pedido é apagado (o cookie do pedido dura validade + retenção)
 RETENCAO_PEDIDO = timedelta(minutes=10)
 _METADE = 4
 
@@ -39,7 +41,11 @@ class CodigoInvalido(Exception):
 
 
 class LimitePedidos(Exception):
-    """Já há ``MAX_PENDENTES`` pedidos pendentes."""
+    """Já há ``MAX_PENDENTES`` pendentes; ``espera_s`` até o mais antigo vencer."""
+
+    def __init__(self, espera_s: int) -> None:
+        super().__init__(espera_s)
+        self.espera_s = espera_s
 
 
 def gerar_codigo() -> str:
@@ -92,13 +98,15 @@ async def criar_pedido(
     ``LimitePedidos`` com ``MAX_PENDENTES`` pendentes (não aprovados e dentro da validade).
     """
     await db.execute(delete(ParedePedido).where(ParedePedido.expira_em < agora - RETENCAO_PEDIDO))
-    pendentes = await db.scalar(
-        select(func.count())
-        .select_from(ParedePedido)
-        .where(ParedePedido.aprovado_em.is_(None), ParedePedido.expira_em > agora)
-    )
-    if (pendentes or 0) >= MAX_PENDENTES:
-        raise LimitePedidos
+    pendentes, primeiro = (
+        await db.execute(
+            select(func.count(), func.min(ParedePedido.expira_em)).where(
+                ParedePedido.aprovado_em.is_(None), ParedePedido.expira_em > agora
+            )
+        )
+    ).one()
+    if pendentes >= MAX_PENDENTES:
+        raise LimitePedidos(max(1, math.ceil((primeiro - agora).total_seconds())))
     while True:  # colisão com um código ainda guardado: sorteia de novo
         codigo = gerar_codigo()
         codigo_hash = hash_token(codigo)
@@ -150,7 +158,8 @@ async def consultar(
     db: AsyncSession, segredo: str, agora: datetime
 ) -> Literal["pendente", "expirado"] | tuple[Parede, str]:
     """Estado do pedido do segredo; aprovado: gera o token (só o hash fica) e o entrega uma
-    vez só. Desconhecido, vencido sem aprovação, já entregue ou revogado: ``expirado``."""
+    vez só, até ``expira_em + RETENCAO_PEDIDO``. Desconhecido, vencido sem aprovação,
+    já entregue, buscado tarde demais ou revogado: ``expirado``."""
     if not segredo:
         return "expirado"
     pedido = await db.scalar(
@@ -160,6 +169,8 @@ async def consultar(
         return "expirado"
     if pedido.aprovado_em is None:
         return "pendente" if pedido.expira_em > agora else "expirado"
+    if agora >= pedido.expira_em + RETENCAO_PEDIDO:  # aprovado, buscado tarde demais
+        return "expirado"
     parede = await db.get(Parede, pedido.parede_id) if pedido.parede_id is not None else None
     if parede is None or parede.revogada_em is not None:
         return "expirado"

@@ -41,6 +41,7 @@ async def test_pedido_cria_codigo_e_cookie_do_pedido(abrir_tv: AbrirTv) -> None:
     assert REGEX_CODIGO.match(corpo["codigo"]) and corpo["consulta_s"] == 5
     linha = cookie(r, "sentinela_parede_pedido")
     assert {"httponly", "secure", "samesite=strict", "path=/api/v1/parede"} <= atributos(linha)
+    assert "max-age=1200" in atributos(linha)  # validade + retenção da entrega
     r = await tv.get(PEDIDO)
     assert (r.status_code, r.json()) == (202, {"estado": "pendente"})
 
@@ -51,6 +52,7 @@ async def test_11o_pedido_do_mesmo_ip_na_hora_429(abrir_tv: AbrirTv) -> None:
         assert (await tv.post(PEDIDO)).status_code == 201
     r = await tv.post(PEDIDO)
     assert r.status_code == 429
+    assert int(r.headers["retry-after"]) > 0
     assert (await abrir_tv(ip="10.99.0.51").post(PEDIDO)).status_code == 201  # outro IP
 
 
@@ -58,7 +60,9 @@ async def test_mais_de_20_pendentes_429(abrir_tv: AbrirTv) -> None:
     for i in range(20):
         r = await abrir_tv(ip=f"10.99.0.{100 + i}").post(PEDIDO)
         assert r.status_code == 201
-    assert (await abrir_tv(ip="10.99.0.99").post(PEDIDO)).status_code == 429
+    r = await abrir_tv(ip="10.99.0.99").post(PEDIDO)
+    assert r.status_code == 429
+    assert 0 < int(r.headers["retry-after"]) <= 600
 
 
 async def test_consulta_sem_cookie_expirado(abrir_tv: AbrirTv) -> None:
@@ -82,6 +86,8 @@ async def test_fluxo_completo_https(abrir_tv: AbrirTv, cliente_admin: httpx.Asyn
     )
     snap = await tv.get(SNAPSHOT)
     assert snap.status_code == 200 and snap.json()["nome"] == "TV Portaria"
+    apagado = cookie(r, "sentinela_parede_pedido")  # removido com os mesmos atributos
+    assert {"httponly", "secure", "samesite=strict", "path=/api/v1/parede"} <= atributos(apagado)
     # entrega única: a segunda consulta já não dá token
     r = await tv.get(PEDIDO)
     assert (r.status_code, r.json()) == (410, {"estado": "expirado"})
@@ -164,8 +170,12 @@ async def test_http_ligado_cookie_sem_secure_e_ip_amarrado(
     assert "secure" not in atributos(cookie(r, "sentinela_parede_pedido"))
     a = await cliente_admin.post(APROVAR, json={"codigo": r.json()["codigo"], "nome": "TV"})
     assert a.json()["modo"] == "http"
-    r = await tv.get(PEDIDO)
-    assert r.status_code == 200
+    r_pend = await tv.get(PEDIDO)
+    assert r_pend.status_code == 200
+    apagado = atributos(cookie(r_pend, "sentinela_parede_pedido"))
+    assert {"httponly", "samesite=strict", "path=/api/v1/parede"} <= apagado
+    assert "secure" not in apagado
+    r = r_pend
     linha = cookie(r, "sentinela_parede_http")
     attrs = atributos(linha)
     assert {"httponly", "samesite=strict", "path=/"} <= attrs and "secure" not in attrs
@@ -278,3 +288,15 @@ async def test_config_paredes_auditada(app: FastAPI, cliente_admin: httpx.AsyncC
         a = await db.scalar(select(Auditoria).where(Auditoria.acao == "config.paredes"))
         assert a is not None
         assert (a.antes, a.depois) == ({"permitir_http": False}, {"permitir_http": True})
+
+
+async def test_aprovacao_falha_auditada_sem_codigo(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    r = await cliente_admin.post(APROVAR, json={"codigo": "K7MQ-2XDP", "nome": "TV"})
+    assert r.status_code == 404
+    async with sessoes(app)() as db:
+        (a,) = (
+            await db.execute(select(Auditoria).where(Auditoria.acao == "parede.aprovar_falhou"))
+        ).scalars()
+    assert "K7MQ" not in str((a.alvo, a.antes, a.depois))

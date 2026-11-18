@@ -1,7 +1,8 @@
 """Telões pelo admin: listar, aprovar um código, revogar e a chave "telão sem HTTPS".
 
 Toda escrita exige admin e CSRF e é auditada. Código errado, vencido ou já usado: um único
-404 genérico. Revogar publica ``parede_revogada`` para o ``/ws/parede`` da TV cair na hora.
+404 genérico. Revogar publica ``parede_revogada`` para o ``/ws/parede`` da TV cair na hora; desligar
+a chave HTTP publica ``paredes_http_desligado`` e os telões por HTTP caem também.
 """
 
 from datetime import datetime
@@ -27,6 +28,7 @@ router = APIRouter(tags=["paredes"])
 Admin = Annotated[Usuario, Depends(exigir_admin)]
 MSG_CODIGO = "Código inválido ou expirado."
 MAX_LISTA = 100
+PAREDES_HTTP_DESLIGADO = "paredes_http_desligado"  # mensagem do barramento
 
 
 class Aprovacao(BaseModel):
@@ -82,6 +84,8 @@ async def aprovar_codigo(
     try:
         parede = await aprovar(db, entrada.codigo, entrada.nome, agora_utc())
     except CodigoInvalido:
+        auditar(db, request, admin, "parede.aprovar_falhou", None)  # só o fato, sem código
+        await db.commit()
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=MSG_CODIGO) from None
     auditar(
         db, request, admin, "parede.aprovar", str(parede.id), None,
@@ -118,4 +122,7 @@ async def editar_config(
         {"permitir_http": antes}, {"permitir_http": entrada.permitir_http},
     )  # fmt: skip
     await db.commit()
+    if antes and not entrada.permitir_http:  # telões por HTTP caem na hora
+        barramento: Barramento = request.app.state.barramento
+        barramento.publicar(Mensagem(PAREDES_HTTP_DESLIGADO, {}))
     return ConfigParedes(permitir_http=entrada.permitir_http)

@@ -256,17 +256,21 @@ async def atender(
     async with barramento.assinar() as fluxo:
         try:
             await agendador.aguardar_gravacoes()  # transições já publicadas chegam ao banco
-            async with sessoes() as db:
-                conexao.enfileirar(await snapshot(db))
-            for corpo in (
-                conexao.enviar(),
-                conexao.ouvir(),
-                conexao.repassar(fluxo),
-                conexao.pingar(),
-                conexao.revalidar(),
-            ):
-                tarefas.append(asyncio.create_task(conexao.guardar(corpo)))
-            codigo = await conexao.fim
+            # revogada entre a autenticação e a assinatura (a mensagem se perdeu): cai já
+            if await validar():
+                async with sessoes() as db:
+                    conexao.enfileirar(await snapshot(db))
+                for corpo in (
+                    conexao.enviar(),
+                    conexao.ouvir(),
+                    conexao.repassar(fluxo),
+                    conexao.pingar(),
+                    conexao.revalidar(),
+                ):
+                    tarefas.append(asyncio.create_task(conexao.guardar(corpo)))
+                codigo = await conexao.fim
+            else:
+                codigo = FECHA_NAO_AUTENTICADO
         finally:
             for t in tarefas:
                 t.cancel()

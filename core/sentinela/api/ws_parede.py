@@ -16,7 +16,8 @@ Nada de latências, descobertas, varreduras, fontes, IP, MAC ou fabricante.
 Origem: ``https://{Host}`` em conexão ``wss``; ``http://{Host}`` em ``ws`` só com a chave
 "permitir telão sem HTTPS" ligada (e então só o cookie ``http``, amarrado ao IP da TV).
 Fechamentos: ``4403`` origem, ``4401`` sem token válido, revogado (na hora, pela mensagem
-``parede_revogada``) ou recusado na revalidação a cada 60 s (inclui a chave HTTP desligada).
+``parede_revogada``; ``paredes_http_desligado`` nas conexões ``ws``), antes do snapshot
+se revogado entre a autenticação e a assinatura, ou na revalidação a cada 60 s.
 """
 
 from typing import Any
@@ -33,6 +34,7 @@ from sentinela.api.parede import (
     modo_da_conexao,
     montar_snapshot,
 )
+from sentinela.api.paredes import PAREDES_HTTP_DESLIGADO
 from sentinela.api.ws import (
     FECHA_NAO_AUTENTICADO,
     FECHA_ORIGEM_PROIBIDA,
@@ -71,8 +73,14 @@ async def _autenticar(
         return FECHA_NAO_AUTENTICADO if parede is None else parede
 
 
-def transformador_parede(sessoes: async_sessionmaker[AsyncSession], parede_id: int) -> Transformar:
+def transformador_parede(
+    sessoes: async_sessionmaker[AsyncSession], parede_id: int, modo: Modo
+) -> Transformar:
     async def transformar(m: Mensagem) -> dict[str, Any] | None:
+        if m.tipo == PAREDES_HTTP_DESLIGADO:
+            if modo == "http":
+                raise FecharConexao(FECHA_NAO_AUTENTICADO)
+            return None
         if m.tipo == "parede_revogada":
             if m.dados.get("id") == parede_id:
                 raise FecharConexao(FECHA_NAO_AUTENTICADO)
@@ -124,4 +132,4 @@ async def ao_vivo_parede(websocket: WebSocket) -> None:
     async def validar() -> bool:
         return not isinstance(await _autenticar(sessoes, websocket, modo), int)
 
-    await atender(websocket, snapshot, transformador_parede(sessoes, parede_id), validar)
+    await atender(websocket, snapshot, transformador_parede(sessoes, parede_id, modo), validar)

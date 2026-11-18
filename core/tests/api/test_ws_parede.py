@@ -141,7 +141,11 @@ async def test_revogar_derruba_ws_na_hora(
     ws = await _aberto(abrir_ws_parede, token)
     await ws.json()  # snapshot
     assert (await cliente_admin.delete(f"{PAREDES}/{outra}")).status_code == 204
-    assert ws._saida.empty()  # noqa: SLF001 - a revogação de outra TV não a derruba
+    # a revogação de outra TV não a derruba: o marcador seguinte chega normalmente
+    barramento_: Barramento = app.state.barramento
+    marcador = {"id": "marcador", "estado": "online", "desde": DESDE.isoformat()}
+    barramento_.publicar(Mensagem("estado", marcador))
+    assert await ws.json() == {"tipo": "estado", **marcador}
     assert (await cliente_admin.delete(f"{PAREDES}/{ident}")).status_code == 204
     assert await ws.fechamento() == 4401  # sem avançar o relógio da revalidação
     barramento: Barramento = app.state.barramento
@@ -199,3 +203,48 @@ async def test_origem_checada_antes_do_banco(
     monkeypatch.setattr(ws_parede, "parede_do_token", proibido)
     ws = abrir_ws_parede(cookies={"sentinela_parede": token}, origem="https://outro.exemplo")
     assert await ws.recusa() == 4403
+
+
+async def test_revogada_entre_autenticar_e_assinar_fecha_na_hora(
+    app: FastAPI, token: str, abrir_ws_parede: AbrirWsParede, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agendador = app.state.agendador
+    original = agendador.aguardar_gravacoes
+
+    async def revogar_no_meio() -> None:  # já depois da assinatura do barramento
+        async with sessoes(app)() as db:  # revogação cuja mensagem se perdeu
+            await db.execute(update(Parede).values(token_hash=None))
+            await db.commit()
+        await original()
+
+    monkeypatch.setattr(agendador, "aguardar_gravacoes", revogar_no_meio)
+    ws = await _aberto(abrir_ws_parede, token)
+    msg = await ws.proxima()  # nada de snapshot: fecha sem esperar a revalidação
+    assert msg["type"] == "websocket.close" and msg["code"] == 4401
+    await ws.terminar()
+
+
+async def test_desligar_http_derruba_conexoes_http_na_hora(
+    app: FastAPI,
+    abrir_tv: AbrirTv,
+    cliente_admin: httpx.AsyncClient,
+    abrir_ws_parede: AbrirWsParede,
+) -> None:
+    await ligar_http(cliente_admin)
+    _, token_http = await emparelhar(abrir_tv("http"), cliente_admin, "TV http")
+    _, token_https = await emparelhar(abrir_tv(ip="10.99.0.51"), cliente_admin, "TV https")
+    http = abrir_ws_parede(
+        cookies={"sentinela_parede_http": token_http}, origem="http://teste", esquema="ws"
+    )
+    assert (await http.conectar())["type"] == "websocket.accept"
+    await http.json()  # snapshot
+    https = abrir_ws_parede(cookies={"sentinela_parede": token_https}, ip="10.99.0.51")
+    assert (await https.conectar())["type"] == "websocket.accept"
+    await https.json()  # snapshot
+    await ligar_http(cliente_admin, True)  # ligado -> ligado: nada cai
+    await ligar_http(cliente_admin, False)
+    assert await http.fechamento() == 4401  # sem avançar o relógio
+    marcador = {"id": "marcador", "estado": "online", "desde": DESDE.isoformat()}
+    barramento: Barramento = app.state.barramento
+    barramento.publicar(Mensagem("estado", marcador))
+    assert await https.json() == {"tipo": "estado", **marcador}  # a https segue aberta

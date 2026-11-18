@@ -24,6 +24,7 @@ from sentinela.parede.emparelhamento import (
     COOKIE_PAREDE,
     COOKIE_PAREDE_HTTP,
     COOKIE_PEDIDO,
+    RETENCAO_PEDIDO,
     VALIDADE_PEDIDO,
     LimitePedidos,
     Modo,
@@ -123,6 +124,13 @@ async def montar_snapshot(db: AsyncSession, nome: str, fuso: str) -> dict[str, A
     }
 
 
+def _apagar_cookie(response: Response, modo: Modo, nome: str, path: str) -> None:
+    """Remove com os mesmos atributos usados ao gravar."""
+    response.delete_cookie(
+        nome, path=path, httponly=True, secure=modo == "https", samesite="strict"
+    )
+
+
 def _gravar_cookie(
     response: Response, modo: Modo, nome: str, valor: str, max_age: int, path: str
 ) -> None:
@@ -151,15 +159,19 @@ async def pedir(request: Request, response: Response, db: SessaoDB, modo: Canal)
         )
     try:
         pedido, codigo, segredo = await criar_pedido(db, ip, modo, agora_utc())
-    except LimitePedidos:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail=MSG_TAXA) from None
+    except LimitePedidos as e:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=MSG_TAXA,
+            headers={"Retry-After": str(e.espera_s)},
+        ) from None
     await db.commit()
     _gravar_cookie(
         response,
         modo,
         COOKIE_PEDIDO,
         segredo,
-        int(VALIDADE_PEDIDO.total_seconds()),
+        int((VALIDADE_PEDIDO + RETENCAO_PEDIDO).total_seconds()),
         CAMINHO_PEDIDO,
     )
     return {"codigo": codigo, "expira_em": pedido.expira_em.isoformat(), "consulta_s": CONSULTA_S}
@@ -167,13 +179,13 @@ async def pedir(request: Request, response: Response, db: SessaoDB, modo: Canal)
 
 @router.get("/pedido")
 async def consultar_pedido(
-    request: Request, response: Response, db: SessaoDB, _modo: Canal
+    request: Request, response: Response, db: SessaoDB, canal: Canal
 ) -> dict[str, Any]:
     resultado = await consultar(db, request.cookies.get(COOKIE_PEDIDO, ""), agora_utc())
     if resultado == "pendente":
         response.status_code = status.HTTP_202_ACCEPTED
         return {"estado": "pendente"}
-    response.delete_cookie(COOKIE_PEDIDO, path=CAMINHO_PEDIDO)
+    _apagar_cookie(response, canal, COOKIE_PEDIDO, CAMINHO_PEDIDO)
     if resultado == "expirado":
         response.status_code = status.HTTP_410_GONE
         return {"estado": "expirado"}

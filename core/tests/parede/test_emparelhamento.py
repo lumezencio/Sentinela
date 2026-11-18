@@ -14,6 +14,7 @@ from sentinela.db.modelos import Parede, ParedePedido
 from sentinela.parede.emparelhamento import (
     ALFABETO,
     MAX_PENDENTES,
+    RETENCAO_PEDIDO,
     VALIDADE_PEDIDO,
     CodigoInvalido,
     LimitePedidos,
@@ -158,3 +159,25 @@ async def test_aprovado_mas_revogado_antes_da_entrega_expira(db: AsyncSession) -
     await revogar(db, parede.id, AGORA)
     await db.commit()
     assert await consultar(db, segredo, AGORA) == "expirado"
+
+
+async def test_entrega_tardia_limitada_pela_retencao(db: AsyncSession) -> None:
+    assert RETENCAO_PEDIDO == timedelta(minutes=10)
+    _, codigo, segredo = await criar_pedido(db, IP, "https", AGORA)
+    _, codigo2, segredo2 = await criar_pedido(db, "10.99.0.71", "https", AGORA)
+    instante = AGORA + timedelta(minutes=9, seconds=59)
+    await aprovar(db, codigo, "TV", instante)
+    await aprovar(db, codigo2, "TV 2", instante)
+    await db.commit()
+    limite = AGORA + VALIDADE_PEDIDO + RETENCAO_PEDIDO
+    assert await consultar(db, segredo, limite) == "expirado"  # na fronteira, já não entrega
+    entrega = await consultar(db, segredo2, limite - timedelta(seconds=1))
+    assert isinstance(entrega, tuple)
+
+
+async def test_limite_pendentes_informa_espera(db: AsyncSession) -> None:
+    for i in range(MAX_PENDENTES):
+        await criar_pedido(db, f"10.99.0.{i + 1}", "https", AGORA + timedelta(seconds=i))
+    with pytest.raises(LimitePedidos) as e:
+        await criar_pedido(db, IP, "https", AGORA + timedelta(minutes=1))
+    assert e.value.espera_s == 9 * 60  # até o mais antigo vencer
