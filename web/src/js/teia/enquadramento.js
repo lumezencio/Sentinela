@@ -118,3 +118,23 @@ export function posicaoDoRotulo({ ndc, distancia, largura, altura, margem = 40 }
   const escala = Math.min(max, Math.max(min, referencia / distancia));
   return { visivel: true, x: Math.round(x), y: Math.round(y), escala: Math.round(escala * 100) / 100 };
 }
+
+/**
+ * Mantém a caixa de um rótulo de classe inteira dentro do palco (nunca cortada pela borda):
+ * ancora no ponto projetado (x, y); a caixa tem `largura` x `altura` (px já com a escala),
+ * centrada em x e com o topo em y + `desloque`. Se a ÂNCORA está fora do palco, some (sem
+ * rótulo solto de um grupo que não se vê); senão desliza o mínimo para dentro, com `folga`.
+ * Devolve {visivel, x, y} com x/y no mesmo sentido do ponto de entrada.
+ */
+export function manterRotuloNoPalco({
+  x, y, largura, altura, palcoL, palcoA, desloque = 0, folga = 4,
+}) {
+  if (!(x >= 0 && x <= palcoL && y >= 0 && y <= palcoA)) return { visivel: false };
+  const maxX = palcoL - folga - largura / 2;
+  const minX = folga + largura / 2;
+  const cx = minX > maxX ? palcoL / 2 : Math.min(maxX, Math.max(minX, x));
+  const maxY = palcoA - folga - altura - desloque;
+  const minY = folga - desloque;
+  const cy = minY > maxY ? minY : Math.min(maxY, Math.max(minY, y));
+  return { visivel: true, x: Math.round(cx), y: Math.round(cy) };
+}

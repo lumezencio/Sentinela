@@ -12,15 +12,17 @@ import {
   bloomPermitido, criarMedidorFps, decidirNivel, limparAgrupadoPorFps, quedaSustentada,
 } from "./desempenho.js";
 import { calcularPosicoes, ESTILOS, RAIO_CLASSES } from "./estilos.js";
-import { DIST_MAX_ROTULO, enquadrar, posicaoDoRotulo, raioEnvolvente } from "./enquadramento.js";
+import {
+  DIST_MAX_ROTULO, enquadrar, manterRotuloNoPalco, posicaoDoRotulo, raioEnvolvente,
+} from "./enquadramento.js";
 import {
   brilhoParaComposicaoLinear, criarAcervo, criarAnelSelecao, criarEstrelas, criarObjetoClasse,
   criarObjetoEquipamento, criarObjetoGrupo, criarObjetoServidor, criarRotuloIp, criarTexturaIp,
   FUNDO, OPACIDADE_ESMAECIDA, TAMANHO, vestirClasse, vestirCorpo,
 } from "./objetos.js";
 import {
-  criarCacheRotulos, diametroProjetadoPx, opacidadeEntrada, rotuloIpVisivel, semSobreposicao,
-  tamanhoRotuloPx,
+  criarCacheRotulos, diametroProjetadoPx, MAX_NOS_ROTULO, opacidadeEntrada, rotuloIpVisivel,
+  semSobreposicao, tamanhoRotuloPx,
 } from "./rotulo-ip.js";
 import {
   assinaturas, CLASSE_SERVIDOR, classesDaCena, diferencaNos, raioSuperNo, resumoPorClasse,
@@ -109,6 +111,7 @@ export function montarTeia(container, opcoes = {}) {
   });
   let quadroIp = 0;
   let ipVisiveis = 0;
+  let painelPx = []; // só os painéis da página (rótulo de classe por baixo deles some)
   let obstaculosIp = []; // {x, y, l, a} em px do palco; relidos a cada LEITURAS_MS
 
   const srv = { id: "srv", tipo: "servidor", fx: 0, fy: 0, fz: 0, x: 0, y: 0, z: 0 };
@@ -505,10 +508,30 @@ export function montarTeia(container, opcoes = {}) {
         continue;
       }
       if (r.el.hidden) r.el.hidden = false;
-      const chave = `${pos.x},${pos.y},${pos.escala}`;
+      // caixa real do texto (sem a escala), medida de novo só quando o texto muda
+      const texto = r.span.textContent;
+      if (r.medidoPara !== texto) {
+        r.medidoPara = texto;
+        r.larg = r.span.offsetWidth;
+        r.alt = r.span.offsetHeight;
+      }
+      const dentro = manterRotuloNoPalco({
+        x: pos.x, y: pos.y, largura: r.larg * pos.escala, altura: r.alt * pos.escala,
+        palcoL: largura, palcoA: altura, desloque: r.el.classList.contains("servidor") ? 30 : 14,
+      });
+      const deslocado = r.el.classList.contains("servidor") ? 30 : 14;
+      const sobPainel = dentro.visivel && painelPx.some((o) => {
+        const l = r.larg * pos.escala, a = r.alt * pos.escala, cy = dentro.y + deslocado + a / 2;
+        return Math.abs(dentro.x - o.x) < (l + o.l) / 2 && Math.abs(cy - o.y) < (a + o.a) / 2;
+      });
+      if (!dentro.visivel || sobPainel) {
+        if (!r.el.hidden) r.el.hidden = true;
+        continue;
+      }
+      const chave = `${dentro.x},${dentro.y},${pos.escala}`;
       if (chave === r.ultimo) continue;
       r.ultimo = chave;
-      r.el.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`;
+      r.el.style.transform = `translate3d(${dentro.x}px, ${dentro.y}px, 0)`;
       r.el.style.setProperty("--escala", String(pos.escala));
     }
   }
@@ -568,7 +591,9 @@ export function montarTeia(container, opcoes = {}) {
     } catch {
       externos = [];
     }
+    const antes = lista.length;
     for (const r of externos) juntar(r);
+    painelPx = lista.slice(antes);
     obstaculosIp = lista;
   }
 
@@ -606,7 +631,10 @@ export function montarTeia(container, opcoes = {}) {
       const diametroPx = diametroProjetadoPx({
         raio: TAMANHO.equipamento, distancia, fovGraus: fov, alturaPx: altura,
       });
-      let ve = rotuloIpVisivel({ diametroPx, totalNos: est.total });
+      // o selecionado mostra o IP mesmo com a esfera pequena (celular com o painel aberto)
+      let ve = no === selecionado
+        ? est.total <= MAX_NOS_ROTULO
+        : rotuloIpVisivel({ diametroPx, totalNos: est.total });
       let x = 0, y = 0;
       if (ve) {
         // fora da tela (atrás da câmera ou além da borda): nem texto nem textura
