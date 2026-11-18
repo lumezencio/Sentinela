@@ -63,6 +63,22 @@ async def checar_unicos(
             raise erro(status.HTTP_409_CONFLICT, comum.MSG_MAC_DUPLICADO)
 
 
+async def _revalidar_pai(db: AsyncSession, eq: Equipamento) -> None:
+    """Revalida ``eq.pai_id`` depois do flush, dentro da mesma transação.
+
+    O flush abre a transação de escrita (o SQLite serializa escritores): uma edição
+    concorrente que gravou entre a primeira validação e esta já está visível, e nenhuma
+    outra grava antes do nosso commit. Assim A->B e B->A simultâneos não formam ciclo.
+    """
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise erro(status.HTTP_409_CONFLICT, "Conflito com outro equipamento.") from None
+    if eq.pai_id is not None:
+        await comum.validar_pai(db, eq.id, eq.pai_id)
+
+
 async def _commit(db: AsyncSession) -> None:
     try:
         await db.commit()
@@ -135,6 +151,8 @@ async def criar(
     )
     db.add(eq)
     auditar(db, request, admin, "equipamento.criar", eq.id, depois=retrato(eq, classe.slug))
+    if eq.pai_id is not None:
+        await _revalidar_pai(db, eq)
     await _commit(db)
     await registrar_no_agendador(_agendador(request), db, eq, classe, novo=True)
     return EquipamentoSaida.de(eq, classe.slug)
@@ -167,6 +185,8 @@ async def editar(
     if dados.get("nome") is not None:
         eq.nome = dados["nome"]
     auditar(db, request, admin, "equipamento.editar", eq.id, antes, retrato(eq, classe.slug))
+    if dados.get("pai_id") is not None:
+        await _revalidar_pai(db, eq)
     await _commit(db)
     await registrar_no_agendador(_agendador(request), db, eq, classe, novo=False)
     return EquipamentoSaida.de(eq, classe.slug)

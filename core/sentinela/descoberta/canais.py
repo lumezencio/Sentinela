@@ -8,7 +8,10 @@ filho. Se a leitura de um gravador falhar (erro, exceção ou tempo esgotado), *
 daquele gravador vão para ``inalcancavel`` com causa ``"pai:<equipamento do gravador>"``
 (``forcar_inalcancavel``, Fase 4 §5.1); os demais gravadores seguem normalmente. Quando a
 leitura volta, os filhos são liberados (``desconhecido``) antes de receber as amostras, então
-o estado real aparece na mesma leitura.
+o estado real aparece na mesma leitura. Enquanto o próprio equipamento do gravador está
+``offline``/``inalcancavel`` no agendador (ex.: ping falhando com o HTTP funcionando), a
+leitura boa não libera nem aplica nada: as câmeras ficam como estão até ele voltar (sem
+oscilar offline -> inalcançável -> liberada a cada leitura).
 
 Ritmo: o intervalo da classe ``camera`` (mínimo 15 s), relido a cada ciclo. Alvos passivos
 **não** têm a reconfirmação rápida de 5 s do agendador: uma câmera suspeita só é reavaliada
@@ -45,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.modelos import Classe, Equipamento, Fonte
 from sentinela.descoberta.fontes.base import CertificadoMudou, CertificadoNaoConfiado, ErroColeta
-from sentinela.monitor.agendador import Agendador
+from sentinela.monitor.agendador import CAIDOS, Agendador
 from sentinela.monitor.checagens import GRAVADOR
 from sentinela.monitor.estados import ResultadoChecagem
 from sentinela.monitor.limitador import Limitador
@@ -211,6 +214,9 @@ class LeitorCanais:
             log.warning("leitura de canais falhou (fonte %s): %s", fonte_id, type(e).__name__)
             self._sem_resposta(fonte_id, filhos)
             return
+        gravador_id = self._gravador_de.get(fonte_id)
+        if gravador_id is not None and self._agendador.estado_de(gravador_id) in CAIDOS:
+            return  # a liberação vem do gravador voltando (correlação no agendador)
         # o gravador respondeu: inalcançáveis voltam a desconhecido e recebem a amostra já
         self._agendador.liberar_inalcancavel([eq for eq, _ in filhos])
         for equipamento_id, canal in filhos:

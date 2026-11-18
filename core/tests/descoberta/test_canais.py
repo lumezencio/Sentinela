@@ -462,3 +462,38 @@ async def test_camera_pausada_sem_leitura_nao_muda(cena: Cena) -> None:
     await cena.leitor().ciclo()
     assert cena.barramento.estados("cam1") == []
     assert cena.estado("cam2") is Estado.DESCONHECIDO
+
+
+# ---- gravador caído (ping) com leitura HTTP funcionando (revisão da Task 2) --------------------
+
+
+async def test_gravador_caido_leitura_ok_nao_pisca_cameras(cena: Cena) -> None:
+    """O gravador falha na checagem própria, mas a leitura de canais funciona: a câmera
+    realmente offline não fica oscilando offline -> inalcançável -> liberada a cada leitura."""
+    ag = cena.agendador
+    ag.adicionar(Alvo("nvr1", "10.99.0.50", None, "gravador", 15, True, Estado.ONLINE))
+    ag.atualizar_lote(
+        Alvo(cam, "192.168.254.1", None, "gravador", 15, True, Estado.ONLINE, "nvr1")
+        for cam in CAMERAS_F1
+    )
+    leitor = cena.leitor()
+    for _ in range(3):
+        await leitor.ciclo()
+    assert cena.estado("cam2") is Estado.OFFLINE
+    for _ in range(3):
+        ag.aplicar_externo("nvr1", ResultadoChecagem(ok=False, latencia_ms=None))
+    assert cena.estado("nvr1") is Estado.OFFLINE
+    assert cena.estado("cam2") is Estado.INALCANCAVEL  # reclassificada (≤ 60 s)
+    antes = {cam: len(cena.barramento.estados(cam)) for cam in CAMERAS_F1}
+    for _ in range(6):
+        await leitor.ciclo()
+    # nenhuma transição nova enquanto o gravador está caído
+    assert {cam: len(cena.barramento.estados(cam)) for cam in CAMERAS_F1} == antes
+    assert [e for e, _ in cena.barramento.estados("cam2")].count("inalcancavel") == 1
+    assert cena.estado("cam1") is Estado.ONLINE
+    # o gravador volta: a câmera é liberada e a leitura seguinte vale de novo
+    for _ in range(2):
+        ag.aplicar_externo("nvr1", ResultadoChecagem(ok=True, latencia_ms=1.0))
+    assert cena.estado("cam2") is Estado.DESCONHECIDO
+    await leitor.ciclo()
+    assert cena.estado("cam2") is Estado.SUSPEITO

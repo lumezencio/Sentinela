@@ -735,3 +735,81 @@ async def test_filtro_estado_inalcancavel(cliente_admin: httpx.AsyncClient) -> N
     r = await cliente_admin.get(f"{EQUIP}?estado=inalcancavel")
     assert r.status_code == 200
     assert r.json() == {"itens": [], "total": 0}
+
+
+# ---- correções da revisão da Task 2 ----------------------------------------------------------
+
+
+async def test_lifespan_inalcancavel_gravado_vira_desconhecido_e_checa_em_5s(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    """Reinício com ``inalcancavel`` no banco: a transição é gravada (banco e snapshot sem o
+    elo partido) e o checado entra na fila em até 5 s."""
+    await _subrede(cliente_admin)
+    pai = (await _equip(cliente_admin, nome="Switch", ip="10.99.0.20")).json()["id"]
+    filho = (await _equip(cliente_admin, nome="AP", ip="10.99.0.21", pai_id=pai)).json()["id"]
+    cam = await _camera_de_gravador(app, pai)
+    async with _sessoes(app)() as db:
+        for id in (filho, cam):
+            eq = await db.get(Equipamento, id)
+            assert eq is not None
+            eq.estado = "inalcancavel"
+        await db.commit()
+    async with app.router.lifespan_context(app):
+        agendador = _agendador(app)
+        await agendador.aguardar_gravacoes()
+        for id in (filho, cam):
+            assert agendador.estado_de(id) is Estado.DESCONHECIDO
+        async with _sessoes(app)() as db:
+            for id in (filho, cam):
+                eq = await db.get(Equipamento, id)
+                assert eq is not None and eq.estado == "desconhecido"
+                ev = (
+                    await db.execute(
+                        select(Evento)
+                        .where(Evento.equipamento_id == id)
+                        .order_by(Evento.id.desc())
+                        .limit(1)
+                    )
+                ).scalar_one()
+                assert (ev.de, ev.para) == ("inalcancavel", "desconhecido")
+        agora = agendador._relogio.agora()
+        entradas = [q for q, seq, i in agendador._heap if agendador._vigente.get(i) == seq]
+        quando = [
+            q for q, seq, i in agendador._heap if i == filho and agendador._vigente.get(i) == seq
+        ]
+        assert entradas and len(quando) == 1 and quando[0] - agora <= 5.0
+        assert cam not in agendador._vigente  # passiva: nunca agendada
+
+
+async def test_pai_corrida_rechecado_depois_do_flush(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A->B e B->A em paralelo: a outra edição grava B->A entre a validação e a escrita
+    desta; a revalidação depois do flush (com a escrita já reservada) recusa o ciclo."""
+    from sentinela.api import comum
+
+    await _subrede(cliente_admin)
+    a, b = await _n_equips(cliente_admin, 2)
+    original = comum.validar_pai
+    chamadas: list[str | None] = []
+
+    async def validar(db: AsyncSession, eq_id: str | None, pai_id: str) -> None:
+        chamadas.append(eq_id)
+        await original(db, eq_id, pai_id)
+        if len(chamadas) == 1:  # a edição concorrente (B -> A) termina agora
+            async with _sessoes(app)() as outra:
+                eq_b = await outra.get(Equipamento, b)
+                assert eq_b is not None
+                eq_b.pai_id = a
+                await outra.commit()
+
+    monkeypatch.setattr(comum, "validar_pai", validar)
+    r = await cliente_admin.patch(f"{EQUIP}/{a}", json={"pai_id": b})
+    assert r.status_code == 422
+    assert r.json() == {"detail": "Dependência circular."}
+    assert chamadas == [a, a]
+    async with _sessoes(app)() as db:
+        eq_a = await db.get(Equipamento, a)
+        assert eq_a is not None and eq_a.pai_id is None  # nada gravado
+    assert _agendador(app)._registros[a].alvo.pai_id is None
