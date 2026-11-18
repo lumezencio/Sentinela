@@ -1,6 +1,6 @@
 """Sobe um dos simuladores dos testes do núcleo num IP fixo da rede de captura.
 
-Uso (dentro do container ``simuladores``): ``python rodar.py routeros|snmp|gravador``.
+Uso (dentro do container ``simuladores``): ``python rodar.py routeros|snmp|gravador|telegram``.
 
 Os simuladores são os MESMOS de ``core/tests/descoberta`` (copiados para a imagem, sem cópia
 de lógica aqui); este arquivo só escolhe as tabelas desta rede (10.99.250.0/24, MACs
@@ -10,6 +10,7 @@ de lógica aqui); este arquivo só escolhe as tabelas desta rede (10.99.250.0/24
 import asyncio
 import signal
 import sys
+import threading
 from pathlib import Path
 
 from tests.descoberta.agente_snmp import AgenteSnmp
@@ -95,7 +96,14 @@ async def gravador() -> None:
         await _ate_sinal()
 
 
-SIMULADORES = {"routeros": routeros, "snmp": snmp, "gravador": gravador}
+async def telegram() -> None:
+    from telegram_falso import servir  # noqa: PLC0415 - só este simulador precisa dele
+
+    threading.Thread(target=servir, daemon=True).start()
+    await _ate_sinal()
+
+
+SIMULADORES = {"routeros": routeros, "snmp": snmp, "gravador": gravador, "telegram": telegram}
 
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in SIMULADORES:

@@ -56,11 +56,13 @@ def pcap(caminho: Path, quadros: list[bytes], enlace: int = 1) -> Path:
     return caminho
 
 
-def rodar(caminho: Path, permitidos: str = "", exigir: str = "") -> int:
+def rodar(caminho: Path, permitidos: str = "", exigir: str = "", unicast: str | None = None) -> int:
     args = [str(caminho), "--origem", IP_SENTINELA, "--origem", "02:00:00:fa:00:10"]
     args += ["--arp-permitido", permitidos, "--rede", "10.99.250.0/24"]
     if exigir:
         args += ["--exigir-contato", exigir]
+    if unicast is not None:
+        args += ["--unicast-permitido", unicast]
     resultado: int = ac.main(args)
     return resultado
 
@@ -236,3 +238,29 @@ def test_rede_ou_origem_malformada_e_invalida_sem_traceback(tmp_path: Path) -> N
     assert ac.main([caminho, "--origem", "nao-e-ip"]) == 2
     assert ac.main([caminho, "--origem", IP_SENTINELA, "--rede", "10.99.250.0/33"]) == 2
     assert ac.main([caminho, "--origem", IP_SENTINELA, "--arp-permitido", "x"]) == 2
+
+
+# ---- --unicast-permitido: o unicast do Sentinela só pode ir a destinos conhecidos -----------
+
+
+def test_unicast_fora_da_lista_reprova(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    para_fora = eth(MAC_OUTRO, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "10.99.250.99", 6))
+    caminho = pcap(tmp_path / "fora.pcap", [UNICAST, para_fora])
+    assert rodar(caminho, unicast="10.99.250.11,10.99.250.32/28") == 1
+    saida = capsys.readouterr().out
+    assert "unicast para destino não autorizado 10.99.250.99" in saida
+    assert "REPROVADO: 1 quadro" in saida
+
+
+def test_unicast_para_telegram_falso_passa(tmp_path: Path) -> None:
+    telegram = eth(MAC_OUTRO, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "10.99.250.60", 6))
+    varrido = eth(MAC_OUTRO, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "10.99.250.40", 6))
+    caminho = pcap(tmp_path / "tg.pcap", [UNICAST, telegram, varrido])
+    assert rodar(caminho, unicast="10.99.250.11,10.99.250.60,10.99.250.32/28") == 0
+    assert rodar(caminho, unicast="10.99.250.11,10.99.250.32/28") == 1  # sem o .60 reprova
+
+
+def test_sem_opcao_comportamento_antigo(tmp_path: Path) -> None:
+    para_fora = eth(MAC_OUTRO, MAC_SENTINELA, 0x0800, ipv4(IP_SENTINELA, "10.99.250.99", 6))
+    caminho = pcap(tmp_path / "antigo.pcap", [UNICAST, para_fora])
+    assert rodar(caminho) == 0  # sem a opção, qualquer unicast continua aceito

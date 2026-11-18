@@ -59,6 +59,7 @@ jobs:
             testes-rede/saida/captura.pcap
             testes-rede/saida/cena.json
             testes-rede/saida/arp_permitido.txt
+            testes-rede/saida/unicast_permitido.txt
             testes-rede/saida/core.log
           if-no-files-found: ignore
           retention-days: 14
