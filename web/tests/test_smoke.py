@@ -466,6 +466,38 @@ def test_teia_abre_e_troca_os_5_estilos_sem_erro(page: Page, alvo: Alvo) -> None
     assert erros == [], erros
 
 
+def test_teia_rotulo_de_classe_longo_quebra_linha_e_fica_no_palco(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    abrir_teia(page)
+    page.wait_for_timeout(2500)
+    longo = "Equipamentos de monitoramento do prédio anexo, bloco B"[:60]
+    page.evaluate(
+        "(t) => { document.querySelector('#conteudo-teia .teia-rotulo:not(.servidor) > span')"
+        ".textContent = t; }",
+        longo,
+    )
+    page.wait_for_timeout(600)
+    medidas = page.evaluate(
+        """() => {
+        const palco = document.querySelector('#conteudo-teia .teia-rotulos')
+            .getBoundingClientRect();
+        return [...document.querySelectorAll('#conteudo-teia .teia-rotulo:not([hidden]) > span')]
+            .map((s) => {
+                const r = s.getBoundingClientRect();
+                return {
+                    ellipsis: getComputedStyle(s).textOverflow === 'ellipsis',
+                    cortado: s.scrollWidth > s.clientWidth + 1,
+                    dentro: r.left >= palco.left - 1 && r.right <= palco.right + 1
+                        && r.top >= palco.top - 1 && r.bottom <= palco.bottom + 1,
+                };
+            });
+    }"""
+    )
+    assert medidas, "nenhum rótulo de classe visível"
+    assert not any(m["ellipsis"] or m["cortado"] for m in medidas), medidas
+    assert all(m["dentro"] for m in medidas), medidas
+
+
 def test_teia_movimento_reduzido_sem_particulas_nem_rotacao(browser: Browser, alvo: Alvo) -> None:
     contexto = browser.new_context(
         reduced_motion="reduce", ignore_https_errors=True, base_url=alvo.url

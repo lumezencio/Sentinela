@@ -515,14 +515,19 @@ export function montarTeia(container, opcoes = {}) {
         r.larg = r.span.offsetWidth;
         r.alt = r.span.offsetHeight;
       }
+      // caixa na tela (com a escala); o deslocamento vertical do topo em relação à âncora
+      // depende de onde o CSS põe o rótulo: servidor 30 px abaixo, "abaixo" 14 px abaixo,
+      // o resto acima (topo = y - 14 - altura)
+      const larg = r.larg * pos.escala, alt = r.alt * pos.escala;
+      const deslocado = r.el.classList.contains("servidor") ? 30
+        : r.el.classList.contains("abaixo") ? 14 : -(14 + alt);
       const dentro = manterRotuloNoPalco({
-        x: pos.x, y: pos.y, largura: r.larg * pos.escala, altura: r.alt * pos.escala,
-        palcoL: largura, palcoA: altura, desloque: r.el.classList.contains("servidor") ? 30 : 14,
+        x: pos.x, y: pos.y, largura: larg, altura: alt,
+        palcoL: largura, palcoA: altura, desloque: deslocado,
       });
-      const deslocado = r.el.classList.contains("servidor") ? 30 : 14;
       const sobPainel = dentro.visivel && painelPx.some((o) => {
-        const l = r.larg * pos.escala, a = r.alt * pos.escala, cy = dentro.y + deslocado + a / 2;
-        return Math.abs(dentro.x - o.x) < (l + o.l) / 2 && Math.abs(cy - o.y) < (a + o.a) / 2;
+        const cy = dentro.y + deslocado + alt / 2;
+        return Math.abs(dentro.x - o.x) < (larg + o.l) / 2 && Math.abs(cy - o.y) < (alt + o.a) / 2;
       });
       if (!dentro.visivel || sobPainel) {
         if (!r.el.hidden) r.el.hidden = true;

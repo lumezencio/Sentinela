@@ -96,3 +96,15 @@ test("manterRotuloNoPalco: caixa perto da borda desliza para dentro; âncora for
   // mais larga que o palco: centraliza (nunca passa a folga do mesmo lado errado)
   assert.equal(manterRotuloNoPalco({ ...base, largura: 900, x: 100, y: 300 }).x, 400);
 });
+
+test("manterRotuloNoPalco: rótulo ACIMA da âncora (desloque negativo) fica inteiro dentro do palco", () => {
+  const altura = 40, desloque = -(14 + altura), palcoA = 600;
+  for (const y of [0, 10, 30, 300, 590, 600]) {
+    const r = manterRotuloNoPalco({
+      x: 400, y, largura: 100, altura, palcoL: 800, palcoA, desloque, folga: 4,
+    });
+    assert.equal(r.visivel, true);
+    assert.ok(r.y + desloque >= 4, `topo ${r.y + desloque}`);
+    assert.ok(r.y + desloque + altura <= palcoA - 4, `base ${r.y + desloque + altura}`);
+  }
+});
