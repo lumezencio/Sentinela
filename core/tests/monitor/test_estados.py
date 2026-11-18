@@ -1,8 +1,10 @@
 from sentinela.monitor.estados import (
+    CAUSA_PAI,
     Estado,
     MaquinaEstados,
     ResultadoChecagem,
     Transicao,
+    causa_pai,
 )
 
 OK = ResultadoChecagem(ok=True, latencia_ms=10.0)
@@ -22,6 +24,7 @@ def test_valores_do_enum() -> None:
         "suspeito",
         "offline",
         "pausado",
+        "inalcancavel",
     ]
 
 
@@ -234,9 +237,9 @@ def test_precisa_confirmar_somente_em_suspeito() -> None:
         assert _em(e).precisa_confirmar is (e is Estado.SUSPEITO)
 
 
-# ---- desconhecido forçado (gravador sem resposta, §9.7) --------------------
+# ---- desconhecido forçado (sem leitura do gravador, §9.7) --------------------
 
-CAUSA_GRAVADOR = "gravador sem resposta"
+CAUSA_GRAVADOR = "sem leitura do gravador"
 
 
 def test_forcar_desconhecido_de_online_gera_transicao_com_causa() -> None:
@@ -281,3 +284,86 @@ def test_forcar_desconhecido_zera_contadores_de_falha() -> None:
     assert m.aplicar(FALHA) == Transicao(Estado.DESCONHECIDO, Estado.SUSPEITO)
     assert m.aplicar(FALHA) is None  # recomeça a contagem: 2 de 3
     assert m.estado is Estado.SUSPEITO
+
+
+# ---- inalcançável (correlação pelo pai, Fase 4 §5.1) ---------------------------------------
+
+
+def test_causa_pai() -> None:
+    assert CAUSA_PAI == "pai:"
+    assert causa_pai("sw1") == "pai:sw1"
+
+
+def test_marcar_inalcancavel_de_offline_com_causa() -> None:
+    m = _em(Estado.OFFLINE)
+    t = m.marcar_inalcancavel(causa_pai("sw1"))
+    assert t == Transicao(Estado.OFFLINE, Estado.INALCANCAVEL, causa="pai:sw1")
+    assert m.estado is Estado.INALCANCAVEL
+
+
+def test_marcar_inalcancavel_de_cada_estado_ativo() -> None:
+    for e in (Estado.DESCONHECIDO, Estado.ONLINE, Estado.INSTAVEL, Estado.SUSPEITO):
+        t = _em(e).marcar_inalcancavel("pai:x")
+        assert t is not None and (t.de, t.para) == (e, Estado.INALCANCAVEL)
+
+
+def test_marcar_inalcancavel_ja_inalcancavel_retorna_none() -> None:
+    assert _em(Estado.INALCANCAVEL).marcar_inalcancavel("pai:x") is None
+
+
+def test_inalcancavel_falha_nao_transita() -> None:
+    m = _em(Estado.INALCANCAVEL)
+    for _ in range(5):
+        assert m.aplicar(FALHA) is None
+    assert m.estado is Estado.INALCANCAVEL
+    assert not m.precisa_confirmar
+
+
+def test_inalcancavel_dois_oks_vai_online() -> None:
+    m = _em(Estado.INALCANCAVEL)
+    assert m.aplicar(OK) is None
+    assert m.aplicar(OK) == Transicao(Estado.INALCANCAVEL, Estado.ONLINE)
+
+
+def test_inalcancavel_dois_oks_lentos_vai_instavel() -> None:
+    m = _em(Estado.INALCANCAVEL)
+    m.aplicar(LENTO)
+    assert m.aplicar(LENTO) == Transicao(Estado.INALCANCAVEL, Estado.INSTAVEL)
+
+
+def test_marcar_inalcancavel_zera_contadores() -> None:
+    m = _em(Estado.OFFLINE)
+    m.aplicar(OK)  # 1 de 2 oks: não pode sobreviver à marcação
+    m.marcar_inalcancavel("pai:x")
+    assert m.aplicar(OK) is None
+    assert m.aplicar(OK) == Transicao(Estado.INALCANCAVEL, Estado.ONLINE)
+
+
+def test_liberar_inalcancavel_vai_desconhecido() -> None:
+    m = _em(Estado.INALCANCAVEL)
+    m.aplicar(OK)
+    assert m.liberar_inalcancavel() == Transicao(Estado.INALCANCAVEL, Estado.DESCONHECIDO)
+    assert m.estado is Estado.DESCONHECIDO
+    # contadores zerados: uma falha leva a suspeito pela histerese normal
+    assert m.aplicar(FALHA) == Transicao(Estado.DESCONHECIDO, Estado.SUSPEITO)
+
+
+def test_liberar_so_age_em_inalcancavel() -> None:
+    for e in Estado:
+        if e is not Estado.INALCANCAVEL:
+            m = _em(e)
+            assert m.liberar_inalcancavel() is None
+            assert m.estado is e
+
+
+def test_pausado_ignora_marcar_e_liberar() -> None:
+    m = _em(Estado.PAUSADO)
+    assert m.marcar_inalcancavel("pai:x") is None
+    assert m.liberar_inalcancavel() is None
+    assert m.estado is Estado.PAUSADO
+
+
+def test_pausar_e_forcar_desconhecido_saem_de_inalcancavel() -> None:
+    assert _em(Estado.INALCANCAVEL).pausar() == Transicao(Estado.INALCANCAVEL, Estado.PAUSADO)
+    t = _em(Estado.INALCANCAVEL).forcar_desconhecido("x")
+    assert t is not None and t.para is Estado.DESCONHECIDO

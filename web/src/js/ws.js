@@ -7,9 +7,9 @@ export const FECHA_ORIGEM_PROIBIDA = 4403;
 const RECUO_INICIAL_MS = 1000;
 const RECUO_MAXIMO_MS = 30000;
 
-export function urlDoWs() {
+export function urlDoWs(caminho = "/ws") {
   const esquema = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${esquema}://${window.location.host}/ws`;
+  return `${esquema}://${window.location.host}${caminho}`;
 }
 
 /**
@@ -18,8 +18,9 @@ export function urlDoWs() {
  *   aoMudarEstado: (estado: "conectando"|"ao_vivo"|"reconectando"|"recusado") => void,
  *   aoExpirar: () => void,
  * }} ganchos
+ * @param {string} caminho  "/ws" (painel) ou "/ws/parede" (telão)
  */
-export function criarConexao(ganchos) {
+export function criarConexao(ganchos, caminho = "/ws") {
   let socket = null;
   let recuo = RECUO_INICIAL_MS;
   let timer = 0;
@@ -35,7 +36,7 @@ export function criarConexao(ganchos) {
     if (parado) return;
     let ws;
     try {
-      ws = new WebSocket(urlDoWs());
+      ws = new WebSocket(urlDoWs(caminho));
     } catch {
       ganchos.aoMudarEstado("reconectando");
       agendar();

@@ -135,7 +135,7 @@ test("resumoDasClasses: ordem do backend, sem 'sentinela', contagem por estado",
   const cam = r.find((c) => c.slug === "camera");
   assert.equal(cam.nome, "Câmeras");
   assert.equal(cam.total, 5);
-  assert.deepEqual(cam.contagem, { online: 2, instavel: 1, offline: 1, pausado: 1, aguardando: 0 });
+  assert.deepEqual(cam.contagem, { online: 2, instavel: 1, offline: 1, pausado: 1, aguardando: 0, inalcancavel: 0 });
   assert.equal(cam.cor, "#E59866");
   assert.match(cam.rotulo, /^Câmeras: 5 equipamentos/);
   assert.match(cam.rotulo, /1 offline/);
@@ -280,4 +280,30 @@ test("fichaDoEquipamento: câmera atrás do gravador diz qual e o canal", () => 
   assert.equal(fichaDoEquipamento(store.itens.get("w1"), store).atras, "");
   store.itens.delete("nvr");
   assert.equal(fichaDoEquipamento(store.itens.get("filho"), store).atras, "Atrás do gravador, canal 3");
+});
+
+test("fichaDoEquipamento: 'Depende de' editável, só leitura (câmera de gravador) e motivo", () => {
+  const store = lojaDemo();
+  store.itens.set("sw", { id: "sw", nome: "Switch A", ip: "10.99.1.1", classe: "camera", estado: "offline" });
+  store.itens.set("dep", {
+    id: "dep", nome: "Dep", ip: "10.99.1.2", classe: "camera", estado: "inalcancavel", pai_id: "sw",
+    causa: "pai:sw", canal: null, checagem: "icmp",
+  });
+  store.itens.set("cam", {
+    id: "cam", nome: "Portão", ip: "192.168.254.1", classe: "camera", estado: "online",
+    checagem: "gravador", pai_id: "sw", canal: 3,
+  });
+  const dep = fichaDoEquipamento(store.itens.get("dep"), store);
+  assert.equal(dep.dependeDe, "Switch A");
+  assert.equal(dep.dependeDeId, "sw");
+  assert.equal(dep.dependeSoLeitura, false);
+  assert.equal(dep.atras, "");
+  assert.equal(dep.estadoRotulo, "Inalcançável");
+  const cam = fichaDoEquipamento(store.itens.get("cam"), store);
+  assert.equal(cam.dependeSoLeitura, true);
+  assert.equal(cam.dependeDe, "Switch A");
+  const solto = fichaDoEquipamento(store.itens.get("c1"), store);
+  assert.equal(solto.dependeDe, "");
+  assert.equal(solto.dependeDeId, "");
+  assert.equal(solto.dependeSoLeitura, false);
 });

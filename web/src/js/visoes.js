@@ -2,11 +2,12 @@
 // detecção de WebGL, carga preguiçosa do bundle 3D e dados prontos para os painéis da
 // Teia. Funções puras ou com dependências injetáveis (testadas no Node, sem navegador).
 // Não importa nada de js/teia/: esses fontes só existem dentro do bundle.
+import { vinculoDoGravador } from "./dependencia.js";
 import {
   atrasDoGravador, ESTADOS, formatarLatencia, grupoDe, haQuanto, paginar, rotuloChecagem,
 } from "./lista.js";
 
-export const ABAS = ["lista", "teia", "organograma", "novos", "configuracoes"];
+export const ABAS = ["lista", "teia", "organograma", "alertas", "novos", "configuracoes"];
 
 /** Aba a partir de location.hash ("#teia" → "teia"); qualquer outra coisa → "lista". */
 export function abaDoHash(hash) {
@@ -47,7 +48,7 @@ export function salvarEstilo(estilo, armazenamento) {
 }
 
 /** Há contexto WebGL (2 ou 1) neste navegador? */
-export function webglDisponivel(doc = globalThis.document) {
+export function webglDisponivel(doc = document) {
   try {
     const canvas = doc.createElement("canvas");
     const ctx = canvas.getContext("webgl2") || canvas.getContext("webgl");
@@ -94,7 +95,7 @@ export function resumoDasClasses(store) {
   for (const it of store.itens.values()) {
     let c = contagens.get(it.classe);
     if (!c) {
-      c = { online: 0, instavel: 0, offline: 0, pausado: 0, aguardando: 0 };
+      c = { online: 0, instavel: 0, offline: 0, inalcancavel: 0, pausado: 0, aguardando: 0 };
       contagens.set(it.classe, c);
     }
     c[grupoDe(it.estado)] += 1;
@@ -104,11 +105,14 @@ export function resumoDasClasses(store) {
   for (const classe of ordenadas) {
     if (classe.slug === CLASSE_SERVIDOR) continue;
     const contagem = contagens.get(classe.slug) || {
-      online: 0, instavel: 0, offline: 0, pausado: 0, aguardando: 0,
+      online: 0, instavel: 0, offline: 0, inalcancavel: 0, pausado: 0, aguardando: 0,
     };
     const total = Object.values(contagem).reduce((a, b) => a + b, 0);
     const partes = [plural(total, "equipamento", "equipamentos")];
     if (contagem.offline) partes.push(`${contagem.offline} offline`);
+    if (contagem.inalcancavel) {
+      partes.push(plural(contagem.inalcancavel, "inalcançável", "inalcançáveis"));
+    }
     if (contagem.instavel) partes.push(plural(contagem.instavel, "instável", "instáveis"));
     if (contagem.pausado) partes.push(plural(contagem.pausado, "pausado", "pausados"));
     lista.push({
@@ -156,6 +160,7 @@ export function fichaDoEquipamento(item, store, agora = Date.now()) {
   const chave = chaveEstado(item.estado);
   const est = ESTADOS[chave];
   const classe = store.classes.get(item.classe);
+  const pai = item.pai_id ? store.itens.get(item.pai_id) : null;
   return {
     id: item.id,
     nome: item.nome,
@@ -171,6 +176,10 @@ export function fichaDoEquipamento(item, store, agora = Date.now()) {
     latencia: formatarLatencia(item.latencia_ms),
     pausado: item.estado === "pausado",
     atras: atrasDoGravador(item, store),
+    // "Depende de": o vínculo da câmera/gravador é do gravador (só leitura); os demais o admin edita
+    dependeDeId: item.pai_id || "",
+    dependeDe: item.pai_id ? (pai ? pai.nome : "equipamento removido") : "",
+    dependeSoLeitura: vinculoDoGravador(item),
   };
 }
 

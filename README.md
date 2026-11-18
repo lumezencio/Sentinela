@@ -4,8 +4,9 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fases 1, 2 e 3 concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D,
-> Organograma e descoberta automática com classificador). Os alertas vêm na próxima fase. Veja
+> Status: **Fases 1, 2, 3 e 4A concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D,
+> Organograma, descoberta automática com classificador, alertas por Telegram e telão para TV). Faltam
+> TOTP, backup/restauração e atualização (Fase 4B). Veja
 > [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
 
 ## Como funciona
@@ -182,6 +183,14 @@ desses casos (detalhes em [`testes-rede/README.md`](testes-rede/README.md)).
 A demonstração (`./install.sh --demo`) traz um MikroTik, um switch SNMP e um gravador de 16
 canais **simulados**, com cerca de 40 descobertas pendentes; nada sai para a rede.
 
+**Alertas e telão na demonstração.** A demo semeia um switch pai com 14 equipamentos filhos, dois
+alertas no histórico (uma queda correlacionada de 14 afetados, fechada há 1 h 40 min, e uma câmera
+que caiu e voltou) e o telão `TV Portaria (demo)`. Além disso, **a cada 10 minutos, começando 90 s
+depois de subir**, o switch e os 14 filhos "caem" por 3 minutos: os filhos aparecem como
+inalcançáveis na Lista, na Teia e no Organograma e abrem os cartões de alerta ao vivo. Nada é
+enviado ao Telegram (**Enviar teste** responde 409 e o despachante não roda); os dados do `/parede` por
+HTTP respondem 404 até a chave "sem HTTPS" ser ligada.
+
 ## Teia 3D e Organograma
 
 Além da **Lista**, a tela principal tem duas abas visuais, que usam os mesmos dados ao vivo. Só o
@@ -219,6 +228,95 @@ playwright --with cryptography python ../web/tests/medir_fps.py --equipamentos 1
 usa um banco temporário e não entra no CI).
 
 **Sem WebGL.** Se o navegador não oferecer WebGL, a aba Teia mostra um aviso e leva ao Organograma.
+
+## Alertas e Telegram
+
+O Sentinela avisa quando um equipamento cai, volta ou fica instável, e quando uma fonte de
+descoberta falha. Os alertas aparecem na aba **Alertas** (linha do tempo, reconhecer, silêncios) e,
+se você quiser, no Telegram.
+
+**Como a queda vira alerta.** Quem cai junto com o equipamento-pai (switch, AP, gravador) nos 60 s
+seguintes vira **inalcançável** (elo partido, mesma cor do pausado) e entra no mesmo alerta, com uma
+mensagem só: "Switch Bloco B caiu às 14:32, 14 equipamentos afetados". Quedas sem pai comum no
+mesmo instante (30 s) também saem agrupadas. Quem cai e volta em menos de 2 minutos gera um alerta
+"caiu e voltou" (a mensagem já enviada é editada, não vem uma segunda). "Instável" só alerta classe
+crítica depois de 5 minutos; a fonte que falha 3 coletas seguidas gera um alerta de fonte. Os
+alertas são guardados por 90 dias.
+
+**Criar o bot do Telegram.**
+
+1. No Telegram, fale com `@BotFather`, envie `/newbot`, escolha nome e usuário e copie o **token**.
+2. Coloque o bot no grupo (ou abra uma conversa com ele e mande qualquer mensagem) e descubra o
+   **chat id**: abra `https://api.telegram.org/bot<TOKEN>/getUpdates` num navegador e procure
+   `"chat":{"id":...}` (grupos têm id negativo). Esse endereço é só para você, na sua máquina.
+3. Em **Configurações → Telegram**, cole o token e os chats (até 10) e clique **Salvar**; depois
+   **Enviar teste**. O token é cifrado no banco e nunca volta para a tela, para o log ou para a
+   auditoria.
+
+**Minimização de dados.** A mensagem leva só nome, classe, horário e duração. O **IP** só vai se
+você ligar "Incluir IP" (desligado por padrão). Nada de MAC, fabricante ou credencial.
+
+**Retentativas e limites.** Se o envio falhar, o Sentinela tenta de novo em 30 s e dobra o espaço
+até 30 min, desistindo em 24 h (o alerta fica `falhou`; o painel continua mostrando). Há teto de 20
+mensagens por minuto por chat; o excesso vira "e mais N alertas, veja no painel".
+
+**Sem Telegram, sem internet.** O Sentinela só fala com `api.telegram.org:443` (HTTPS com
+verificação normal de certificado) se houver token configurado; sem ele, nenhum pacote sai para a
+internet, nem consulta de nome. Esse é o único destino externo e passa pela mesma Guarda de rede.
+A prova de captura do CI cobre o Telegram e o telão.
+
+**Silêncio × manutenção.** Os dois exigem **fim** (no máximo 30 dias) e valem por equipamento ou
+por classe, com atalhos de 1 h, 4 h e "até amanhã 08:00" (no seu fuso), ou período personalizado.
+**Silêncio** só deixa de avisar: o alerta continua no painel, marcado como silenciado. **Manutenção**
+também **pausa a checagem** e cobre os filhos do equipamento; ao fim, retoma só o que ela mesma
+pausou (o que você pausou à mão continua pausado).
+
+**Só para testes e reversão.** `SENTINELA_CA_ADICIONAL` (caminho de um PEM dentro do contêiner; exige montar o arquivo) existe só para testes: em produção fica vazia. Desfazer a migração 0004 (downgrade) apaga alertas, silêncios e telões; as manutenções em andamento ficam pausadas (retome à mão) e o "Depende de" dos equipamentos permanece.
+
+**Fuso.** O banco guarda UTC; os textos (Telegram, telão, painel) e o atalho "até amanhã 08:00"
+usam `SENTINELA_FUSO` (padrão `America/Sao_Paulo`).
+
+## Telão (TV)
+
+A rota `/parede` mostra a Teia em tela cheia (com contadores e faixa de alertas) numa TV, sem
+login. A TV **só lê** nome, classe, estado e pai de cada equipamento: **nunca IP, MAC, fabricante
+ou latência**, e não tem nenhuma rota de escrita. O cartão de alerta na TV também sai sem IP; no
+painel, o cartão traz todos os dados.
+
+**Emparelhar.** Abra `/parede` na TV: ela mostra um código de 8 caracteres (por exemplo
+`K7MQ-2XDP`), válido por 10 minutos e de uso único. No painel, em **Configurações → Telões**,
+digite o código e dê um nome. A TV consulta a cada 5 s e entra sozinha; o token fica num cookie
+`HttpOnly`/`SameSite=Strict` (e `Secure` em HTTPS) e, no banco, só existe o hash.
+
+**Revogar.** Em **Telões**, **Revogar** derruba a TV na hora (a conexão em curso fecha). Para
+voltar, é preciso emparelhar de novo.
+
+**Modo HTTP (desligado por padrão).** TVs antigas muitas vezes recusam o certificado da CA local.
+Ligando "Permitir telão sem HTTPS" em **Configurações**, a porta HTTP responde só ao `/parede` (as
+demais telas continuam só em HTTPS), o cookie fica amarrado ao IP da TV e o canal não tem criptografia:
+use só em rede confiável. Com a chave desligada, a página carrega, mas as chamadas de dados do `/parede` por HTTP respondem 404.
+
+**HSTS prende a TV ao HTTPS.** Se a TV abrir o painel principal por HTTPS uma vez, ela guarda o
+HSTS e passa a recusar o HTTP daquele nome. Por isso a porta HTTP do `/parede` não envia HSTS; mas
+não abra o painel principal nessa TV. **Reserve o IP da TV no roteador** (DHCP fixo): no modo HTTP o
+vínculo é por IP.
+
+**Limites e avisos.**
+
+- Cada IP pode pedir até 10 códigos por hora e há no máximo 20 pedidos pendentes. Como a TV de cada
+  sala é um IP, cerca de 12 IPs da LAN pedindo código ao mesmo tempo podem segurar os 20
+  pendentes e **bloquear novos emparelhamentos** por alguns minutos (os códigos vencem em 10 min).
+- A Teia do telão roda no Chromium 63 do Tizen 5 com compatibilidade reduzida. Se o FPS ficar
+  abaixo de 30 por 10 s, a tela cai para o **Organograma**; sem conexão por 60 s, mostra "sem
+  conexão" e tenta de novo.
+- Uma TV em **standby** que não dispara `visibilitychange` fica no Organograma até a página ser
+  recarregada.
+- Aceite no hardware (não roda no CI): abrir `/parede` na Samsung UN65RU7100 (Tizen 5.0),
+  emparelhar e conferir se roda a Teia ou cai para o Organograma.
+
+**IP nas bolinhas e cartão de alerta.** No painel, cada bolinha da Teia e do Organograma mostra o IP
+do equipamento; o telão não. Quando um equipamento cai, o painel abre um cartão de alerta na
+tela com todos os dados; o telão abre um cartão reduzido, sem IP. O som vem desligado.
 
 ## Documentação
 

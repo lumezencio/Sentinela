@@ -4,13 +4,18 @@ Roda num container próprio (10.99.250.5) da rede de captura. Passos: login; dec
 10.99.250.0/27 (sem varredura) e 10.99.250.32/28 (com varredura); cria as fontes MikroTik
 (api-ssl), SNMP v2c e gravador Hikvision; testa as três, confia na impressão TLS do MikroTik,
 coleta as três; aprova 2 descobertas (um computador do ARP do MikroTik e uma câmera do
-gravador, que aprova o gravador junto); sonda 1; varre o /28. No fim grava em ``/saida``:
+gravador, que aprova o gravador junto); sonda 1; varre o /28; configura o Telegram (token e
+chat fictícios), cadastra 10.99.250.50 (ninguém responde) para cair e espera a mensagem de
+queda chegar ao Telegram falso (10.99.250.60); emparelha um telão e lê o snapshot do
+``/ws/parede``. No fim grava em ``/saida``:
 
 - ``arp_permitido.txt``: os IPs para os quais o Sentinela PODE ter emitido ARP request (spec
   §9.1): hosts das fontes cadastradas pelo admin, aprovados (exceto câmeras atrás do
   gravador, que nunca recebem socket), o sondado e o /28 varrido;
 - ``contato_exigido.txt``: os hosts das fontes, que precisam aparecer com unicast do
   Sentinela na captura (prova de que o pcap viu o trabalho real);
+- ``unicast_permitido.txt``: os únicos destinos de unicast IPv4 do Sentinela (a cena, os
+  simuladores, o equipamento que cai, o Telegram falso e a faixa varrida);
 - ``cena.json``: o resumo (contagens) para o relatório.
 
 A senha do admin vem de ``SENTINELA_CENA_SENHA`` (gerada pelo rodar.sh; nunca impressa).
@@ -24,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from websockets.sync.client import connect as ws_conectar
 
 from tests.descoberta.agente_snmp import COMUNIDADE
 from tests.descoberta.simulador_gravador import SENHA as SENHA_GRAVADOR
@@ -39,6 +45,14 @@ IP_APROVAR, IP_SONDAR = "10.99.250.20", "10.99.250.21"
 # descobertas esperadas depois das coletas (ARP, DHCP, vizinho, SNMP, gravador e canais)
 IPS_ESPERADOS = {"10.99.250.20", "10.99.250.21", "10.99.250.22", "10.99.250.23", IP_GRAVADOR}
 CANAIS_ESPERADOS = {1, 2}
+SUB_QUEDA = "10.99.250.48/29"  # sem varredura: só abriga o equipamento que cai
+IP_QUEDA, IP_TELEGRAM, IP_CENA = "10.99.250.50", "10.99.250.60", "10.99.250.5"
+NOME_QUEDA = "Servidor Falso"
+# token e chat fictícios (formato válido, sem valor nenhum)
+TOKEN_FALSO = "123456:" + "A" * 35
+CHAT_FALSO = "-1001"
+CA_TESTE = "/saida/certs-teste/ca.pem"
+ESPERA_TELEGRAM_S = 150
 
 
 def passo(texto: str) -> None:
@@ -93,6 +107,74 @@ def esperar(descricao: str, condicao: Any, limite_s: float) -> Any:
             return valor
         time.sleep(2)
     raise SystemExit(f"[cena] tempo esgotado: {descricao}")
+
+
+def telegram_falso() -> httpx.Client:
+    """Cliente do ``GET /_recebidas`` do Telegram falso: confere o certificado com a CA
+    descartável (api.telegram.org -> .60 pelo extra_hosts desta cena)."""
+    return httpx.Client(base_url="https://api.telegram.org", verify=CA_TESTE, timeout=10.0)
+
+
+def provar_telegram(api: Api) -> dict[str, Any]:
+    """Configura o Telegram, derruba um equipamento e espera a mensagem no Telegram falso."""
+    api.pedir("PATCH", "/config/telegram", 200, json={"token": TOKEN_FALSO, "chats": [CHAT_FALSO]})
+    api.pedir("POST", "/subredes", 201, json={"cidr": SUB_QUEDA})  # o .50 precisa de sub-rede
+    api.pedir(
+        "POST",
+        "/equipamentos",
+        201,
+        json={"nome": NOME_QUEDA, "ip": IP_QUEDA, "classe": "computador", "checagem": "icmp"},
+    )
+    passo(f"telegram configurado; {IP_QUEDA} cadastrado (ninguém responde) para cair")
+
+    def chegou() -> list[dict[str, Any]] | None:
+        with telegram_falso() as http:
+            recebidas: list[dict[str, Any]] = http.get("/_recebidas").json()
+        # outros aprovados (.20, câmeras) também caem: só interessa a queda do equipamento novo
+        return [m for m in recebidas if "caiu" in m["texto"] and NOME_QUEDA in m["texto"]] or None
+
+    mensagens = esperar("mensagem de queda no Telegram falso", chegou, ESPERA_TELEGRAM_S)
+    texto = mensagens[0]["texto"]
+    if not texto.startswith("🔴") or NOME_QUEDA not in texto or IP_QUEDA in texto:
+        raise SystemExit(f"[cena] a mensagem de queda não tem o formato esperado: {texto!r}")
+    passo(f"mensagem de queda recebida no Telegram falso ({len(mensagens)})")
+    return {"mensagens_de_queda": len(mensagens), "chat": mensagens[0]["chat_id"]}
+
+
+def _cookies_de(http: httpx.Client) -> str:
+    return "; ".join(f"{c.name}={c.value}" for c in http.cookies.jar)
+
+
+def provar_telao(api: Api) -> dict[str, Any]:
+    """Emparelha um telão (pedido, aprovação do admin, consulta) e lê o snapshot do WebSocket.
+    O núcleo é falado por HTTP direto: o telão sem HTTPS precisa da chave ligada."""
+    api.pedir("PATCH", "/config/paredes", 200, json={"permitir_http": True})
+    with httpx.Client(base_url=NUCLEO, timeout=30.0) as tv:
+        r = tv.post("/api/v1/parede/pedido")
+        if r.status_code != 201:
+            raise SystemExit(f"[cena] pedido do telão: {r.status_code}")
+        codigo = r.json()["codigo"]
+        if tv.get("/api/v1/parede/pedido").status_code != 202:
+            raise SystemExit("[cena] o pedido do telão deveria estar pendente")
+        api.pedir("POST", "/paredes/aprovar", 201, json={"codigo": codigo, "nome": "Telao da cena"})
+        r = tv.get("/api/v1/parede/pedido")
+        if r.status_code != 200 or r.json()["estado"] != "aprovado":
+            raise SystemExit(f"[cena] consulta do telão: {r.status_code}")
+        passo("telão emparelhado")
+        host = NUCLEO.removeprefix("http://")
+        with ws_conectar(
+            f"ws://{host}/ws/parede",
+            additional_headers={"Cookie": _cookies_de(tv), "Origin": f"http://{host}"},
+            open_timeout=20,
+        ) as ws:
+            snapshot = json.loads(ws.recv(timeout=20))
+    if snapshot.get("tipo") != "snapshot" or snapshot.get("nome") != "Telao da cena":
+        raise SystemExit("[cena] o /ws/parede não mandou o snapshot esperado")
+    for eq in snapshot["equipamentos"]:
+        if set(eq) != {"id", "nome", "classe", "estado", "pai_id"}:
+            raise SystemExit("[cena] o telão recebeu campo além dos permitidos")
+    passo(f"snapshot do /ws/parede: {len(snapshot['equipamentos'])} equipamentos")
+    return {"equipamentos": len(snapshot["equipamentos"]), "alertas": len(snapshot["alertas"])}
 
 
 def pendentes(api: Api) -> list[dict[str, Any]]:
@@ -216,22 +298,33 @@ def main() -> int:
 
     # deixa o monitoramento dos aprovados rodar alguns ciclos dentro da captura
     time.sleep(int(os.environ.get("SENTINELA_CENA_MONITOR_S", "40")))
+    telegram = provar_telegram(api)
+    telao = provar_telao(api)
     equipamentos = api.pedir("GET", "/equipamentos?limit=100", 200)["itens"]
     aprovados = sorted(e["ip"] for e in equipamentos if e["checagem"] != "gravador")
     camaras = [e for e in equipamentos if e["checagem"] == "gravador"]
-    permitidos = sorted({IP_ROUTEROS, IP_SNMP, IP_GRAVADOR, IP_SONDAR, *aprovados})
+    permitidos = sorted(
+        {IP_ROUTEROS, IP_SNMP, IP_GRAVADOR, IP_SONDAR, IP_QUEDA, IP_TELEGRAM, *aprovados}
+    )
     permitidos.append(SUB_VARREDURA)
     SAIDA.mkdir(parents=True, exist_ok=True)
     (SAIDA / "arp_permitido.txt").write_text(",".join(permitidos) + "\n", encoding="utf-8")
     # hosts das fontes: a captura TEM de mostrar unicast do Sentinela para cada um (senão o
     # pcap não viu o trabalho real e a ausência de broadcast não prova nada)
-    contato = ",".join((IP_ROUTEROS, IP_SNMP, IP_GRAVADOR))
+    contato = ",".join((IP_ROUTEROS, IP_SNMP, IP_GRAVADOR, IP_TELEGRAM))
     (SAIDA / "contato_exigido.txt").write_text(contato + "\n", encoding="utf-8")
+    # único unicast IPv4 aceito do Sentinela: quem a cena usa, o que cai e a faixa varrida
+    unicast = ",".join(
+        (IP_CENA, IP_ROUTEROS, IP_SNMP, IP_GRAVADOR, IP_QUEDA, IP_TELEGRAM, SUB_VARREDURA)
+    )
+    (SAIDA / "unicast_permitido.txt").write_text(unicast + "\n", encoding="utf-8")
     resumo = {
         "descobertas_pendentes_apos_coleta": len(fila),
         "aprovados_com_socket": aprovados,
         "cameras_atras_do_gravador": len(camaras),
         "sondado": IP_SONDAR,
+        "telegram": telegram,
+        "telao": telao,
         "varredura": {"cidr": SUB_VARREDURA, "ultimo_progresso_visto": progresso},
         "estados": {e["ip"]: e["estado"] for e in equipamentos},
     }

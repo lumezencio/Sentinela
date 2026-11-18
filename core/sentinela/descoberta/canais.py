@@ -5,8 +5,13 @@ nunca é contatada; o único socket é para o host do gravador, validado pela Gu
 fonte. Cada canal vira uma amostra ok/falha entregue a ``Agendador.aplicar_externo`` (mesma
 máquina de estados e histerese da Fase 1). Canal ausente da resposta conta como falha daquele
 filho. Se a leitura de um gravador falhar (erro, exceção ou tempo esgotado), **só** os filhos
-daquele gravador vão para ``desconhecido`` com causa "gravador sem resposta"
-(``forcar_desconhecido``); os demais gravadores seguem normalmente.
+daquele gravador vão para ``inalcancavel`` com causa ``"pai:<equipamento do gravador>"``
+(``forcar_inalcancavel``, Fase 4 §5.1); os demais gravadores seguem normalmente. Quando a
+leitura volta, os filhos são liberados (``desconhecido``) antes de receber as amostras, então
+o estado real aparece na mesma leitura. Enquanto o próprio equipamento do gravador está
+``offline``/``inalcancavel`` no agendador (ex.: ping falhando com o HTTP funcionando), a
+leitura boa não libera nem aplica nada: as câmeras ficam como estão até ele voltar (sem
+oscilar offline -> inalcançável -> liberada a cada leitura).
 
 Ritmo: o intervalo da classe ``camera`` (mínimo 15 s), relido a cada ciclo. Alvos passivos
 **não** têm a reconfirmação rápida de 5 s do agendador: uma câmera suspeita só é reavaliada
@@ -27,7 +32,7 @@ a cada ciclo: o estado nunca fica congelado no último valor lido.
 Certificado (spec §9.4, R7): se o gravador apresentar certificado não confiado ou diferente
 do confiado, a fonte é **suspensa** (nenhuma leitura até ``retomar``, chamado quando o admin
 confia de novo), ``fonte.ultimo_erro`` recebe o texto genérico e os filhos vão para
-``desconhecido`` com causa própria (não "gravador sem resposta").
+``desconhecido`` com causa própria (não ``inalcancavel``).
 
 Robustez: uma exceção inesperada num ciclo é registrada (texto genérico) e o laço segue;
 as leituras de um ciclo sempre terminam juntas (nenhuma fica órfã).
@@ -43,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.modelos import Classe, Equipamento, Fonte
 from sentinela.descoberta.fontes.base import CertificadoMudou, CertificadoNaoConfiado, ErroColeta
-from sentinela.monitor.agendador import Agendador
+from sentinela.monitor.agendador import CAIDOS, Agendador
 from sentinela.monitor.checagens import GRAVADOR
 from sentinela.monitor.estados import ResultadoChecagem
 from sentinela.monitor.limitador import Limitador
@@ -56,7 +61,6 @@ TIPOS_GRAVADOR = ("hikvision", "dahua", "simulada")
 CLASSE_CAMERA = "camera"
 INTERVALO_MIN_S = 15.0
 TIMEOUT_LEITURA_S = 15.0  # teto da leitura de um gravador (o cliente já tem 5 s por pedido)
-CAUSA_GRAVADOR_MUDO = "gravador sem resposta"
 CAUSA_CERTIFICADO_MUDOU = "certificado do gravador mudou"
 CAUSA_CERTIFICADO_NAO_CONFIADO = "certificado do gravador ainda não confiado"
 CAUSA_SEM_LEITURA = "sem leitura do gravador"
@@ -88,6 +92,7 @@ class LeitorCanais:
         self._relogio = relogio
         self._timeout = timeout_s
         self._filhos: dict[str, Filhos] = {}
+        self._gravador_de: dict[str, str] = {}  # fonte -> equipamento do gravador
         self._sem_leitura: list[str] = []  # câmeras passivas sem gravador lido
         self._intervalo = INTERVALO_MIN_S
         self._suspensas: dict[str, str] = {}  # fonte -> causa
@@ -145,7 +150,7 @@ class LeitorCanais:
                 )
                 linhas = (
                     await db.execute(
-                        select(Fonte.id, Equipamento.id, Equipamento.canal)
+                        select(Fonte.id, Fonte.equipamento_id, Equipamento.id, Equipamento.canal)
                         .join(Equipamento, Equipamento.pai_id == Fonte.equipamento_id)
                         .where(
                             Fonte.tipo.in_(TIPOS_GRAVADOR),
@@ -173,10 +178,14 @@ class LeitorCanais:
             log.exception("falha ao reler gravadores e câmeras; mantendo o mapa anterior")
             return
         filhos: dict[str, Filhos] = {}
-        for fonte_id, equipamento_id, canal in linhas:
-            if canal is not None:  # já filtrado na consulta; aqui só estreita o tipo
+        gravador_de: dict[str, str] = {}
+        for fonte_id, gravador_id, equipamento_id, canal in linhas:
+            # já filtrados na consulta (junção pelo pai); aqui só estreita o tipo
+            if canal is not None and gravador_id is not None:
                 filhos.setdefault(fonte_id, []).append((equipamento_id, canal))
+                gravador_de[fonte_id] = gravador_id
         self._filhos = filhos
+        self._gravador_de = gravador_de
         cobertas = {eq for lista in filhos.values() for eq, _ in lista}
         self._sem_leitura = [eq for eq in passivas if eq not in cobertas]
         self._intervalo = max(INTERVALO_MIN_S, float(intervalo or 0))
@@ -199,12 +208,17 @@ class LeitorCanais:
             return
         except (ErroColeta, TimeoutError):
             log.warning("leitura de canais sem resposta (fonte %s)", fonte_id)
-            self._agendador.forcar_desconhecido([eq for eq, _ in filhos], CAUSA_GRAVADOR_MUDO)
+            self._sem_resposta(fonte_id, filhos)
             return
         except Exception as e:  # noqa: BLE001 - um gravador com defeito não derruba os outros
             log.warning("leitura de canais falhou (fonte %s): %s", fonte_id, type(e).__name__)
-            self._agendador.forcar_desconhecido([eq for eq, _ in filhos], CAUSA_GRAVADOR_MUDO)
+            self._sem_resposta(fonte_id, filhos)
             return
+        gravador_id = self._gravador_de.get(fonte_id)
+        if gravador_id is not None and self._agendador.estado_de(gravador_id) in CAIDOS:
+            return  # a liberação vem do gravador voltando (correlação no agendador)
+        # o gravador respondeu: inalcançáveis voltam a desconhecido e recebem a amostra já
+        self._agendador.liberar_inalcancavel([eq for eq, _ in filhos])
         for equipamento_id, canal in filhos:
             online = estados.get(canal)
             if online:
@@ -213,6 +227,12 @@ class LeitorCanais:
                 erro = ERRO_CANAL_AUSENTE if online is None else ERRO_CANAL_OFFLINE
                 r = ResultadoChecagem(ok=False, latencia_ms=None, erro=erro)
             self._agendador.aplicar_externo(equipamento_id, r)
+
+    def _sem_resposta(self, fonte_id: str, filhos: Filhos) -> None:
+        """Gravador sem resposta: as câmeras ficam ``inalcancavel`` pelo gravador."""
+        gravador_id = self._gravador_de.get(fonte_id)
+        if gravador_id is not None:  # sempre presente para fonte com filhos; defensivo
+            self._agendador.forcar_inalcancavel([eq for eq, _ in filhos], gravador_id)
 
     async def _registrar_erro(self, fonte_id: str, erro: str) -> None:
         """Grava o texto genérico em ``fonte.ultimo_erro`` (falha do banco só vai ao log)."""

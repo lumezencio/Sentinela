@@ -33,3 +33,22 @@ async def test_assinante_lento_nao_trava_publicador() -> None:
 async def _pegar(fluxo, n: int):  # type: ignore[no-untyped-def]
     for _ in range(n):
         yield await asyncio.wait_for(anext(fluxo), 1)
+
+
+async def test_assinar_com_tamanho_proprio() -> None:
+    bar = Barramento(tamanho_fila=2)
+    async with bar.assinar(tamanho=5) as grande, bar.assinar() as padrao:
+        for i in range(5):
+            bar.publicar(Mensagem("n", {"i": i}))
+        g = [m.dados["i"] async for m in _pegar(grande, 5)]
+        p = [m.dados["i"] async for m in _pegar(padrao, 2)]
+    assert g == [0, 1, 2, 3, 4]  # nada descartado
+    assert p == [3, 4]  # a fila padrão (2) descartou as mais antigas
+
+
+async def test_assinar_tamanho_zero_nao_cai_no_padrao() -> None:
+    bar = Barramento(tamanho_fila=2)
+    async with bar.assinar(tamanho=0) as fluxo:  # 0 = sem limite (asyncio.Queue)
+        for i in range(5):
+            bar.publicar(Mensagem("n", {"i": i}))
+        assert [m.dados["i"] async for m in _pegar(fluxo, 5)] == [0, 1, 2, 3, 4]

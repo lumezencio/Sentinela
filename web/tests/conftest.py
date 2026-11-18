@@ -19,7 +19,10 @@ em containers de outra máquina ou de outro projeto).
 import asyncio
 import datetime as dt
 import ipaddress
+import itertools
+import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -33,6 +36,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+_EQUIPAMENTO_DO_ALERTA = itertools.count()
 RAIZ = Path(__file__).resolve().parents[2]
 WEB_SRC = RAIZ / "web" / "src"
 # mesma política que o proxy de produção vai enviar: violação vira erro no console
@@ -56,6 +60,8 @@ class Alvo:
     # usuário com papel "visualizador" (opcional contra o compose)
     login_leitor: str = ""
     senha_leitor: str = ""
+    # banco do core local do smoke ("" contra o compose: lá não se mexe no banco)
+    banco_url: str = ""
 
 
 def _porta_livre() -> int:
@@ -140,6 +146,290 @@ async def _preparar_banco(
                         ultima_vez=agora,
                     )
                 )
+            await db.commit()
+    finally:
+        await motor.dispose()
+
+
+async def _equipamentos_online(db: Any, quantos: int) -> list[Any]:
+    """Os ``quantos`` primeiros equipamentos online (por nome), esperando a demo terminar a
+    primeira rodada de checagens: uma transição para online depois do alerta semeado o
+    fecharia (o agrupador entende como "voltou")."""
+    from sqlalchemy import select
+
+    from sentinela.db.modelos import Equipamento
+
+    limite = time.monotonic() + 60
+    while True:
+        eqs = list(
+            (
+                await db.execute(
+                    select(Equipamento)
+                    .where(Equipamento.estado == "online", Equipamento.pausado.is_(False))
+                    .order_by(Equipamento.nome)
+                    .limit(quantos)
+                )
+            ).scalars()
+        )
+        if len(eqs) >= quantos:
+            return eqs
+        if time.monotonic() > limite:
+            raise RuntimeError("a demo não deixou equipamentos online a tempo")
+        await asyncio.sleep(0.5)
+        db.expire_all()
+
+
+async def semear_alertas(
+    banco_url: str, nome_longo: str = "", nome_extremo: str = ""
+) -> dict[str, dict[str, Any]]:
+    """Insere seis alertas fictícios sobre equipamentos reais do demo (já semeado).
+
+    ``aberto`` (3 afetados, enviado), ``instavel`` (reconhecido), ``silenciado``, ``fechado``
+    (caiu e voltou), ``pendente`` e ``falhou``. Devolve
+    ``{chave: {"id", "equipamento_id", "texto"}}`` com o texto que o painel mostra.
+    Capturas de tela: ``nome_longo`` renomeia o equipamento do alerta ``aberto`` e
+    ``nome_extremo`` (300 caracteres) o do ``falhou``, o pior caso de texto.
+    """
+    from sqlalchemy import select, update
+
+    from sentinela.db.modelos import Alerta, Equipamento, Usuario
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            eqs = await _equipamentos_online(db, 12)
+            admin = await db.scalar(select(Usuario.id).where(Usuario.papel == "admin"))
+            if nome_longo:
+                await db.execute(
+                    update(Equipamento).where(Equipamento.id == eqs[0].id).values(nome=nome_longo)
+                )
+                eqs[0].nome = nome_longo
+            if nome_extremo:
+                await db.execute(
+                    update(Equipamento).where(Equipamento.id == eqs[8].id).values(nome=nome_extremo)
+                )
+                eqs[8].nome = nome_extremo
+            agora = dt.datetime.now(dt.UTC)
+
+            def min_atras(n: int) -> dt.datetime:
+                return agora - dt.timedelta(minutes=n)
+
+            plano: list[tuple[str, Alerta, str]] = [
+                (
+                    "aberto",
+                    Alerta(
+                        tipo="queda",
+                        equipamento_id=eqs[0].id,
+                        quedas=[eqs[0].id],
+                        afetados=[e.id for e in eqs[1:4]],
+                        aberto_em=min_atras(12),
+                        envio="enviado",
+                    ),
+                    f"{eqs[0].nome} caiu · 3 afetados",
+                ),
+                (
+                    "instavel",
+                    Alerta(
+                        tipo="instavel",
+                        equipamento_id=eqs[4].id,
+                        aberto_em=min_atras(20),
+                        reconhecido_por=admin,
+                        reconhecido_em=min_atras(5),
+                        envio="enviado",
+                    ),
+                    f"{eqs[4].nome} instável",
+                ),
+                (
+                    "silenciado",
+                    Alerta(
+                        tipo="queda",
+                        equipamento_id=eqs[5].id,
+                        quedas=[eqs[5].id],
+                        aberto_em=min_atras(30),
+                        silenciado=True,
+                        envio="nao_aplica",
+                    ),
+                    f"{eqs[5].nome} caiu",
+                ),
+                (
+                    "fechado",
+                    Alerta(
+                        tipo="queda",
+                        equipamento_id=eqs[6].id,
+                        quedas=[eqs[6].id],
+                        voltaram=[eqs[6].id],
+                        aberto_em=min_atras(52),
+                        fechado_em=min_atras(50),
+                        breve=True,
+                        envio="enviado",
+                    ),
+                    f"{eqs[6].nome} caiu e voltou (2 min)",
+                ),
+                (
+                    "pendente",
+                    Alerta(
+                        tipo="queda",
+                        equipamento_id=eqs[7].id,
+                        quedas=[eqs[7].id],
+                        aberto_em=min_atras(2),
+                        envio="pendente",
+                    ),
+                    f"{eqs[7].nome} caiu",
+                ),
+                (
+                    "falhou",
+                    Alerta(
+                        tipo="queda",
+                        equipamento_id=eqs[8].id,
+                        quedas=[eqs[8].id],
+                        aberto_em=min_atras(3),
+                        envio="falhou",
+                    ),
+                    f"{eqs[8].nome} caiu",
+                ),
+            ]
+            for _, alerta, _ in plano:
+                db.add(alerta)
+            await db.flush()  # ids antes do commit (depois dele os atributos expiram)
+            saida = {
+                chave: {"id": a.id, "equipamento_id": a.equipamento_id, "texto": texto}
+                for chave, a, texto in plano
+            }
+            await db.commit()
+            return saida
+    finally:
+        await motor.dispose()
+
+
+async def inserir_alerta(
+    banco_url: str, indice: int, renomear: str = "", **campos: Any
+) -> dict[str, Any]:
+    """Um alerta de queda aberto sobre o ``indice``-ésimo equipamento livre do demo (a partir
+    do 13º, longe dos de ``semear_alertas``); ``campos`` sobrescreve as colunas. ``renomear``
+    troca o nome do equipamento (texto hostil); o nome original volta em ``nome_original``."""
+    from sentinela.db.modelos import Alerta
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            eq = (await _equipamentos_online(db, 60))[12 + indice]
+            padrao: dict[str, Any] = {
+                "tipo": "queda",
+                "equipamento_id": eq.id,
+                "quedas": [eq.id],
+                "aberto_em": dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1),
+                "envio": "pendente",
+            }
+            nome_original = eq.nome
+            if renomear:
+                eq.nome = renomear
+            alerta = Alerta(**{**padrao, **campos})
+            db.add(alerta)
+            await db.flush()
+            saida = {
+                "id": alerta.id,
+                "equipamento_id": eq.id,
+                "texto": f"{eq.nome} caiu",
+                "nome_original": nome_original,
+            }
+            await db.commit()
+            return saida
+    finally:
+        await motor.dispose()
+
+
+NOME_60 = "Switch de distribuição do bloco administrativo, sala de rede"  # 60 caracteres
+
+
+async def semear_cartoes(banco_url: str) -> dict[str, Any]:
+    """Alertas para as capturas dos cartões: uma queda de grupo (principal de 60 caracteres e
+    14 afetados, um deles de nome comprido), uma instabilidade e uma queda simples. Devolve
+    ``{chave: id}``. Só no banco do core local (nunca no compose)."""
+    from sqlalchemy import update
+
+    from sentinela.db.modelos import Alerta, Equipamento
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            eqs = await _equipamentos_online(db, 60)
+            principal, afetados = eqs[40], eqs[41:55]
+            await db.execute(
+                update(Equipamento).where(Equipamento.id == principal.id).values(nome=NOME_60)
+            )
+            await db.execute(
+                update(Equipamento)
+                .where(Equipamento.id == afetados[3].id)
+                .values(nome="Câmera do corredor central do prédio anexo, canal 14, lado leste")
+            )
+            agora = dt.datetime.now(dt.UTC)
+            grupo = Alerta(
+                tipo="queda",
+                equipamento_id=principal.id,
+                quedas=[principal.id],
+                afetados=[e.id for e in afetados],
+                aberto_em=agora - dt.timedelta(minutes=4),
+                envio="enviado",
+            )
+            instavel = Alerta(
+                tipo="instavel",
+                equipamento_id=eqs[55].id,
+                aberto_em=agora - dt.timedelta(minutes=9),
+                envio="enviado",
+            )
+            simples = Alerta(
+                tipo="queda",
+                equipamento_id=eqs[56].id,
+                quedas=[eqs[56].id],
+                aberto_em=agora - dt.timedelta(minutes=1),
+                envio="pendente",
+            )
+            db.add_all([grupo, instavel, simples])
+            await db.flush()
+            saida = {"grupo": grupo.id, "instavel": instavel.id, "simples": simples.id}
+            await db.commit()
+            return saida
+    finally:
+        await motor.dispose()
+
+
+class PonteWs:
+    """Rota do WebSocket da página: repassa tudo ao servidor e deixa o teste injetar mensagens
+    (o servidor não é tocado). Instale antes de ``page.goto``."""
+
+    def __init__(self, page: Any, caminho: str = r".*/ws$") -> None:
+        self.rotas: list[Any] = []
+
+        def ao_ws(ws: Any) -> None:
+            servidor = ws.connect_to_server()
+            ws.on_message(lambda m: servidor.send(m))
+            servidor.on_message(lambda m: ws.send(m))
+            self.rotas.append(ws)
+
+        page.route_web_socket(re.compile(caminho), ao_ws)
+
+    def injetar(self, mensagem: dict[str, Any]) -> None:
+        assert self.rotas, "o navegador ainda não abriu o WebSocket"
+        self.rotas[-1].send(json.dumps(mensagem))
+
+
+async def apagar_alertas(
+    banco_url: str, ids: list[int], nomes: dict[str, str] | None = None
+) -> None:
+    from sqlalchemy import delete, update
+
+    from sentinela.db.modelos import Alerta, Equipamento
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            await db.execute(delete(Alerta).where(Alerta.id.in_(ids)))
+            for eid, nome in (nomes or {}).items():  # devolve o nome trocado por ``renomear``
+                await db.execute(update(Equipamento).where(Equipamento.id == eid).values(nome=nome))
             await db.commit()
     finally:
         await motor.dispose()
@@ -294,7 +584,13 @@ def alvo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]:
     servidor.levantar()
     try:
         yield Alvo(
-            f"https://127.0.0.1:{servidor.porta}", login, senha, servidor, leitor[0], leitor[1]
+            f"https://127.0.0.1:{servidor.porta}",
+            login,
+            senha,
+            servidor,
+            leitor[0],
+            leitor[1],
+            banco_url,
         )
     finally:
         servidor.derrubar()
@@ -316,6 +612,37 @@ def alvo_fila_grande(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]
         yield Alvo(f"https://127.0.0.1:{servidor.porta}", login, senha, servidor)
     finally:
         servidor.derrubar()
+
+
+@pytest.fixture(scope="session")
+def alertas_semeados(alvo: Alvo) -> dict[str, dict[str, Any]]:
+    """Alertas fictícios no banco do core local (o demo ainda não os semeia). Contra o
+    compose não se mexe no banco: os testes que dependem deles são pulados."""
+    if not alvo.banco_url:
+        pytest.skip("alertas semeados só com o core local do smoke")
+    saida: dict[str, dict[str, Any]] = {}
+    _em_thread(lambda: saida.update(asyncio.run(semear_alertas(alvo.banco_url))))
+    return saida
+
+
+@pytest.fixture
+def novo_alerta(alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]) -> Iterator[Any]:
+    """Fábrica de alertas descartáveis (os testes que mudam o alerta não mexem nos semeados)."""
+    criados: list[int] = []
+    renomeados: dict[str, str] = {}
+
+    def criar(**campos: Any) -> dict[str, Any]:
+        saida: dict[str, Any] = {}
+        n = next(_EQUIPAMENTO_DO_ALERTA)  # um equipamento diferente a cada alerta
+        _em_thread(lambda: saida.update(asyncio.run(inserir_alerta(alvo.banco_url, n, **campos))))
+        criados.append(saida["id"])
+        if campos.get("renomear"):
+            renomeados[saida["equipamento_id"]] = saida["nome_original"]
+        return saida
+
+    yield criar
+    if criados:
+        _em_thread(lambda: asyncio.run(apagar_alertas(alvo.banco_url, criados, renomeados)))
 
 
 @pytest.fixture(scope="session")

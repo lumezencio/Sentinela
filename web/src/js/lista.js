@@ -2,16 +2,19 @@
 // filtro, ordenação, paginação e contadores. 300–2000 itens cabem folgados aqui; só a
 // página visível (50 linhas) vira objeto reativo.
 
+import { motivoInalcancavel, vinculoDoGravador } from "./dependencia.js";
+
 export const POR_PAGINA = 50;
 
 /** Rótulo, ícone e peso (gravidade, para ordenar) de cada estado. */
 export const ESTADOS = {
-  online: { rotulo: "Online", icone: "i-online", peso: 4 },
-  suspeito: { rotulo: "Online", icone: "i-online", peso: 4, dica: "verificando" },
-  instavel: { rotulo: "Instável", icone: "i-instavel", peso: 1 },
+  online: { rotulo: "Online", icone: "i-online", peso: 5 },
+  suspeito: { rotulo: "Online", icone: "i-online", peso: 5, dica: "verificando" },
+  instavel: { rotulo: "Instável", icone: "i-instavel", peso: 2 },
   offline: { rotulo: "Offline", icone: "i-offline", peso: 0 },
-  pausado: { rotulo: "Pausado", icone: "i-pausado", peso: 3 },
-  desconhecido: { rotulo: "Aguardando", icone: "i-desconhecido", peso: 2 },
+  inalcancavel: { rotulo: "Inalcançável", icone: "i-inalcancavel", peso: 1 },
+  pausado: { rotulo: "Pausado", icone: "i-pausado", peso: 4 },
+  desconhecido: { rotulo: "Aguardando", icone: "i-desconhecido", peso: 3 },
 };
 
 /** Grupo do contador/filtro: "suspeito" conta como online (§9.2: nunca vermelho). */
@@ -31,6 +34,34 @@ function ipNumerico(ip) {
   const partes = String(ip).split(".");
   if (partes.length !== 4) return Number.MAX_SAFE_INTEGER;
   return partes.reduce((acc, p) => acc * 256 + (Number.parseInt(p, 10) || 0), 0);
+}
+
+// controle (C0/C1) e formatação invisível (bidi, largura zero, BOM); sem \p{...}: o bundle do
+// telão (Chromium 63) também carrega este módulo
+const CONTROLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+const IP_MAX = 45;
+
+/**
+ * Texto da rede para a tela (única sanitização do front): sem controle nem formatação
+ * invisível (bidi como U+202E, largura zero, BOM) e, com `max`, no máximo `max` caracteres.
+ * Só vai à tela por textContent/x-text.
+ */
+export function limparTexto(texto, max) {
+  if (texto === null || texto === undefined) return "";
+  const limpo = String(texto).replace(CONTROLE, "");
+  return max === undefined ? limpo : limpo.slice(0, max);
+}
+ // o mais longo IPv6 (com IPv4 embutido) tem 45 caracteres
+
+/**
+ * IP para rótulo (Teia e Organograma do painel): o texto que a API mandou, sem caracteres de
+ * controle/formatação; não-string, vazio ou longo demais para ser IP vira "" (nunca inventa
+ * nem corta). Só vai à tela como texto (canvas ou textContent/x-text).
+ */
+export function textoDoIp(ip) {
+  if (typeof ip !== "string") return "";
+  const texto = limparTexto(ip).trim();
+  return texto.length > IP_MAX ? "" : texto;
 }
 
 export function criarStore() {
@@ -61,9 +92,11 @@ export function prepararItem(e) {
     estado: e.estado,
     desde: e.desde,
     latencia_ms: e.latencia_ms ?? null,
+    ultima_latencia_ms: e.latencia_ms ?? null, // sobrevive à queda (o cartão de alerta a mostra)
     checagem: e.checagem || "icmp",
     porta: e.porta ?? null,
-    pai_id: typeof e.pai_id === "string" ? e.pai_id : null, // câmera atrás de gravador (Fase 3)
+    pai_id: typeof e.pai_id === "string" ? e.pai_id : null, // "Depende de" / gravador da câmera
+    causa: typeof e.causa === "string" ? e.causa : null, // "pai:<id>" quando inalcançável
     canal: Number.isInteger(e.canal) ? e.canal : null,
     _busca: normalizar(`${e.nome} ${e.ip}`),
     _ip: ipNumerico(e.ip),
@@ -76,7 +109,10 @@ export function aplicarEstado(store, msg) {
   if (!item) return false;
   item.estado = msg.estado;
   item.desde = msg.desde;
-  if (msg.estado === "offline" || msg.estado === "pausado") item.latencia_ms = null;
+  item.causa = typeof msg.causa === "string" ? msg.causa : null;
+  if (msg.estado === "offline" || msg.estado === "pausado" || msg.estado === "inalcancavel") {
+    item.latencia_ms = null;
+  }
   return true;
 }
 
@@ -91,13 +127,18 @@ export function aplicarEquipamento(store, msg) {
   if (msg.acao !== "criado" && msg.acao !== "atualizado") return false;
   const e = msg.equipamento;
   if (!e || typeof e.id !== "string" || typeof e.nome !== "string") return false;
-  store.itens.set(e.id, prepararItem(e));
+  const anterior = store.itens.get(e.id);
+  const novo = prepararItem(e);
+  // a linha do WS não traz a causa: quem continua inalcançável continua com ela
+  if (novo.causa === null && anterior && anterior.estado === novo.estado) novo.causa = anterior.causa;
+  if (novo.ultima_latencia_ms === null && anterior) novo.ultima_latencia_ms = anterior.ultima_latencia_ms ?? null;
+  store.itens.set(e.id, novo);
   return true;
 }
 
 /** "Atrás do gravador NVR A, canal 3" para câmera de gravador; "" para os demais. */
 export function atrasDoGravador(item, store) {
-  if (!item || !item.pai_id) return "";
+  if (!item || !item.pai_id || !vinculoDoGravador(item)) return "";
   const pai = store.itens.get(item.pai_id);
   const canal = item.canal !== null && item.canal !== undefined ? `, canal ${item.canal}` : "";
   return pai ? `Atrás do gravador ${pai.nome}${canal}` : `Atrás do gravador${canal}`;
@@ -106,12 +147,15 @@ export function atrasDoGravador(item, store) {
 export function aplicarLatencias(store, lote) {
   for (const par of lote || []) {
     const item = store.itens.get(par[0]);
-    if (item) item.latencia_ms = par[1];
+    if (item) {
+      item.latencia_ms = par[1];
+      if (typeof par[1] === "number") item.ultima_latencia_ms = par[1];
+    }
   }
 }
 
 export function contar(store) {
-  const c = { total: 0, online: 0, instavel: 0, offline: 0, pausado: 0, aguardando: 0 };
+  const c = { total: 0, online: 0, instavel: 0, offline: 0, inalcancavel: 0, pausado: 0, aguardando: 0 };
   for (const item of store.itens.values()) {
     c.total += 1;
     c[grupoDe(item.estado)] += 1;
@@ -155,7 +199,22 @@ export function paginar(lista, pagina) {
   return { itens: lista.slice(inicio, inicio + POR_PAGINA), pagina: atual, paginas };
 }
 
-const relativo = new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" });
+// Criado só no 1º uso: Intl.RelativeTimeFormat não existe no Chromium 63 (TV Tizen 5.0) e,
+// no topo do módulo, derrubaria o bundle do telão inteiro antes de qualquer coisa.
+let relativo;
+const UNIDADES = { minute: ["minuto", "minutos"], hour: ["hora", "horas"], day: ["dia", "dias"] };
+
+function formatarRelativo(n, unidade) {
+  if (relativo === undefined) {
+    relativo = typeof Intl.RelativeTimeFormat === "function"
+      ? new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" })
+      : null;
+  }
+  if (relativo) return relativo.format(n, unidade);
+  const abs = Math.abs(n);
+  const texto = `${abs} ${UNIDADES[unidade][abs === 1 ? 0 : 1]}`;
+  return n < 0 ? `há ${texto}` : `em ${texto}`;
+}
 
 export function haQuanto(iso, agora = Date.now()) {
   const t = Date.parse(iso);
@@ -163,9 +222,9 @@ export function haQuanto(iso, agora = Date.now()) {
   const s = Math.round((t - agora) / 1000);
   const abs = Math.abs(s);
   if (abs < 45) return "agora";
-  if (abs < 3600) return relativo.format(Math.round(s / 60), "minute");
-  if (abs < 86400) return relativo.format(Math.round(s / 3600), "hour");
-  return relativo.format(Math.round(s / 86400), "day");
+  if (abs < 3600) return formatarRelativo(Math.round(s / 60), "minute");
+  if (abs < 86400) return formatarRelativo(Math.round(s / 3600), "hour");
+  return formatarRelativo(Math.round(s / 86400), "day");
 }
 
 export function formatarLatencia(ms) {
@@ -198,5 +257,6 @@ export function linhaDeTela(item, store, agora) {
     latencia: formatarLatencia(item.latencia_ms),
     checagem: rotuloChecagem(item.checagem, item.porta),
     atras: atrasDoGravador(item, store),
+    motivo: motivoInalcancavel(item, store),
   };
 }

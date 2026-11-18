@@ -22,6 +22,7 @@ from sentinela.api.esquemas_equipamentos import (
 from sentinela.db.modelos import Classe, Equipamento, Evento, Usuario
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.checagens import GRAVADOR
+from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de, registrar_no_agendador
 from sentinela.rede.guarda import Guarda
 
@@ -61,6 +62,22 @@ async def checar_unicos(
         mesmo_mac = select(Equipamento.id).where(Equipamento.mac == mac, Equipamento.id != ignorar)
         if await db.scalar(mesmo_mac) is not None:
             raise erro(status.HTTP_409_CONFLICT, comum.MSG_MAC_DUPLICADO)
+
+
+async def _revalidar_pai(db: AsyncSession, eq: Equipamento) -> None:
+    """Revalida ``eq.pai_id`` depois do flush, dentro da mesma transação.
+
+    O flush abre a transação de escrita (o SQLite serializa escritores): uma edição
+    concorrente que gravou entre a primeira validação e esta já está visível, e nenhuma
+    outra grava antes do nosso commit. Assim A->B e B->A simultâneos não formam ciclo.
+    """
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise erro(status.HTTP_409_CONFLICT, "Conflito com outro equipamento.") from None
+    if eq.pai_id is not None:
+        await comum.validar_pai(db, eq.id, eq.pai_id)
 
 
 async def _commit(db: AsyncSession) -> None:
@@ -115,6 +132,8 @@ async def criar(
     classe = await comum.classe_por_chave(db, entrada.classe)
     ip = comum.validar_destino_http(_guarda(request), entrada.ip, entrada.porta, entrada.checagem)
     await checar_unicos(db, ip, entrada.mac, None)
+    if entrada.pai_id is not None:
+        await comum.validar_pai(db, None, entrada.pai_id)
     agora = agora_utc()
     eq = Equipamento(
         id=str(uuid.uuid4()),
@@ -129,9 +148,12 @@ async def criar(
         estado_desde=agora,
         pausado=False,
         criado_em=agora,
+        pai_id=entrada.pai_id,
     )
     db.add(eq)
     auditar(db, request, admin, "equipamento.criar", eq.id, depois=retrato(eq, classe.slug))
+    if eq.pai_id is not None:
+        await _revalidar_pai(db, eq)
     await _commit(db)
     await registrar_no_agendador(_agendador(request), db, eq, classe, novo=True)
     return EquipamentoSaida.de(eq, classe.slug)
@@ -154,10 +176,18 @@ async def editar(
         # só revalida o destino se ele mudou: renomear um pausado fora das sub-redes é permitido
         ip = comum.validar_destino_http(_guarda(request), ip, porta, checagem)
     await checar_unicos(db, ip, mac, eq.id, checagem)
+    if "pai_id" in dados:
+        if eq.checagem == GRAVADOR:  # a descoberta reescreve esse vínculo
+            raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, comum.MSG_PAI_GRAVADOR)
+        if dados["pai_id"] is not None:
+            await comum.validar_pai(db, eq.id, dados["pai_id"])
+        eq.pai_id = dados["pai_id"]
     eq.ip, eq.checagem, eq.porta, eq.mac, eq.classe_id = ip, checagem, porta, mac, classe.id
     if dados.get("nome") is not None:
         eq.nome = dados["nome"]
     auditar(db, request, admin, "equipamento.editar", eq.id, antes, retrato(eq, classe.slug))
+    if dados.get("pai_id") is not None:
+        await _revalidar_pai(db, eq)
     await _commit(db)
     await registrar_no_agendador(_agendador(request), db, eq, classe, novo=False)
     return EquipamentoSaida.de(eq, classe.slug)
@@ -186,6 +216,22 @@ async def pausar(id: IdEquip, request: Request, db: SessaoDB, admin: Admin) -> E
             agendador.pausar(eq.id, causa=comum.CAUSA_MANUAL)
             await agendador.aguardar_gravacoes()
             await db.refresh(eq)
+    elif await comum.ultima_causa_de_pausa(db, eq.id) != comum.CAUSA_MANUAL:
+        # já pausado por outra causa (ex.: manutenção): a pausa manual passa a valer e
+        # sobrevive ao fim da outra causa
+        antes = retrato(eq, classe.slug)
+        db.add(
+            Evento(
+                equipamento_id=eq.id,
+                de=eq.estado,
+                para=Estado.PAUSADO.value,
+                em=agora_utc(),
+                duracao_s=0.0,
+                causa=comum.CAUSA_MANUAL,
+            )
+        )
+        auditar(db, request, admin, "equipamento.pausar", eq.id, antes, retrato(eq, classe.slug))
+        await db.commit()
     return EquipamentoSaida.de(eq, classe.slug)
 
 

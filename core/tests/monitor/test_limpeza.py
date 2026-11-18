@@ -8,7 +8,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.base import Base
-from sentinela.db.modelos import Amostra, Classe, Equipamento, Evento, Sessao, Usuario
+from sentinela.db.modelos import (
+    Alerta,
+    Amostra,
+    Classe,
+    Equipamento,
+    Evento,
+    Sessao,
+    Silencio,
+    Usuario,
+)
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.monitor.limpeza import limpar
@@ -88,7 +97,7 @@ async def test_limpar_aplica_retencao(sessoes: async_sessionmaker[AsyncSession])
         assert dias == [10, 364]
         assert list((await s.execute(select(Sessao.jti))).scalars()) == ["valida"]
     # idempotente
-    assert await limpar(sessoes, AGORA) == type(r)(0, 0, 0)
+    assert await limpar(sessoes, AGORA) == type(r)(0, 0, 0, 0, 0)
 
 
 async def test_limpar_periodicamente_ao_subir_e_uma_vez_por_dia(
@@ -148,3 +157,58 @@ async def test_falha_na_limpeza_nao_para_o_laco(
     finally:
         tarefa.cancel()
         await asyncio.gather(tarefa, return_exceptions=True)
+
+
+async def test_limpeza_apaga_alertas_fechados_ha_mais_de_90_dias(
+    sessoes: async_sessionmaker[AsyncSession],
+) -> None:
+    async with sessoes() as s:
+        for dias in (89, 91):  # fechados
+            s.add(
+                Alerta(
+                    tipo="queda",
+                    aberto_em=AGORA - timedelta(days=dias + 1),
+                    fechado_em=AGORA - timedelta(days=dias),
+                )
+            )
+        s.add(Alerta(tipo="queda", aberto_em=AGORA - timedelta(days=400)))  # aberto: nunca
+        await s.commit()
+    r = await limpar(sessoes, AGORA)
+    assert r.alertas == 1
+    async with sessoes() as s:
+        restantes = list((await s.execute(select(Alerta.fechado_em))).scalars())
+    assert len(restantes) == 2
+    assert None in restantes
+
+
+async def test_limpeza_apaga_silencios_encerrados_ou_vencidos_ha_mais_de_90_dias(
+    sessoes: async_sessionmaker[AsyncSession],
+) -> None:
+    async with sessoes() as s:
+        cid = (await s.execute(select(Classe.id).limit(1))).scalar_one()
+
+        def sil(inicio_dias: int, fim_dias: int, encerrado_dias: int | None = None) -> Silencio:
+            return Silencio(
+                tipo="silencio",
+                alvo_tipo="classe",
+                classe_id=cid,
+                inicio=AGORA - timedelta(days=inicio_dias),
+                fim=AGORA - timedelta(days=fim_dias),
+                encerrado_em=None
+                if encerrado_dias is None
+                else AGORA - timedelta(days=encerrado_dias),
+            )
+
+        s.add_all(
+            [
+                sil(200, 100),  # venceu há 100 dias: apaga
+                sil(200, 50),  # venceu há 50: fica
+                sil(200, -5, encerrado_dias=95),  # encerrado há 95 (fim futuro): apaga
+                sil(10, -5, encerrado_dias=10),  # encerrado há 10: fica
+                sil(10, -5),  # ativo: fica
+            ]
+        )
+        await s.commit()
+    r = await limpar(sessoes, AGORA)
+    assert r.silencios == 2
+    assert await _contar(sessoes, Silencio) == 3

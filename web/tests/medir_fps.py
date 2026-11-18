@@ -106,6 +106,13 @@ def criar_sinteticos(page: Page, banco: Path, total: int) -> int:
     return faltam
 
 
+def _medir_cena(page: Page, palco: Any, nome: str, segundos: int) -> tuple[str, float, str, str]:
+    r = page.evaluate(CONTADOR_RAF, segundos * 1000)
+    fps = r["quadros"] * 1000 / r["ms"]
+    rotulos = palco.get_attribute("data-rotulos-ip") or "-"
+    return (nome, round(fps, 1), palco.get_attribute("data-nivel") or "?", f"ip:{rotulos}")
+
+
 def medir(modo: str, total: int, segundos: int) -> list[tuple[str, float, str, str]]:
     pasta = Path(tempfile.mkdtemp(prefix="medir-fps-"))
     banco = pasta / "fps.db"
@@ -151,6 +158,15 @@ def medir(modo: str, total: int, segundos: int) -> list[tuple[str, float, str, s
                 nivel = palco.get_attribute("data-nivel") or "?"
                 nos = palco.get_attribute("data-nos") or "?"
                 resultados.append((nome, round(fps, 1), nivel, nos))
+            # de perto: classe focada e equipamento focado (rótulos de IP visíveis, Task 11b)
+            barra.get_by_role("button", name=ESTILOS[0]).click()
+            page.wait_for_timeout(1500)
+            page.locator(".teia-classe").first.click()
+            page.wait_for_timeout(2500)
+            resultados.append(_medir_cena(page, palco, "classe focada", segundos))
+            page.locator(".teia-equip").first.click()
+            page.wait_for_timeout(2500)
+            resultados.append(_medir_cena(page, palco, "equip. focado", segundos))
             navegador.close()
     finally:
         servidor.derrubar()
@@ -166,9 +182,9 @@ def main() -> None:
     a = ap.parse_args()
     tabela = medir(a.modo, a.equipamentos, a.segundos)
     print(f"\nTeia com {a.equipamentos} equipamentos, modo {a.modo}, média de {a.segundos} s")
-    print(f"{'estilo':<14}{'fps':>8}  {'nivel':<10}{'nos':>6}")
+    print(f"{'estilo':<14}{'fps':>8}  {'nivel':<10}{'nos':>8}")
     for nome, fps, nivel, nos in tabela:
-        print(f"{nome:<14}{fps:>8}  {nivel:<10}{nos:>6}")
+        print(f"{nome:<14}{fps:>8}  {nivel:<10}{nos:>8}")
 
 
 if __name__ == "__main__":

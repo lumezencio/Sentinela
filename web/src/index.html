@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="css/base.css">
   <link rel="stylesheet" href="css/componentes.css">
   <link rel="stylesheet" href="css/novos.css">
+  <link rel="stylesheet" href="css/alertas.css">
   <script src="js/tema.js"></script>
   <script type="module" src="js/app.js"></script>
   <script defer src="vendor/alpine-csp.min.js"></script>
@@ -25,6 +26,7 @@
     <symbol id="i-instavel" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/></symbol>
     <symbol id="i-offline" viewBox="0 0 16 16"><circle class="sym-onda" cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 5l6 6M11 5l-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
     <symbol id="i-pausado" viewBox="0 0 16 16"><rect x="3.5" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9.5" y="3" width="3" height="10" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-inalcancavel" viewBox="0 0 16 16"><path d="M6.2 5.2H4.8a2.8 2.8 0 0 0 0 5.6h1.4M9.8 5.2h1.4a2.8 2.8 0 0 1 0 5.6H9.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.9 3.2L7.1 12.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
     <symbol id="i-desconhecido" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="2.6 2.4"/></symbol>
     <symbol id="i-gravador" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="5" cy="8" r="1.3" fill="currentColor"/><path d="M8 8h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
     <symbol id="i-total" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4" fill="currentColor"/><ellipse cx="8" cy="8" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.1"/><ellipse cx="8" cy="8" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.1" transform="rotate(60 8 8)"/><ellipse cx="8" cy="8" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.1" transform="rotate(120 8 8)"/></symbol>
@@ -45,6 +47,7 @@
         <button class="aba" role="tab" type="button" id="aba-lista" aria-controls="conteudo-lista" aria-selected="true" :aria-selected="abaSelecionada('lista')" @click="irPara('lista')">Lista</button>
         <button class="aba" role="tab" type="button" id="aba-teia" aria-controls="conteudo-teia" aria-selected="false" :aria-selected="abaSelecionada('teia')" @click="irPara('teia')">Teia</button>
         <button class="aba" role="tab" type="button" id="aba-organograma" aria-controls="conteudo-organograma" aria-selected="false" :aria-selected="abaSelecionada('organograma')" @click="irPara('organograma')">Organograma</button>
+        <button class="aba" role="tab" type="button" id="aba-alertas" aria-controls="conteudo-alertas" aria-selected="false" :aria-selected="abaSelecionada('alertas')" @click="irPara('alertas')">Alertas<span class="aba-contador aba-contador-alerta" id="contador-alertas" x-show="temAlertasAbertos" x-cloak><span x-text="rotuloAlertasAbertos">0</span><span class="so-leitor"> abertos</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-novos" aria-controls="conteudo-novos" aria-selected="false" :aria-selected="abaSelecionada('novos')" @click="irPara('novos')">Novos<span class="aba-contador" id="contador-pendentes" x-show="temPendentes" x-cloak><span x-text="rotuloPendentes">0</span><span class="so-leitor"> pendentes</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-configuracoes" aria-controls="conteudo-configuracoes" aria-selected="false" :aria-selected="abaSelecionada('configuracoes')" @click="irPara('configuracoes')" hidden :hidden="!admin">Configurações</button>
       </nav>
@@ -73,7 +76,7 @@
   </header>
 
   <!-- um único <main>: as três abas são painéis dentro dele (a ativa é a única visível) -->
-  <main class="conteudo" id="conteudo">
+  <main class="conteudo" id="conteudo" tabindex="-1">
   <noscript><div class="casca"><p class="alerta">O Sentinela precisa de JavaScript ligado no navegador para mostrar os equipamentos.</p></div></noscript>
   <!-- só aparece (CSS, após 3 s) num link direto para #teia/#organograma se o Alpine não subir -->
   <div class="casca aviso-sem-alpine" x-show="falhaDeCarga"><p class="alerta" role="alert">Não foi possível carregar a interface do Sentinela. Recarregue a página; se continuar, confira a conexão com o servidor.</p></div>
@@ -106,6 +109,11 @@
         <span class="numero" id="contador-offline" x-text="contadores.offline">0</span>
         <span class="legenda">offline</span>
       </button>
+      <button class="contador st-inalcancavel" type="button" @click="filtrarEstado('inalcancavel')" :aria-pressed="pressionado('inalcancavel')">
+        <svg class="icone-status" aria-hidden="true"><use href="#i-inalcancavel"/></svg>
+        <span class="numero" id="contador-inalcancavel" x-text="contadores.inalcancavel">0</span>
+        <span class="legenda">inalcançáveis</span>
+      </button>
       <button class="contador st-pausado" type="button" @click="filtrarEstado('pausado')" :aria-pressed="pressionado('pausado')">
         <svg class="icone-status" aria-hidden="true"><use href="#i-pausado"/></svg>
         <span class="numero" id="contador-pausado" x-text="contadores.pausado">0</span>
@@ -134,6 +142,7 @@
           <option value="online">Online</option>
           <option value="instavel">Instável</option>
           <option value="offline">Offline</option>
+          <option value="inalcancavel">Inalcançável</option>
           <option value="pausado">Pausado</option>
           <option value="aguardando">Aguardando</option>
         </select>
@@ -173,7 +182,7 @@
         <tbody>
           <template x-for="l in linhas" :key="l.id">
             <tr class="linha">
-              <td class="td-nome col-nome" :title="l.nome"><span x-text="l.nome"></span><span class="sub-linha" x-show="l.atras" x-text="l.atras"></span></td>
+              <td class="td-nome col-nome" :title="l.nome"><span x-text="l.nome"></span><span class="sub-linha" x-show="l.atras" x-text="l.atras"></span><span class="sub-linha" x-show="l.motivo" x-text="l.motivo"></span></td>
               <td class="td-estado">
                 <span :class="l.estadoClasse" :title="l.estadoDica">
                   <svg class="icone-status" aria-hidden="true"><use :href="l.estadoIcone"/></svg>
@@ -244,6 +253,7 @@
                 <span class="teia-classe-total" x-text="c.total"></span>
                 <span class="teia-mini" aria-hidden="true">
                   <span class="st-offline" x-show="c.contagem.offline"><svg class="icone-status"><use href="#i-offline"/></svg><span x-text="c.contagem.offline"></span></span>
+                  <span class="st-inalcancavel" x-show="c.contagem.inalcancavel"><svg class="icone-status"><use href="#i-inalcancavel"/></svg><span x-text="c.contagem.inalcancavel"></span></span>
                   <span class="st-instavel" x-show="c.contagem.instavel"><svg class="icone-status"><use href="#i-instavel"/></svg><span x-text="c.contagem.instavel"></span></span>
                   <span class="st-pausado" x-show="c.contagem.pausado"><svg class="icone-status"><use href="#i-pausado"/></svg><span x-text="c.contagem.pausado"></span></span>
                 </span>
@@ -303,9 +313,31 @@
         <div><dt>Checagem</dt><dd class="mono" x-text="equip.checagem"></dd></div>
         <div><dt>Latência</dt><dd class="mono" x-text="equip.latencia"></dd></div>
         <div x-show="equip.atras"><dt>Gravador</dt><dd class="equip-atras" x-text="equip.atras"></dd></div>
+        <div class="ficha-larga"><dt>Depende de</dt><dd class="equip-dep"><span class="dep-atual" :class="equip.dependeDe ? '' : 'suave'" x-text="equip.dependeDe || 'Nenhum'"></span><span class="dep-nota" x-show="equip.dependeSoLeitura">somente leitura (definido pela descoberta)</span></dd></div>
       </dl>
       <div class="teia-equip-acoes" x-show="admin">
         <button class="botao" type="button" @click="alternarPausa" :disabled="pausando" x-text="rotuloPausa">Pausar</button>
+        <button class="botao" type="button" id="dep-alterar" @click="abrirDep" x-show="depPodeEditar" :aria-expanded="depAriaExpandido">Alterar dependência</button>
+      </div>
+      <div class="dep-editor" x-show="depEditorAberto" x-cloak>
+        <div class="campo-form">
+          <label for="dep-busca">Buscar equipamento (nome ou IP)</label>
+          <input id="dep-busca" type="search" autocomplete="off" maxlength="80" x-model="depBusca" @input="aoBuscarDep" @keydown.enter.prevent="aoBuscarDep">
+        </div>
+        <ul class="dep-lista" aria-label="Equipamentos disponíveis como pai">
+          <template x-for="c in depCandidatos" :key="c.id">
+            <li><button class="dep-opcao" type="button" :aria-pressed="depPressionado(c.id)" @click="escolherPai(c.id)"><span class="dep-nome" x-text="c.nome"></span><span class="dep-classe" x-text="c.classe"></span></button></li>
+          </template>
+        </ul>
+        <p class="teia-sub" role="status" x-show="depSemResultado">Nenhum equipamento encontrado.</p>
+        <p class="teia-sub" role="status" x-show="depTruncado">Mostrando 50; refine a busca.</p>
+        <p class="dep-escolhido" role="status" x-show="depEscolhido" x-text="depRotuloEscolhido"></p>
+        <div class="dep-acoes">
+          <button class="botao botao-primario" type="button" @click="salvarDep" :disabled="depSalvarDesabilitado">Salvar</button>
+          <button class="botao" type="button" @click="removerDep" :disabled="depSalvando" x-show="equip.dependeDeId">Remover dependência</button>
+          <button class="botao botao-fantasma" type="button" @click="cancelarDep" :disabled="depSalvando">Cancelar</button>
+        </div>
+        <p class="alerta" role="alert" x-show="depErro" x-text="depErro"></p>
       </div>
       <p class="alerta" role="alert" x-show="acaoErro" x-text="acaoErro"></p>
       <h3 class="teia-subtitulo">Últimas quedas</h3>
@@ -327,6 +359,7 @@
       <li class="st-online"><svg class="icone-status" aria-hidden="true"><use href="#i-online"/></svg>online</li>
       <li class="st-instavel"><svg class="icone-status" aria-hidden="true"><use href="#i-instavel"/></svg>instável</li>
       <li class="st-offline"><svg class="icone-status" aria-hidden="true"><use href="#i-offline"/></svg>offline</li>
+      <li class="st-inalcancavel"><svg class="icone-status" aria-hidden="true"><use href="#i-inalcancavel"/></svg>inalcançável</li>
       <li class="st-pausado"><svg class="icone-status" aria-hidden="true"><use href="#i-pausado"/></svg>pausado</li>
       <li class="st-desconhecido"><svg class="icone-status" aria-hidden="true"><use href="#i-desconhecido"/></svg>aguardando</li>
     </ul>
@@ -361,6 +394,7 @@
           <option value="online">Online</option>
           <option value="instavel">Instável</option>
           <option value="offline">Offline</option>
+          <option value="inalcancavel">Inalcançável</option>
           <option value="pausado">Pausado</option>
           <option value="aguardando">Aguardando</option>
         </select>
@@ -396,7 +430,10 @@
                     <li>
                       <button class="org-item" type="button" :data-id="q.id" :data-peso="q.peso" :title="q.estadoRotulo" @click="abrirNoOrganograma(q.id)">
                         <span :class="q.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="q.estadoIcone"/></svg></span>
-                        <span class="org-nome" x-text="q.nome"></span>
+                        <span class="org-textos">
+                          <span class="org-nome" x-text="q.nome"></span>
+                          <span class="org-ip" x-show="q.ip" x-text="q.ip"></span>
+                        </span>
                         <span class="so-leitor" x-text="q.estadoRotulo"></span>
                       </button>
                     </li>
@@ -419,6 +456,118 @@
     </div>
     <p class="vazio" x-show="carregando">Conectando ao Sentinela…</p>
     <p class="vazio" x-show="orgVazio" x-cloak>Nenhum equipamento com esses filtros.</p>
+  </section>
+
+  <section class="casca" id="conteudo-alertas" role="tabpanel" aria-labelledby="aba-alertas" hidden :hidden="!abaAlertas">
+    <div class="banner" role="status" aria-live="polite" x-show="bannerVisivel" x-cloak :class="bannerErro ? 'banner-erro' : ''">
+      <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span><span x-text="textoBanner"></span>
+    </div>
+    <header class="secao-cabeca">
+      <div class="secao-intro">
+        <h1 class="secao-titulo" tabindex="-1">Alertas</h1>
+        <p class="dica">Quedas e instabilidades agrupadas: um defeito num switch vira um alerta só.</p>
+        <label class="al-som"><input type="checkbox" id="al-som" x-model="somAlertas" @change="aoMudarSom"><span>Som nos alertas</span></label>
+      </div>
+      <div class="segmentos" role="group" aria-label="Quais alertas mostrar">
+        <button class="segmento" type="button" :aria-pressed="filtroAlertasAtivo('abertos')" @click="filtrarAlertasPor('abertos')">Abertos</button>
+        <button class="segmento" type="button" :aria-pressed="filtroAlertasAtivo('reconhecidos')" @click="filtrarAlertasPor('reconhecidos')">Reconhecidos</button>
+        <button class="segmento" type="button" :aria-pressed="filtroAlertasAtivo('todos')" @click="filtrarAlertasPor('todos')">Todos</button>
+      </div>
+    </header>
+    <p class="alerta alerta-ok cfg-aviso" id="al-aviso" role="status" x-show="alertasAviso" x-text="alertasAviso"></p>
+
+    <section class="cfg-bloco al-bloco" aria-labelledby="al-sil-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="al-sil-titulo">Silêncios e manutenções</h2>
+          <p class="dica">Silêncio só deixa de avisar no Telegram; manutenção também pausa a checagem. Ambos terminam sozinhos.</p>
+        </div>
+        <button class="botao botao-primario" id="al-novo-silencio" type="button" x-show="admin" x-cloak @click="abrirSilencio()">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Silenciar ou manutenção
+        </button>
+      </div>
+      <p class="alerta" role="alert" x-show="silenciosErro" x-text="silenciosErro"></p>
+      <ul class="al-silencios" id="lista-silencios" aria-label="Silêncios e manutenções ativos">
+        <template x-for="s in silencios" :key="s.id">
+          <li class="al-silencio" :data-id="s.id">
+            <span class="al-tipo" :class="s.manutencao ? 'al-tipo-manutencao' : 'al-tipo-silencio'"><svg class="icone-status" aria-hidden="true"><use :href="s.icone"/></svg><span x-text="s.rotuloTipo"></span></span>
+            <div class="al-corpo">
+              <p class="al-texto"><span class="suave" x-text="s.rotuloAlvo"></span> <strong x-text="s.alvo"></strong></p>
+              <p class="al-meta"><span x-text="s.ate"></span><span x-show="s.motivo" x-text="s.motivo"></span><span x-show="s.pausados" x-text="s.pausados"></span><span x-show="s.criadoPor">por <span x-text="s.criadoPor"></span></span></p>
+            </div>
+            <template x-if="admin">
+              <button class="botao" type="button" @click="encerrarSilencio(s.id)" :aria-label="s.rotuloEncerrar">Encerrar</button>
+            </template>
+          </li>
+        </template>
+      </ul>
+      <p class="dica" x-show="semSilencios" x-cloak>Nenhum silêncio nem manutenção ativos.</p>
+    </section>
+
+    <section class="ferramentas al-ferramentas" aria-label="Filtros dos alertas">
+      <div class="campo-form">
+        <label for="al-classe">Classe</label>
+        <select id="al-classe" x-model="classeAlertas" @change="aoFiltrarAlertas">
+          <option value="">Todas</option>
+          <template x-for="c in classes" :key="c.slug">
+            <option :value="c.slug" x-text="c.nome"></option>
+          </template>
+        </select>
+      </div>
+      <div class="campo-form">
+        <label for="al-periodo">Período</label>
+        <select id="al-periodo" x-model="periodoAlertas" @change="aoFiltrarAlertas">
+          <template x-for="p in periodos" :key="p.valor">
+            <option :value="p.valor" x-text="p.rotulo"></option>
+          </template>
+        </select>
+      </div>
+      <p class="dica al-resumo" id="al-resumo" role="status" x-text="alertasResumo"></p>
+    </section>
+
+    <p class="alerta" role="alert" x-show="alertasErro" x-text="alertasErro"></p>
+    <ol class="al-lista" id="lista-alertas" aria-label="Alertas">
+      <template x-for="a in alertasLinhas" :key="a.id">
+        <li :class="a.classeLinha" :data-id="a.id">
+          <span class="al-marca"><svg class="icone-status" aria-hidden="true"><use :href="a.icone"/></svg><span x-text="a.rotuloMarca"></span></span>
+          <div class="al-corpo">
+            <p class="al-texto" x-text="a.texto"></p>
+            <p class="al-meta">
+              <span><span class="suave">Desde</span> <time x-text="a.hora"></time> <span class="suave">(<span x-text="a.quando"></span>)</span></span>
+              <span x-show="a.classeNome" x-text="a.classeNome"></span>
+              <span x-show="a.rotuloAfetados" x-text="a.rotuloAfetados"></span>
+              <span class="al-envio" x-show="a.rotuloEnvio" x-text="a.rotuloEnvio"></span>
+              <span x-show="a.fechado" x-text="a.fechado"></span>
+              <span x-show="a.reconhecimento" x-text="a.reconhecimento"></span>
+            </p>
+          </div>
+          <div class="al-acoes">
+            <button class="botao botao-fantasma" type="button" x-show="a.afetados" @click="alternarAfetados(a.id)" :aria-expanded="a.ariaExpandido" :aria-controls="a.idDetalhe" x-text="a.rotuloVer"></button>
+            <template x-if="admin">
+              <button class="botao" type="button" x-show="a.reconhecivel" @click="reconhecerAlerta(a.id)" :aria-label="a.rotuloReconhecer">Reconhecer</button>
+            </template>
+            <template x-if="admin">
+              <button class="botao botao-fantasma" type="button" x-show="a.equipamentoId" @click="abrirSilencioDoAlerta(a.id)">Silenciar…</button>
+            </template>
+          </div>
+          <div class="al-detalhe" :id="a.idDetalhe" x-show="a.expandido">
+            <p class="dica" x-show="a.detalhe.carregando">Carregando…</p>
+            <p class="alerta" role="alert" x-show="a.detalhe.erro" x-text="a.detalhe.erro"></p>
+            <p class="dica" x-show="a.detalhe.vazio">Os equipamentos afetados já foram removidos do cadastro.</p>
+            <ul class="al-afetados">
+              <template x-for="x in a.detalhe.lista" :key="x.id">
+                <li><span :class="x.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="x.estadoIcone"/></svg><span x-text="x.estadoRotulo"></span></span> <strong x-text="x.nome"></strong> <span class="suave" x-text="x.classeNome"></span></li>
+              </template>
+            </ul>
+          </div>
+        </li>
+      </template>
+    </ol>
+    <p class="vazio" id="al-vazio" x-show="alertasVazio" x-cloak x-text="alertasTextoVazio"></p>
+    <p class="vazio" x-show="alertasCarregando" x-cloak>Carregando…</p>
+    <div class="al-mais" x-show="alertasMais" x-cloak>
+      <button class="botao" type="button" :disabled="alertasCarregando" @click="maisAlertas">Mostrar mais alertas</button>
+    </div>
   </section>
 
   <section class="casca" id="conteudo-novos" role="tabpanel" aria-labelledby="aba-novos" hidden :hidden="!abaNovos">
@@ -559,13 +708,14 @@
     <header class="secao-cabeca">
       <div class="secao-intro">
         <h1 class="secao-titulo">Configurações</h1>
-        <p class="dica">De onde vêm as descobertas, onde a varredura pode falar com a rede e quando aprovar sozinho.</p>
+        <p class="dica">De onde vêm as descobertas, onde a varredura pode falar com a rede, quando aprovar sozinho e para onde vão os alertas.</p>
       </div>
     </header>
     <p class="alerta alerta-ok cfg-aviso" id="cfg-aviso" role="status" x-show="cfgAviso" x-text="cfgAviso"></p>
 
     <!-- só admin: o visualizador nunca vê estes controles (e um link direto o leva à Lista) -->
-    <div class="cfg-conteudo" x-show="admin" x-cloak>
+    <p class="vazio" id="cfg-carregando" x-show="cfgAguardando" x-cloak>Carregando…</p>
+    <div class="cfg-conteudo" x-show="cfgMostrar" x-cloak>
     <section class="cfg-bloco" aria-labelledby="cfg-fontes-titulo">
       <div class="cfg-bloco-cabeca">
         <div>
@@ -577,7 +727,6 @@
         </button>
       </div>
       <p class="alerta" role="alert" x-show="cfgErro" x-text="cfgErro"></p>
-      <p class="vazio" x-show="cfgCarregando">Carregando…</p>
       <div class="cfg-fontes">
         <template x-for="f in cfgFontes" :key="f.id">
           <article class="cfg-fonte" :class="f.ativa ? '' : 'cfg-inativa'" :data-id="f.id" :aria-labelledby="f.idTitulo">
@@ -680,9 +829,179 @@
         </div>
       </div>
     </section>
+
+    <section class="cfg-bloco" id="cfg-telegram" aria-labelledby="cfg-tg-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-tg-titulo">Alertas no Telegram</h2>
+          <p class="dica">As mensagens saem do seu servidor direto para o Telegram (api.telegram.org); nada passa por terceiros. Elas levam só o nome, a classe, o horário e a duração. Sem token e destino, nada é enviado.</p>
+        </div>
+        <span class="selo" :class="tg.definido ? 'selo-canal' : ''" id="tg-situacao" x-text="tgRotuloToken"></span>
+      </div>
+      <p class="alerta alerta-ok" id="tg-aviso" role="status" x-show="tgAviso" x-text="tgAviso"></p>
+      <p class="alerta" id="tg-erro-geral" role="alert" x-show="tgErroGeral" x-text="tgErroGeral"></p>
+      <form class="cfg-tg-form" @submit.prevent="salvarTelegram" novalidate autocomplete="off">
+        <div class="campo-form">
+          <label for="tg-token">Token do bot</label>
+          <input id="tg-token" type="password" autocomplete="new-password" spellcheck="false" maxlength="100" x-model="tgForm.token" aria-describedby="tg-token-dica tg-token-erro" :aria-invalid="tgInvalidoToken">
+          <p class="dica" id="tg-token-dica" x-text="tgDicaToken"></p>
+          <p class="campo-erro" id="tg-token-erro" role="alert" x-show="tgErros.token" x-text="tgErros.token"></p>
+        </div>
+        <div class="campo-form">
+          <label for="tg-chats">Destinos (um por linha)</label>
+          <textarea id="tg-chats" rows="3" spellcheck="false" maxlength="600" placeholder="-1001234567890" x-model="tgForm.chats" aria-describedby="tg-chats-dica tg-chats-erro" :aria-invalid="tgInvalidoChats"></textarea>
+          <p class="dica" id="tg-chats-dica">Número do chat ou grupo, ou @canal. No máximo 10.</p>
+          <p class="campo-erro" id="tg-chats-erro" role="alert" x-show="tgErros.chats" x-text="tgErros.chats"></p>
+        </div>
+        <div class="cfg-tg-ip">
+          <button class="chave" id="tg-incluir-ip" type="button" role="switch" :aria-checked="tgIpMarcado" @click="alternarIpTelegram">
+            <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+            <span class="chave-rotulo">Incluir o IP na mensagem</span>
+          </button>
+          <p class="dica">Desligado por padrão: o IP do equipamento é um dado da sua rede e só deve sair dela se você precisar.</p>
+        </div>
+        <div class="cfg-acoes">
+          <button class="botao botao-primario" type="submit" :disabled="tgSalvando">Salvar</button>
+          <button class="botao" id="tg-testar" type="button" :disabled="tgSemTesteDisponivel" @click="testarTelegram">Enviar teste</button>
+          <button class="botao botao-fantasma botao-remover" type="button" x-show="tg.definido" x-cloak :disabled="tgSalvando" @click="removerTokenTelegram">Remover token</button>
+          <span class="giro-banner" aria-hidden="true" x-show="tgSemTesteDisponivel" x-cloak></span>
+        </div>
+      </form>
+      <p class="alerta" :class="tgTesteClasse" id="tg-teste" role="status" x-show="tgTeste" x-cloak x-text="tgTesteTexto"></p>
+      <p class="dica" id="tg-envio" x-text="tgTextoEnvio"></p>
+      <p class="alerta" id="tg-ultimo-erro" x-show="tg.ultimoErro"><strong>Último erro:</strong> <span x-text="tg.ultimoErro"></span></p>
+    </section>
+
+    <section class="cfg-bloco" id="cfg-teloes" aria-labelledby="cfg-tel-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-tel-titulo">Telões</h2>
+          <p class="dica">Abra o endereço do Sentinela seguido de <span class="mono">/parede</span> na TV: ela mostra um código de 8 caracteres. Digite-o aqui e dê um nome à tela. O telão só recebe nome, classe e estado dos equipamentos; nunca IP, MAC ou fabricante.</p>
+        </div>
+      </div>
+      <p class="alerta alerta-ok" id="tel-aviso" role="status" x-show="telAviso" x-text="telAviso"></p>
+      <p class="alerta" id="tel-erro-geral" role="alert" x-show="telErroGeral" x-text="telErroGeral"></p>
+      <form class="cfg-tel-form" @submit.prevent="aprovarTelao" novalidate autocomplete="off">
+        <div class="campo-form">
+          <label for="tel-codigo">Código da TV</label>
+          <input id="tel-codigo" class="mono" type="text" inputmode="text" autocapitalize="characters" spellcheck="false" maxlength="16" placeholder="K7MQ-2XDP" x-model="telForm.codigo" aria-describedby="tel-codigo-erro" :aria-invalid="telInvalidoCodigo">
+          <p class="campo-erro" id="tel-codigo-erro" role="alert" x-show="telErros.codigo" x-text="telErros.codigo"></p>
+        </div>
+        <div class="campo-form">
+          <label for="tel-nome">Nome da tela</label>
+          <input id="tel-nome" type="text" spellcheck="false" maxlength="64" placeholder="TV Portaria" x-model="telForm.nome" aria-describedby="tel-nome-erro" :aria-invalid="telInvalidoNome">
+          <p class="campo-erro" id="tel-nome-erro" role="alert" x-show="telErros.nome" x-text="telErros.nome"></p>
+        </div>
+        <div class="cfg-tel-enviar">
+          <button class="botao botao-primario" type="submit" :disabled="telEnviando">Aprovar</button>
+        </div>
+      </form>
+
+      <h3 class="cfg-tel-subtitulo">Telões aprovados</h3>
+      <p class="vazio cfg-tel-vazio" x-show="telCarregando" x-cloak>Carregando…</p>
+      <p class="dica" id="tel-vazio" x-show="telSemTeloes" x-cloak>Nenhum telão aprovado ainda.</p>
+      <ul class="cfg-tel-lista" id="tel-lista">
+        <template x-for="t in telLinhas" :key="t.id">
+          <li class="cfg-tel-linha" :class="t.ativa ? '' : 'cfg-inativa'" :data-id="t.id">
+            <div class="cfg-tel-info">
+              <p class="cfg-tel-nome"><strong x-text="t.nome"></strong> <span class="selo" :class="t.http ? 'selo-alerta' : 'selo-canal'" x-text="t.modo"></span> <span class="selo" x-show="!t.ativa" x-text="t.situacao"></span></p>
+              <p class="dica"><span x-text="t.criado"></span> · <span x-text="t.acesso"></span></p>
+            </div>
+            <button class="botao botao-fantasma botao-remover" type="button" x-show="t.ativa" :disabled="telEnviando" :aria-label="t.rotuloRevogar" @click="revogarTelao(t.id)">Revogar</button>
+          </li>
+        </template>
+      </ul>
+
+      <div class="cfg-tel-http">
+        <button class="chave" id="tel-http" type="button" role="switch" :aria-checked="telHttpMarcado" :disabled="telEnviando" @click="alternarParedesHttp">
+          <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+          <span class="chave-rotulo">Permitir telão sem HTTPS</span>
+        </button>
+        <p class="dica">Desligado por padrão. Algumas TVs recusam o certificado do Sentinela; com a chave ligada, o telão também abre pela porta 80 (<span class="mono">http://</span>), sem cifra. O resto do painel continua só em HTTPS.</p>
+        <div class="alerta cfg-tel-hsts" id="tel-aviso-hsts" x-show="telHttp" x-cloak>
+          <p><strong>Conexão sem cifra.</strong> Na rede local, o que o telão mostra pode ser lido por quem estiver nela. O token da TV fica preso ao IP dela: reserve esse IP no roteador.</p>
+          <p><strong>HSTS:</strong> uma TV que já abriu o Sentinela por HTTPS fica presa ao HTTPS e não aceita a versão sem cifra até que os dados de navegação dela sejam apagados. Na TV que recusa o certificado, abra direto o endereço com <span class="mono">http://</span>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cfg-bloco" aria-labelledby="cfg-fuso-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-fuso-titulo">Fuso horário</h2>
+          <p class="dica">Os horários dos alertas, do Telegram e do atalho “até amanhã 08:00” seguem este fuso. O banco guarda tudo em UTC.</p>
+        </div>
+      </div>
+      <p class="cfg-fuso"><strong class="mono" id="cfg-fuso" x-text="fuso"></strong> <span class="suave">definido pelo servidor (SENTINELA_FUSO)</span></p>
+    </section>
     </div>
   </section>
   </main>
+
+  <!-- cartões de alerta ao vivo (qualquer aba): queda, instabilidade e fonte sem coleta; até 3 à vista -->
+  <section class="ca-pilha" id="cartoes-alerta" aria-label="Alertas ao vivo" x-show="temCartoes" x-cloak>
+    <div class="ca-cartoes">
+      <template x-for="c in cartoes" :key="c.id">
+        <article :class="c.classeCartao" :data-id="c.id" tabindex="-1" @keydown.escape.stop="dispensarCartao(c.id)" @mouseenter="reterCartao(c.id, 'mouse')" @mouseleave="soltarCartao(c.id, 'mouse')" @focusin="reterCartao(c.id, 'foco')" @focusout="soltarCartao(c.id, 'foco')">
+          <header class="ca-cabeca">
+            <p class="ca-titulo" role="alert" aria-live="assertive">
+              <span class="ca-marca"><svg class="icone-status" aria-hidden="true"><use :href="c.icone"/></svg><span x-text="c.rotuloMarca"></span></span>
+              <strong class="ca-nome" x-text="c.titulo"></strong>
+            </p>
+            <button class="botao botao-fantasma botao-icone ca-alternar" type="button" @click="alternarDadosDoCartao(c.id)" :aria-expanded="c.ariaAberto" :aria-label="c.rotuloAlternar" :title="c.aberto ? 'Recolher' : 'Mostrar tudo'">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <button class="botao botao-fantasma botao-icone" type="button" @click="dispensarCartao(c.id)" :aria-label="c.rotuloFechar" title="Fechar (Esc)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </header>
+          <p class="ca-sub" x-show="c.temEquipamento">
+            <span class="classe"><span class="pino" aria-hidden="true" :style="{ '--cor-classe': c.corClasse }"></span><span x-text="c.classeNome"></span></span>
+            <span :class="c.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="c.estadoIcone"/></svg><span x-text="c.estadoRotulo"></span></span>
+          </p>
+          <dl class="ca-dados">
+            <template x-for="l in c.linhas" :key="l.rotulo">
+              <div><dt x-text="l.rotulo"></dt><dd :class="l.classe" x-text="l.valor"></dd></div>
+            </template>
+          </dl>
+          <template x-if="c.aberto">
+            <div class="ca-corpo-aberto">
+              <p class="ca-nota" x-show="c.reconhecimento" x-text="c.reconhecimento"></p>
+              <div class="ca-grupo" x-show="c.afetados">
+                <button class="botao botao-fantasma ca-ver" type="button" @click="alternarAfetadosDoCartao(c.id)" :aria-expanded="c.ariaExpandido" :aria-controls="c.idLista">
+                  <span x-text="c.rotuloAfetados"></span><span class="suave" x-text="c.rotuloVer"></span>
+                </button>
+                <div :id="c.idLista" x-show="c.expandido">
+                  <p class="dica" x-show="c.carregando">Carregando…</p>
+                  <p class="alerta" x-show="c.erro" x-text="c.erro"></p>
+                  <ul :class="c.classeLista" tabindex="0" aria-label="Equipamentos afetados">
+                    <template x-for="x in c.lista" :key="x.id">
+                      <li>
+                        <span :class="x.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="x.estadoIcone"/></svg><span class="so-leitor" x-text="x.estadoRotulo"></span></span>
+                        <span class="ca-afetado-texto"><strong x-text="x.nome"></strong><span class="mono suave" x-show="x.ip" x-text="x.ip"></span></span>
+                      </li>
+                    </template>
+                  </ul>
+                </div>
+              </div>
+              <p class="alerta" x-show="c.erroAcao" x-text="c.erroAcao"></p>
+              <div class="ca-acoes">
+                <button class="botao" type="button" x-show="c.temEquipamento" @click="verNaTeiaDoCartao(c.id)">Ver na Teia</button>
+                <button class="botao" type="button" @click="verAlertaDoCartao(c.id)">Ver alerta</button>
+                <template x-if="admin">
+                  <button class="botao" type="button" x-show="c.reconhecivel" @click="reconhecerDoCartao(c.id)" :aria-label="c.rotuloReconhecer">Reconhecer</button>
+                </template>
+                <template x-if="admin">
+                  <button class="botao botao-fantasma" type="button" x-show="c.temEquipamento" @click="silenciarDoCartao(c.id)">Silenciar…</button>
+                </template>
+              </div>
+            </div>
+          </template>
+        </article>
+      </template>
+    </div>
+    <button class="botao ca-mais" type="button" x-show="temMaisCartoes" @click="verTodosOsAlertas" x-text="rotuloMaisCartoes"></button>
+  </section>
 
   <!-- painel do equipamento no Organograma: mesma ficha, histórico e pausa da Teia (sem o 3D) -->
   <dialog class="dialogo org-dialogo" x-ref="dlgEquipOrg" aria-labelledby="titulo-equip-org" @close="aoFecharDialogoOrg">
@@ -701,9 +1020,31 @@
       <div><dt>Checagem</dt><dd class="mono" x-text="equip.checagem"></dd></div>
       <div><dt>Latência</dt><dd class="mono" x-text="equip.latencia"></dd></div>
       <div x-show="equip.atras"><dt>Gravador</dt><dd class="equip-atras" x-text="equip.atras"></dd></div>
+      <div class="ficha-larga"><dt>Depende de</dt><dd class="equip-dep"><span class="dep-atual" :class="equip.dependeDe ? '' : 'suave'" x-text="equip.dependeDe || 'Nenhum'"></span><span class="dep-nota" x-show="equip.dependeSoLeitura">somente leitura (definido pela descoberta)</span></dd></div>
     </dl>
     <div class="teia-equip-acoes" x-show="admin">
       <button class="botao" type="button" @click="alternarPausa" :disabled="pausando" x-text="rotuloPausa">Pausar</button>
+      <button class="botao" type="button" id="dep-alterar-org" @click="abrirDep" x-show="depPodeEditar" :aria-expanded="depAriaExpandido">Alterar dependência</button>
+    </div>
+    <div class="dep-editor" x-show="depEditorAberto" x-cloak>
+      <div class="campo-form">
+        <label for="dep-busca-org">Buscar equipamento (nome ou IP)</label>
+        <input id="dep-busca-org" type="search" autocomplete="off" maxlength="80" x-model="depBusca" @input="aoBuscarDep" @keydown.enter.prevent="aoBuscarDep">
+      </div>
+      <ul class="dep-lista" aria-label="Equipamentos disponíveis como pai">
+        <template x-for="c in depCandidatos" :key="c.id">
+          <li><button class="dep-opcao" type="button" :aria-pressed="depPressionado(c.id)" @click="escolherPai(c.id)"><span class="dep-nome" x-text="c.nome"></span><span class="dep-classe" x-text="c.classe"></span></button></li>
+        </template>
+      </ul>
+      <p class="teia-sub" role="status" x-show="depSemResultado">Nenhum equipamento encontrado.</p>
+        <p class="teia-sub" role="status" x-show="depTruncado">Mostrando 50; refine a busca.</p>
+      <p class="dep-escolhido" role="status" x-show="depEscolhido" x-text="depRotuloEscolhido"></p>
+      <div class="dep-acoes">
+        <button class="botao botao-primario" type="button" @click="salvarDep" :disabled="depSalvarDesabilitado">Salvar</button>
+        <button class="botao" type="button" @click="removerDep" :disabled="depSalvando" x-show="equip.dependeDeId">Remover dependência</button>
+        <button class="botao botao-fantasma" type="button" @click="cancelarDep" :disabled="depSalvando">Cancelar</button>
+      </div>
+      <p class="alerta" role="alert" x-show="depErro" x-text="depErro"></p>
     </div>
     <p class="alerta" role="alert" x-show="acaoErro" x-text="acaoErro"></p>
     <h3 class="teia-subtitulo">Últimas quedas</h3>
@@ -719,6 +1060,71 @@
         </li>
       </template>
     </ol>
+  </dialog>
+
+  <dialog class="dialogo dialogo-rolavel" x-ref="dlgSilencio" aria-labelledby="titulo-silencio" @close="aoFecharSilencio">
+    <form @submit.prevent="criarSilencio" novalidate>
+      <h2 id="titulo-silencio" x-text="silTitulo">Silenciar alertas</h2>
+      <div class="segmentos" role="group" aria-label="Tipo">
+        <button class="segmento" id="sil-tipo-silencio" type="button" :aria-pressed="silTipoAtivo('silencio')" @click="silEscolherTipo('silencio')">Silêncio</button>
+        <button class="segmento" id="sil-tipo-manutencao" type="button" :aria-pressed="silTipoAtivo('manutencao')" @click="silEscolherTipo('manutencao')">Manutenção</button>
+      </div>
+      <p class="dica" x-text="silDica"></p>
+      <div class="campo-form">
+        <label for="sil-alvo-tipo">Vale para</label>
+        <select id="sil-alvo-tipo" x-model="silForm.alvo_tipo" @change="aoTrocarAlvoTipo">
+          <option value="equipamento">Um equipamento</option>
+          <option value="classe">Uma classe inteira</option>
+        </select>
+      </div>
+      <div class="campo-form" x-show="silSemAlvoEscolhido">
+        <label for="sil-busca">Buscar equipamento</label>
+        <input id="sil-busca" type="search" autocomplete="off" placeholder="Nome ou IP" x-model="silBusca" @input="aoBuscarAlvo" aria-describedby="sil-alvo-erro">
+        <ul class="al-candidatos" aria-label="Equipamentos encontrados">
+          <template x-for="c in silCandidatos" :key="c.id">
+            <li><button class="botao botao-fantasma al-candidato" type="button" @click="escolherAlvo(c.id)" x-text="c.rotulo"></button></li>
+          </template>
+        </ul>
+      </div>
+      <div class="al-alvo" x-show="silComAlvoEscolhido">
+        <span class="rotulo">Equipamento</span>
+        <p class="al-alvo-nome"><strong id="sil-alvo-nome" x-text="silAlvoNome"></strong></p>
+        <button class="botao botao-fantasma" type="button" @click="trocarAlvo">Trocar</button>
+      </div>
+      <div class="campo-form" x-show="!silEquipamento">
+        <label for="sil-classe">Classe</label>
+        <select id="sil-classe" x-model="silForm.alvo" aria-describedby="sil-alvo-erro">
+          <option value="">Escolha…</option>
+          <template x-for="c in classes" :key="c.slug">
+            <option :value="c.slug" x-text="c.nome"></option>
+          </template>
+        </select>
+      </div>
+      <p class="campo-erro" id="sil-alvo-erro" role="alert" x-show="silErros.alvo" x-text="silErros.alvo"></p>
+      <div class="campo-form">
+        <label for="sil-atalho">Por quanto tempo</label>
+        <select id="sil-atalho" x-model="silForm.atalho">
+          <template x-for="a in atalhos" :key="a.valor">
+            <option :value="a.valor" x-text="a.rotulo"></option>
+          </template>
+        </select>
+      </div>
+      <div class="campo-form" x-show="silPersonalizado">
+        <label for="sil-fim">Termina em</label>
+        <input id="sil-fim" type="datetime-local" x-model="silForm.fimLocal" aria-describedby="sil-fim-dica sil-fim-erro">
+        <p class="dica" id="sil-fim-dica" x-text="silDicaFuso"></p>
+        <p class="campo-erro" id="sil-fim-erro" role="alert" x-show="silErros.fim" x-text="silErros.fim"></p>
+      </div>
+      <div class="campo-form">
+        <label for="sil-motivo">Motivo (opcional)</label>
+        <input id="sil-motivo" maxlength="200" autocomplete="off" x-model="silForm.motivo" placeholder="Ex.: troca do nobreak">
+      </div>
+      <p class="alerta" role="alert" x-show="silErroGeral" x-text="silErroGeral"></p>
+      <div class="rodape">
+        <button class="botao botao-fantasma" type="button" @click="fecharSilencio">Cancelar</button>
+        <button class="botao botao-primario" type="submit" :disabled="silEnviando" x-text="silRotuloEnviar">Silenciar</button>
+      </div>
+    </form>
   </dialog>
 
   <dialog class="dialogo" x-ref="dlgNovo" aria-labelledby="titulo-novo">

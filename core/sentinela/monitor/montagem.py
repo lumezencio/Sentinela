@@ -4,7 +4,7 @@ Usado pelo lifespan (R4). Os laços (``executar``, descarregar) NÃO são inicia
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from ipaddress import IPv4Network
 
 from sqlalchemy import select
@@ -38,7 +38,10 @@ def estado_inicial(eq: Equipamento) -> Estado:
         estado = Estado(eq.estado)
     except ValueError:
         return Estado.DESCONHECIDO
-    return Estado.DESCONHECIDO if estado is Estado.PAUSADO else estado
+    # pausado sem a flag e inalcançável (o pai é reavaliado do zero ao subir): desconhecido
+    if estado in (Estado.PAUSADO, Estado.INALCANCAVEL):
+        return Estado.DESCONHECIDO
+    return estado
 
 
 def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
@@ -55,6 +58,7 @@ def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
         intervalo_s=float(classe.intervalo_s),
         critico=classe.critica,
         estado=estado_inicial(eq),
+        pai_id=eq.pai_id,
     )
 
 
@@ -112,7 +116,19 @@ async def montar_monitor(
         linhas = await db.execute(
             select(Equipamento, Classe).join(Classe, Equipamento.classe_id == Classe.id)
         )
+        alvos: list[Alvo] = []
+        inalcancaveis: list[str] = []
+        for eq, classe in linhas:
+            alvo = alvo_de(eq, classe)
+            if alvo.estado is Estado.DESCONHECIDO and eq.estado == Estado.INALCANCAVEL:
+                # entra como estava gravado para a liberação abaixo gravar a transição
+                alvo = replace(alvo, estado=Estado.INALCANCAVEL)
+                inalcancaveis.append(eq.id)
+            alvos.append(alvo)
         # um único recalcular para todos; fora das sub-redes: recusado e pausado
-        agendador.adicionar_lote(alvo_de(eq, classe) for eq, classe in linhas)
-    await agendador.aguardar_gravacoes()  # pausas por recusa já gravadas ao subir
+        agendador.adicionar_lote(alvos)
+        # o pai é reavaliado do zero: inalcancavel -> desconhecido gravado pelo escritor
+        # serial (banco e snapshot sem o elo partido) e checagem em até 5 s
+        agendador.liberar_inalcancavel(inalcancaveis)
+    await agendador.aguardar_gravacoes()  # pausas e liberações já gravadas ao subir
     return Monitor(guarda, barramento, limitador, gravador, agendador)

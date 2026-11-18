@@ -8,7 +8,7 @@ COPY --from=testes __init__.py tests/__init__.py
 COPY --from=testes descoberta/__init__.py descoberta/simulador_routeros.py \
      descoberta/simulador_gravador.py descoberta/agente_snmp.py tests/descoberta/
 COPY --from=testes fixtures/gravadores/ tests/fixtures/gravadores/
-COPY rodar.py cena.py ./
+COPY rodar.py cena.py telegram_falso.py ./
 USER 10001:10001
 # python rodar.py <simulador> | python cena.py (o diretório do script, /sim, entra no sys.path)
 ENTRYPOINT ["python"]

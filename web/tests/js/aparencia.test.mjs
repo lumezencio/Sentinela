@@ -15,12 +15,16 @@ test("aparenciaDe: valores por estado", () => {
     { cor: "#D97373", forma: "cruz", pulsa: true, treme: false, opacidade: 1, rotulo: "Offline" });
   assert.deepEqual(aparenciaDe("pausado"),
     { cor: "#7A8194", forma: "translucida", pulsa: false, treme: false, opacidade: 0.45, rotulo: "Pausado" });
+  assert.deepEqual(aparenciaDe("inalcancavel"),
+    { cor: "#7A8194", forma: "elo", pulsa: false, treme: false, opacidade: 0.7, rotulo: "Inalcançável" });
+  assert.notEqual(aparenciaDe("inalcancavel").forma, aparenciaDe("pausado").forma);
+  assert.notEqual(aparenciaDe("inalcancavel").forma, aparenciaDe("instavel").forma);
   assert.deepEqual(aparenciaDe("desconhecido"),
     { cor: "#7A8194", forma: "anel", pulsa: false, treme: false, opacidade: 0.7, rotulo: "Aguardando" });
 });
 
 test("aparenciaDe: estado nunca depende só de cor", () => {
-  const estados = ["online", "instavel", "suspeito", "offline", "pausado", "desconhecido"];
+  const estados = ["online", "instavel", "suspeito", "offline", "pausado", "desconhecido", "inalcancavel"];
   const chaves = estados.map((e) => {
     const a = aparenciaDe(e);
     return `${a.forma}|${a.pulsa}|${a.treme}|${a.opacidade}`;

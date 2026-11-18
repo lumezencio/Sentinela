@@ -4,7 +4,7 @@ import subprocess
 import sys
 import textwrap
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import sentinela.demo.simulador as simulador
 from sentinela.config import Settings
-from sentinela.db.modelos import Classe, Equipamento, SubRede, Usuario
+from sentinela.db.modelos import Alerta, Classe, Equipamento, Parede, SubRede, Usuario
 from sentinela.demo.simulador import ChecagemSimulada, gerar_rede
 from sentinela.main import criar_app
 from sentinela.rede.guarda import DestinoAutorizado, Guarda
@@ -337,3 +337,133 @@ async def test_demo_desligado_em_banco_demo_avisa_e_funciona(
     assert any(
         "banco de demonstração em uso com demo desligado" in r.getMessage() for r in caplog.records
     )
+
+
+async def _app_demo_aberto(settings_demo: Settings):  # type: ignore[no-untyped-def]
+    await criar_esquema(settings_demo.banco_url)
+    return criar_app(settings_demo, relogio=RelogioFalso(), iniciar_monitor=False)
+
+
+async def test_demo_semeia_pai_e_14_filhos(settings_demo: Settings) -> None:
+    app = await _app_demo_aberto(settings_demo)
+    async with app.router.lifespan_context(app):
+        async with app.state.sessoes() as db:
+            switches = (
+                (
+                    await db.execute(
+                        select(Equipamento)
+                        .join(Classe, Classe.id == Equipamento.classe_id)
+                        .where(Classe.slug == "switch")
+                        .order_by(Equipamento.nome)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            pai = switches[0]
+            filhos = (
+                (await db.execute(select(Equipamento).where(Equipamento.pai_id == pai.id)))
+                .scalars()
+                .all()
+            )
+            classes = {id_: slug for id_, slug in await db.execute(select(Classe.id, Classe.slug))}
+        assert len(filhos) == 14
+        assert all(classes[f.classe_id] != "gravador" for f in filhos)
+        assert pai.id not in {f.id for f in filhos}
+
+
+async def test_demo_semeia_alertas(settings_demo: Settings) -> None:
+    app = await _app_demo_aberto(settings_demo)
+    async with app.router.lifespan_context(app):
+        async with app.state.sessoes() as db:
+            alertas = (await db.execute(select(Alerta).order_by(Alerta.aberto_em))).scalars().all()
+        assert len(alertas) == 2
+        assert all(a.envio == "nao_aplica" and a.fechado_em is not None for a in alertas)
+        queda = next(a for a in alertas if len(a.afetados) == 14)
+        assert not queda.breve and queda.tipo == "queda"
+        assert queda.afetados and queda.quedas == [queda.equipamento_id]
+        breve = next(a for a in alertas if a.breve)
+        assert breve.tipo == "queda" and breve.afetados == []
+        assert (breve.fechado_em - breve.aberto_em) < timedelta(minutes=2)
+        agora = datetime.now(UTC)
+        atraso = agora - queda.fechado_em
+        assert timedelta(minutes=99) < atraso < timedelta(minutes=102)
+
+
+async def test_demo_semeia_telao_emparelhado(settings_demo: Settings) -> None:
+    app = await _app_demo_aberto(settings_demo)
+    async with app.router.lifespan_context(app):
+        async with app.state.sessoes() as db:
+            paredes = (await db.execute(select(Parede))).scalars().all()
+        assert [p.nome for p in paredes] == ["TV Portaria (demo)"]
+        assert paredes[0].token_hash is None and paredes[0].revogada_em is None
+
+
+async def test_demo_alertas_idempotente(settings_demo: Settings) -> None:
+    app = await _app_demo_aberto(settings_demo)
+    async with app.router.lifespan_context(app):
+        sessoes = app.state.sessoes
+        assert await simulador.semear_alertas_demo(sessoes, datetime.now(UTC)) is False
+        async with sessoes() as db:
+            assert await db.scalar(select(func.count()).select_from(Alerta)) == 2
+            assert await db.scalar(select(func.count()).select_from(Parede)) == 1
+
+
+async def test_queda_correlacionada_programada() -> None:
+    relogio = RelogioFalso()
+    rede = gerar_rede()
+    pai, filhos = simulador.hierarquia_demo(rede)
+    sim = ChecagemSimulada(
+        seed=1,
+        relogio=relogio,
+        rede=rede,
+        queda_correlacionada=(pai.ip, [f.ip for f in filhos]),
+    )
+    sim._proxima_queda_switch = 10**9  # isola a programada das quedas aleatórias
+    sim._p_queda = 0.0
+    ips = [pai.ip, *(f.ip for f in filhos)]
+
+    async def oks() -> list[bool]:
+        return [(await sim.executar(_destino(ip))).ok for ip in ips]
+
+    async def todos_falham() -> bool:
+        return not any(await oks())
+
+    async def todos_ok() -> bool:
+        return all(await oks())
+
+    assert await todos_ok()
+    await relogio.avancar(90)
+    assert await todos_falham()
+    await relogio.avancar(179)
+    assert await todos_falham()
+    await relogio.avancar(1)  # 270 s
+    assert await todos_ok()
+    await relogio.avancar(330)  # 600 s: entre ciclos
+    assert await todos_ok()
+    await relogio.avancar(90)  # 690 s: segundo ciclo
+    assert await todos_falham()
+
+
+async def test_demo_semeia_alertas_em_volume_com_alertas_existentes(
+    settings_demo: Settings,
+) -> None:
+    """Volume de demo antigo: a simulação já abriu alertas, mas a semeadura ainda não rodou."""
+    app = await _app_demo_aberto(settings_demo)
+    async with app.router.lifespan_context(app):
+        sessoes = app.state.sessoes
+        async with sessoes() as db:
+            for a in (await db.execute(select(Alerta))).scalars():
+                await db.delete(a)
+            for p in (await db.execute(select(Parede))).scalars():
+                await db.delete(p)
+            db.add(
+                Alerta(
+                    tipo="queda", quedas=[], afetados=[], voltaram=[], aberto_em=datetime.now(UTC)
+                )
+            )
+            await db.commit()
+        assert await simulador.semear_alertas_demo(sessoes, datetime.now(UTC)) is True
+        async with sessoes() as db:
+            assert await db.scalar(select(func.count()).select_from(Alerta)) == 3
+            assert await db.scalar(select(func.count()).select_from(Parede)) == 1

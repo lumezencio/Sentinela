@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Telão do Sentinela: estado dos equipamentos da rede local para exibir numa TV.">
+  <title>Sentinela · Telão</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/parede/parede.css">
+  <script defer src="/parede/parede.bundle.js"></script>
+</head>
+<body class="parede" data-modo="carregando">
+  <!-- ícones de estado: a forma muda junto com a cor (status nunca só por cor) -->
+  <svg width="0" height="0" class="so-leitor" aria-hidden="true" focusable="false">
+    <symbol id="i-online" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="currentColor"/></symbol>
+    <symbol id="i-instavel" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/></symbol>
+    <symbol id="i-offline" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 5l6 6M11 5l-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-pausado" viewBox="0 0 16 16"><rect x="3.5" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9.5" y="3" width="3" height="10" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-inalcancavel" viewBox="0 0 16 16"><path d="M6.2 5.2H4.8a2.8 2.8 0 0 0 0 5.6h1.4M9.8 5.2h1.4a2.8 2.8 0 0 1 0 5.6H9.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.9 3.2L7.1 12.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-desconhecido" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="2.6 2.4"/></symbol>
+    <symbol id="i-logo" viewBox="0 0 40 40"><ellipse cx="20" cy="20" rx="15" ry="6" fill="none" stroke="#8793E8" stroke-width="2"/><ellipse cx="20" cy="20" rx="6" ry="15" fill="none" stroke="#68C7BC" stroke-width="2"/><circle cx="20" cy="20" r="4" fill="#68C7BC"/></symbol>
+  </svg>
+
+  <main class="pr">
+    <p class="pr-carregando" id="pr-carregando" role="status">Conectando ao servidor…</p>
+
+    <!-- emparelhamento: o código que o admin digita em Configurações → Telões -->
+    <section class="pr-codigo" id="pr-codigo" aria-labelledby="pr-codigo-titulo" hidden>
+      <div class="pr-cartao">
+        <p class="pr-marca"><svg class="pr-logo" aria-hidden="true" focusable="false"><use href="#i-logo"/></svg><span>Sentinela</span></p>
+        <h1 class="pr-codigo-titulo" id="pr-codigo-titulo">Emparelhar este telão</h1>
+        <p class="pr-codigo-valor" id="pr-codigo-valor" aria-live="polite"></p>
+        <p class="pr-instrucao">Aprove em Configurações&nbsp;→&nbsp;Telões</p>
+        <p class="pr-dica">No painel do Sentinela, abra Configurações → Telões, digite o código acima e dê um nome a esta tela. O código muda sozinho a cada 10 minutos.</p>
+        <p class="pr-status" id="pr-codigo-status" role="status"></p>
+        <p class="pr-http">Conexão sem cifra (HTTP)</p>
+      </div>
+    </section>
+
+    <!-- telão: contadores e relógio em cima, Teia ou Organograma no meio, alertas embaixo -->
+    <section class="pr-telao" id="pr-telao" aria-labelledby="pr-titulo" hidden>
+      <header class="pr-topo">
+        <h1 class="pr-marca" id="pr-titulo"><svg class="pr-logo" aria-hidden="true" focusable="false"><use href="#i-logo"/></svg><span>Sentinela</span> <span class="pr-nome" id="pr-nome"></span></h1>
+        <ul class="pr-contadores" aria-label="Equipamentos por estado">
+          <li class="pr-conta st-online"><svg class="icone-status" aria-hidden="true" focusable="false"><use href="#i-online"/></svg><strong id="pr-n-online">0</strong><span id="pr-r-online">online</span></li>
+          <li class="pr-conta st-instavel"><svg class="icone-status" aria-hidden="true" focusable="false"><use href="#i-instavel"/></svg><strong id="pr-n-instavel">0</strong><span id="pr-r-instavel">instáveis</span></li>
+          <li class="pr-conta st-offline"><svg class="icone-status" aria-hidden="true" focusable="false"><use href="#i-offline"/></svg><strong id="pr-n-offline">0</strong><span id="pr-r-offline">offline</span></li>
+          <li class="pr-conta st-inalcancavel"><svg class="icone-status" aria-hidden="true" focusable="false"><use href="#i-inalcancavel"/></svg><strong id="pr-n-inalcancavel">0</strong><span id="pr-r-inalcancavel">inalcançáveis</span></li>
+        </ul>
+        <p class="pr-hora"><span class="pr-http">Conexão sem cifra (HTTP)</span><time class="pr-relogio" id="pr-relogio"></time></p>
+      </header>
+      <div class="pr-palco" id="pr-palco">
+        <div class="pr-teia" id="pr-teia" hidden></div>
+        <div class="pr-org" id="pr-org" hidden></div>
+        <!-- cartões de queda (até 2): só nome, classe, estado, causa, hora e nº de afetados -->
+        <div class="pr-cartoes" id="pr-cartoes" aria-live="polite"></div>
+      </div>
+      <footer class="pr-faixa">
+        <h2 class="so-leitor">Alertas abertos</h2>
+        <ul class="pr-alertas" id="pr-alertas"></ul>
+        <p class="pr-sem-alertas" id="pr-sem-alertas">Nenhum alerta aberto.</p>
+      </footer>
+    </section>
+  </main>
+
+  <div class="pr-sem-conexao" id="pr-sem-conexao" role="alert" hidden>
+    <svg class="icone-status" aria-hidden="true" focusable="false"><use href="#i-offline"/></svg>
+    <p><strong>Sem conexão com o servidor</strong><span>O que está na tela pode estar desatualizado. Tentando de novo…</span></p>
+  </div>
+</body>
+</html>

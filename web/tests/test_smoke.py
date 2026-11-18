@@ -13,6 +13,7 @@ URL local e ``SENTINELA_SMOKE_COMPOSE_LOCAL=1`` (senão o cenário é pulado).
 import gzip
 import hashlib
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -28,13 +29,15 @@ POR_PAGINA = 50
 TIPOS_PRIMEIRA_TELA = ("document", "script", "stylesheet", "image", "fetch", "font")
 
 
-def entrar(page: Page, alvo: Alvo, login: str = "", senha: str = "") -> None:
+def entrar(
+    page: Page, alvo: Alvo, login: str = "", senha: str = "", total: int = TOTAL_DEMO
+) -> None:
     page.goto("/login.html")
     page.get_by_label("Login").fill(login or alvo.login)
     page.get_by_label("Senha").fill(senha or alvo.senha)
     page.get_by_role("button", name="Entrar").click()
     page.wait_for_url("**/index.html")
-    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    expect(page.locator("#contador-total")).to_have_text(str(total), timeout=15_000)
 
 
 def linhas(page: Page) -> Any:
@@ -463,6 +466,55 @@ def test_teia_abre_e_troca_os_5_estilos_sem_erro(page: Page, alvo: Alvo) -> None
     assert erros == [], erros
 
 
+def test_teia_rotulo_de_classe_longo_quebra_linha_e_fica_no_palco(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    abrir_teia(page)
+    page.wait_for_timeout(2500)
+    longo = "Equipamentos de monitoramento do prédio anexo, bloco B"[:60]
+    # um rótulo VISÍVEL (não escondido pela cena nem sob um painel de vidro): o primeiro da
+    # lista pode estar oculto sob o painel de classes e não provaria nada
+    marcado = page.evaluate(
+        """(t) => {
+        const vidros = [...document.querySelectorAll('#conteudo-teia .vidro')]
+            .filter((v) => !v.hidden && v.offsetParent !== null)
+            .map((v) => v.getBoundingClientRect());
+        const livre = (r) => !vidros.some((v) => r.left < v.right && r.right > v.left
+            && r.top < v.bottom && r.bottom > v.top);
+        const alvo = [...document.querySelectorAll(
+            '#conteudo-teia .teia-rotulo:not(.servidor):not([hidden]) > span')]
+            .find((s) => livre(s.getBoundingClientRect())
+                && getComputedStyle(s.parentElement).opacity !== '0');
+        if (!alvo) return false;
+        alvo.textContent = t;
+        alvo.dataset.teste = '1';
+        return true;
+    }""",
+        longo,
+    )
+    assert marcado, "nenhum rótulo de classe visível fora dos painéis"
+    page.wait_for_timeout(600)
+    medidas = page.evaluate(
+        """() => {
+        const palco = document.querySelector('#conteudo-teia .teia-rotulos')
+            .getBoundingClientRect();
+        return [...document.querySelectorAll('#conteudo-teia .teia-rotulo:not([hidden]) > span')]
+            .map((s) => {
+                const r = s.getBoundingClientRect();
+                return {
+                    medido: s.dataset.teste === '1',
+                    ellipsis: getComputedStyle(s).textOverflow === 'ellipsis',
+                    cortado: s.scrollWidth > s.clientWidth + 1,
+                    dentro: r.left >= palco.left - 1 && r.right <= palco.right + 1
+                        && r.top >= palco.top - 1 && r.bottom <= palco.bottom + 1,
+                };
+            });
+    }"""
+    )
+    assert any(m["medido"] for m in medidas), "o rótulo medido sumiu da cena"
+    assert not any(m["ellipsis"] or m["cortado"] for m in medidas), medidas
+    assert all(m["dentro"] for m in medidas), medidas
+
+
 def test_teia_movimento_reduzido_sem_particulas_nem_rotacao(browser: Browser, alvo: Alvo) -> None:
     contexto = browser.new_context(
         reduced_motion="reduce", ignore_https_errors=True, base_url=alvo.url
@@ -510,6 +562,11 @@ def test_teia_clicar_equipamento_mostra_historico(page: Page, alvo: Alvo) -> Non
     primeiro.click()
     painel = page.locator("#painel-equipamento")
     expect(painel).to_be_visible()
+    # Task 11b: de perto, o IP aparece dentro das esferas (canvas -> sprite; contagem no palco)
+    palco = page.locator("#conteudo-teia [data-equipamentos]")
+    if palco.get_attribute("data-nivel") != "agrupado":
+        com_ip = re.compile(r"^[1-9]\d*$")
+        expect(palco).to_have_attribute("data-rotulos-ip", com_ip, timeout=10_000)
     expect(painel.get_by_role("heading", level=2)).to_have_text(nome)
     expect(painel.get_by_role("heading", name="Últimas quedas")).to_be_visible()
     historico = painel.locator(".teia-historico li:visible, .teia-historico-vazio:visible")
@@ -871,6 +928,31 @@ def pesos_por_cartao(secao: Any) -> list[list[int]]:
         "cs => cs.map(c => [...c.querySelectorAll('.org-item')].map(i => Number(i.dataset.peso)))"
     )
     return resultado
+
+
+def test_organograma_mostra_o_ip_inteiro_em_cada_no(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_organograma(page)
+    itens = secao.locator(".org-item")
+    expect(itens.first).to_be_visible()
+    ips = secao.locator(".org-item .org-ip")
+    assert ips.count() == itens.count() > 0
+    # IP da API como texto, inteiro (sem corte nem reticências), dentro do próprio nó
+    dados = page.evaluate(
+        """() => [...document.querySelectorAll('#conteudo-organograma .org-item')].map((b) => {
+            const ip = b.querySelector('.org-ip');
+            const r = ip.getBoundingClientRect(), c = b.getBoundingClientRect();
+            return {texto: ip.textContent, cabe: ip.scrollWidth <= ip.clientWidth + 1,
+                    dentro: r.left >= c.left && r.right <= c.right + 0.5
+                        && r.bottom <= c.bottom + 0.5,
+                    filhos: ip.children.length};
+        })"""
+    )
+    for d in dados:
+        assert re.fullmatch(r"10\.99\.\d{1,3}\.\d{1,3}", d["texto"]), d
+        assert d["cabe"] and d["dentro"] and d["filhos"] == 0, d
+    assert erros == [], erros
 
 
 def test_organograma_360_pior_estado_primeiro_sem_rolagem(browser: Browser, alvo: Alvo) -> None:
@@ -1250,6 +1332,55 @@ def test_configuracoes_cria_fonte_testa_e_coleta(page: Page, alvo: Alvo) -> None
         expect(cartao).to_have_count(0)
 
 
+def test_configuracoes_lista_atrasada_nao_apaga_fonte_nova(page: Page, alvo: Alvo) -> None:
+    """Flaky de ``test_configuracoes_cria_fonte_testa_e_coleta``: um GET /fontes disparado por
+    um "coletada" (a demo coleta sem parar) antes da criação e que responde DEPOIS dela
+    sobrescrevia a lista e fazia a fonte nova sumir do painel."""
+    from conftest import PonteWs
+
+    erros = vigiar_console(page)
+    ponte = PonteWs(page)
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    expect(secao.locator(".cfg-fonte").first).to_be_visible(timeout=15_000)
+    seguradas: list[Any] = []
+
+    def segurar(rota: Route) -> None:
+        if rota.request.method != "GET" or seguradas:
+            rota.continue_()
+            return
+        seguradas.append((rota, rota.fetch()))  # resposta de ANTES da criação, entregue depois
+
+    page.route(re.compile(r".*/api/v1/fontes$"), segurar)
+    ponte.injetar({"tipo": "fonte", "acao": "coletada", "id": "qualquer"})
+    page.wait_for_timeout(300)  # o GET antigo já foi ao servidor e voltou, preso na rota
+    assert len(seguradas) == 1
+    secao.get_by_role("button", name="Nova fonte").click()
+    dialogo = page.get_by_role("dialog", name="Nova fonte")
+    dialogo.get_by_label("Tipo").select_option("mikrotik")
+    dialogo.get_by_label("Nome").fill("Roteador Atrasado")
+    dialogo.get_by_label("Endereço IP").fill("10.99.40.22")
+    dialogo.get_by_label("Usuário").fill("api-smoke")
+    dialogo.get_by_label("Senha", exact=True).fill(SENHA_SMOKE)
+    dialogo.get_by_role("button", name="Criar fonte").click()
+    cartao = secao.locator(".cfg-fonte").filter(has_text="Roteador Atrasado")
+    try:
+        expect(cartao).to_have_count(1)
+        rota, resposta = seguradas[0]
+        rota.fulfill(response=resposta)  # a lista velha chega depois da nova
+        page.wait_for_timeout(500)
+        assert cartao.count() == 1, "a lista atrasada apagou a fonte recém-criada"
+        assert erros == [], erros
+    finally:
+        page.unroute(re.compile(r".*/api/v1/fontes$"))
+        cartao.get_by_role("button", name="Remover Roteador Atrasado").click()
+        confirmar = page.get_by_role("dialog", name="Remover Roteador Atrasado?")
+        expect(confirmar).to_be_visible()
+        confirmar.get_by_role("button", name="Remover").click()
+        expect(cartao).to_have_count(0)
+
+
 def test_configuracoes_confiar_certificado_e_orientacao_r5(page: Page, alvo: Alvo) -> None:
     erros = vigiar_console(page)
     entrar(page, alvo)
@@ -1470,3 +1601,1319 @@ def test_novos_2000_pendentes_pagina(browser: Browser, alvo_fila_grande: Alvo) -
         assert erros == [], erros
     finally:
         contexto.close()
+
+
+# ---------- Fase 4A: inalcançável e "Depende de" ----------
+DEP_ALFA = "Dep Smoke Switch Alfa"
+DEP_BETA = "Dep Smoke Ponto Beta"
+
+
+def criar_dependentes(page: Page) -> list[str]:
+    """Dois equipamentos soltos da classe iot (10.99.60.24x) para os testes de 'Depende de'."""
+    ids: list[str] = []
+    for nome, ip in ((DEP_ALFA, "10.99.60.241"), (DEP_BETA, "10.99.60.242")):
+        criado = page.evaluate(CRIAR_VIA_API, {"nome": nome, "ip": ip, "classe": "iot"})
+        assert criado["status"] == 201, criado
+        ids.append(criado["corpo"]["id"])
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 2), timeout=30_000)
+    return ids
+
+
+def abrir_ficha_no_organograma(page: Page, nome: str) -> Any:
+    org = abrir_organograma(page)
+    org.get_by_label("Buscar").fill(nome)
+    item = org.locator(".org-item").filter(has=page.locator(".org-nome", has_text=nome))
+    expect(item).to_have_count(1, timeout=10_000)
+    item.click()
+    dialogo = page.get_by_role("dialog", name=nome)
+    expect(dialogo).to_be_visible()
+    return dialogo
+
+
+def test_depende_de_define_e_mostra_na_ficha(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        expect(dialogo.locator(".equip-dep .dep-atual")).to_have_text("Nenhum")
+        dialogo.get_by_role("button", name="Alterar dependência").click()
+        dialogo.get_by_label("Buscar equipamento").fill("alfa")
+        opcao = dialogo.get_by_role("button", name=re.compile(DEP_ALFA))
+        expect(opcao).to_have_count(1)
+        # o próprio equipamento nunca é oferecido
+        expect(dialogo.get_by_role("button", name=re.compile(DEP_BETA))).to_have_count(0)
+        opcao.click()
+        expect(dialogo.locator(".dep-escolhido")).to_have_text(f"Novo pai: {DEP_ALFA}")
+        dialogo.get_by_role("button", name="Salvar").click()
+        expect(dialogo.locator(".equip-dep .dep-atual")).to_have_text(DEP_ALFA, timeout=10_000)
+        expect(dialogo.locator(".dep-editor")).to_be_hidden()
+        # o servidor guardou o vínculo
+        r = api_json(page, "GET", f"/equipamentos/{ids[1]}")
+        assert r["dados"]["pai_id"] == ids[0], r
+        # o pai agora não pode escolher o filho como pai (fecharia um ciclo)
+        page.keyboard.press("Escape")
+        dialogo = abrir_ficha_no_organograma(page, DEP_ALFA)
+        dialogo.get_by_role("button", name="Alterar dependência").click()
+        dialogo.get_by_label("Buscar equipamento").fill("beta")
+        expect(dialogo.get_by_text("Nenhum equipamento encontrado.")).to_be_visible()
+        page.keyboard.press("Escape")
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+    demo_de_volta(page)
+
+
+def test_depende_de_ciclo_mostra_erro_da_api(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        # a API é quem decide o ciclo: devolve a recusa e o painel mostra a mensagem dela
+        page.route(
+            "**/api/v1/equipamentos/*",
+            lambda route: (
+                route.fulfill(
+                    status=422,
+                    content_type="application/json",
+                    body='{"detail": "Dependência circular."}',
+                )
+                if route.request.method == "PATCH"
+                else route.continue_()
+            ),
+        )
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        dialogo.get_by_role("button", name="Alterar dependência").click()
+        dialogo.get_by_label("Buscar equipamento").fill("alfa")
+        dialogo.get_by_role("button", name=re.compile(DEP_ALFA)).click()
+        dialogo.get_by_role("button", name="Salvar").click()
+        expect(
+            dialogo.get_by_role("alert").filter(has_text="Dependência circular.")
+        ).to_be_visible()
+        expect(dialogo.locator(".equip-dep .dep-atual")).to_have_text("Nenhum")  # nada mudou
+        assert api_json(page, "GET", f"/equipamentos/{ids[1]}")["dados"]["pai_id"] is None
+        page.keyboard.press("Escape")
+        assert [e for e in erros if "422" not in e] == [], erros
+    finally:
+        page.unroute("**/api/v1/equipamentos/*")
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+    demo_de_volta(page)
+
+
+def test_camera_de_gravador_depende_de_so_leitura(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    gravador_antes = ids_por_busca(page, "10.99.50.10")
+    secao = abrir_novos(page)
+    canal = secao.locator(".nv-linha-filho").first
+    nome = "Canal Smoke Depende"
+    canal.get_by_label("Nome (opcional)").fill(nome)
+    ids: list[str] = []
+    try:
+        canal.get_by_role("button", name=re.compile("^Aprovar")).click()
+        expect(secao.locator("#novos-aviso")).to_contain_text("aprovado", timeout=10_000)
+        ids = ids_por_busca(page, nome)
+        assert len(ids) == 1, ids
+        dialogo = abrir_ficha_no_organograma(page, nome)
+        expect(dialogo.get_by_text("Depende de", exact=True)).to_be_visible()
+        expect(dialogo.locator(".equip-dep")).to_contain_text("somente leitura")
+        expect(dialogo.get_by_role("button", name="Alterar dependência")).to_be_hidden()
+        page.keyboard.press("Escape")
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+        for id_ in ids_por_busca(page, "10.99.50.10"):
+            if id_ not in gravador_antes:
+                apagar_equipamentos(page, [id_])
+    demo_de_volta(page)
+
+
+def test_visualizador_nao_edita_depende_de(page: Page, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        page.context.clear_cookies()
+        entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor, TOTAL_DEMO + 2)
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        expect(dialogo.get_by_text("Depende de", exact=True)).to_be_visible()  # só leitura
+        expect(dialogo.get_by_role("button", name="Alterar dependência")).to_be_hidden()
+        expect(dialogo.get_by_label("Buscar equipamento")).to_be_hidden()
+        page.keyboard.press("Escape")
+    finally:
+        page.context.clear_cookies()
+        entrar(page, alvo, total=TOTAL_DEMO + 2)
+        apagar_equipamentos(page, ids[::-1])  # filho antes do pai
+    demo_de_volta(page)
+
+
+def test_legenda_tem_inalcancavel_com_icone(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    abrir_teia(page)
+    item = page.locator(".teia-legenda li.st-inalcancavel")
+    expect(item).to_have_text("inalcançável")
+    expect(item.locator("use")).to_have_attribute("href", "#i-inalcancavel")
+    expect(item.locator("svg")).to_be_visible()
+    # o símbolo existe de verdade (um <use> sem destino ficaria invisível)
+    assert page.evaluate("!!document.getElementById('i-inalcancavel')")
+    # contador e filtro da Lista também falam do estado novo
+    page.get_by_role("tab", name="Lista").click()
+    expect(page.locator("#contador-inalcancavel")).to_be_visible()
+    expect(
+        page.get_by_role("combobox", name="Estado").locator("option", has_text="Inalcançável")
+    ).to_have_count(1)
+    assert erros == [], erros
+
+
+@pytest.mark.parametrize("largura", [768, 800, 1024, 1199, 1200, 1366])
+def test_lista_cabe_no_cartao_sem_rolagem_interna(
+    browser: Browser, alvo: Alvo, largura: int
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo)
+        expect(linhas(page)).to_have_count(POR_PAGINA)
+        cabe = page.evaluate(
+            "(() => { const c = document.querySelector('.painel-lista');"
+            " return c.scrollWidth <= c.clientWidth; })()"
+        )
+        assert cabe, f"a tabela passa da borda do cartão em {largura} px"
+    finally:
+        contexto.close()
+
+
+def test_cancelar_depende_de_devolve_o_foco_ao_botao(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    ids = criar_dependentes(page)
+    try:
+        dialogo = abrir_ficha_no_organograma(page, DEP_BETA)
+        alterar = dialogo.get_by_role("button", name="Alterar dependência")
+        alterar.click()
+        dialogo.get_by_role("button", name="Cancelar").click()
+        expect(dialogo.locator(".dep-editor")).to_be_hidden()
+        expect(alterar).to_be_focused()
+        page.keyboard.press("Escape")
+    finally:
+        apagar_equipamentos(page, ids[::-1])
+    demo_de_volta(page)
+
+
+# ---------- Fase 4A: aba Alertas, silêncios e Telegram ----------
+TOKEN_FICTICIO = "1234567890:AAExampleExampleExampleExampleExample12"  # noqa: S105 - só o formato, nunca um token real
+
+
+def abrir_alertas(page: Page) -> Any:
+    page.get_by_role("tab", name=re.compile("^Alertas")).click()
+    expect(page.get_by_role("tab", name=re.compile("^Alertas"))).to_have_attribute(
+        "aria-selected", "true"
+    )
+    assert page.url.endswith("#alertas"), page.url
+    secao = page.locator("#conteudo-alertas")
+    expect(secao.locator("li.al-linha").first).to_be_visible(timeout=20_000)
+    return secao
+
+
+def linha_do_alerta(secao: Any, alerta: dict[str, Any]) -> Any:
+    return secao.locator(f'li.al-linha[data-id="{alerta["id"]}"]')
+
+
+def test_aba_alertas_lista_abertos_e_contador_no_menu(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    selo = page.locator("#contador-alertas")
+    expect(selo).to_be_visible(timeout=20_000)
+    expect(selo).to_have_text(re.compile(r"^\d+ abertos$"))
+    assert int(selo.inner_text().split()[0]) >= 3  # semeados abertos (a demo pode somar ou fechar)
+    secao = abrir_alertas(page)
+    a = alertas_semeados
+    aberto = linha_do_alerta(secao, a["aberto"])
+    expect(aberto.locator(".al-texto")).to_have_text(a["aberto"]["texto"])
+    # estado nunca só por cor: ícone + rótulo; envio e afetados em texto
+    expect(aberto.locator(".al-marca")).to_have_text("Aberto")
+    expect(aberto.locator(".al-marca svg")).to_be_visible()
+    expect(aberto).to_contain_text("3 afetados")
+    expect(aberto.locator(".al-envio")).to_have_text("Telegram enviado")
+    instavel = linha_do_alerta(secao, a["instavel"])
+    expect(instavel.locator(".al-marca")).to_have_text("Instável")
+    expect(instavel).to_contain_text("Reconhecido por admin")
+    expect(linha_do_alerta(secao, a["silenciado"]).locator(".al-envio")).to_have_text("Silenciado")
+    expect(linha_do_alerta(secao, a["pendente"]).locator(".al-envio")).to_have_text(
+        "Telegram pendente"
+    )
+    expect(linha_do_alerta(secao, a["falhou"]).locator(".al-envio")).to_have_text("Telegram falhou")
+    # o filtro padrão é "abertos": o alerta já resolvido não aparece
+    expect(linha_do_alerta(secao, a["fechado"])).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_alertas_filtros_e_abrir_afetados(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_alertas(page)
+    a = alertas_semeados
+    secao.get_by_role("button", name="Todos", exact=True).click()
+    fechado = linha_do_alerta(secao, a["fechado"])
+    expect(fechado).to_be_visible()
+    expect(fechado.locator(".al-marca")).to_have_text("Resolvido")
+    expect(fechado).to_contain_text("durou 2 min")
+    secao.get_by_role("button", name="Reconhecidos", exact=True).click()
+    expect(linha_do_alerta(secao, a["instavel"])).to_be_visible()
+    expect(linha_do_alerta(secao, a["aberto"])).to_have_count(0)
+    # classe e período: o alerta semeado continua na lista
+    secao.get_by_role("button", name="Todos", exact=True).click()
+    eq = api_json(page, "GET", f"/equipamentos/{a['aberto']['equipamento_id']}")["dados"]
+    secao.get_by_label("Classe").select_option(eq["classe"])
+    expect(linha_do_alerta(secao, a["aberto"])).to_be_visible()
+    secao.get_by_label("Período").select_option("24h")
+    expect(linha_do_alerta(secao, a["aberto"])).to_be_visible()
+    secao.get_by_label("Classe").select_option("")
+    # afetados: abre, lista os 3 e fecha
+    aberto = linha_do_alerta(secao, a["aberto"])
+    botao = aberto.locator(".al-acoes button").first  # o nome acessível muda ao abrir
+    expect(botao).to_have_text("Ver afetados")
+    botao.click()
+    expect(botao).to_have_text("Ocultar afetados")
+    expect(botao).to_have_attribute("aria-expanded", "true")
+    expect(aberto.locator(".al-afetados li")).to_have_count(3)
+    expect(aberto.locator(".al-afetados li").first.locator(".estado")).not_to_be_empty()
+    botao.click()
+    expect(botao).to_have_attribute("aria-expanded", "false")
+    expect(aberto.locator(".al-detalhe")).to_be_hidden()
+    assert erros == [], erros
+
+
+def test_reconhecer_atualiza_ao_vivo(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    pelo_botao, pela_api = novo_alerta(), novo_alerta()
+    entrar(page, alvo)
+    secao = abrir_alertas(page)
+    a, b = linha_do_alerta(secao, pelo_botao), linha_do_alerta(secao, pela_api)
+    expect(a).to_be_visible()
+    a.get_by_role("button", name=re.compile("^Reconhecer")).click()
+    expect(a).to_contain_text("Reconhecido por admin")
+    expect(a.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(0)
+    # outra origem (aqui, a API direto): a linha muda sem recarregar a página
+    expect(b.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(1)
+    r = api_json(page, "POST", f"/alertas/{pela_api['id']}/reconhecer")
+    assert r["status"] == 200, r
+    expect(b).to_contain_text("Reconhecido por admin")
+    assert erros == [], erros
+
+
+def abrir_dialogo_silencio(page: Page, secao: Any) -> Any:
+    secao.get_by_role("button", name="Silenciar ou manutenção").click()
+    dialogo = page.locator("dialog[open]")
+    expect(dialogo).to_be_visible()
+    return dialogo
+
+
+def escolher_equipamento(dialogo: Any, nome: str) -> None:
+    dialogo.get_by_label("Buscar equipamento").fill(nome[:18])
+    dialogo.get_by_role("button", name=re.compile(re.escape(nome))).click()
+    expect(dialogo.locator("#sil-alvo-nome")).to_have_text(nome)
+
+
+def test_silenciar_1h_aparece_e_encerrar(page: Page, alvo: Alvo, alertas_semeados: Any) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    nome = "Switch Torre Silêncio"
+    criado = page.evaluate(CRIAR_VIA_API, {"nome": nome, "ip": "10.99.60.231", "classe": "iot"})
+    assert criado["status"] == 201, criado
+    try:
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=15_000)
+        secao = abrir_alertas(page)
+        dialogo = abrir_dialogo_silencio(page, secao)
+        # sem alvo: erro no formulário, nada enviado
+        dialogo.get_by_role("button", name="Silenciar", exact=True).click()
+        expect(dialogo.locator("#sil-alvo-erro")).to_have_text("Escolha o equipamento.")
+        escolher_equipamento(dialogo, nome)
+        dialogo.get_by_label("Por quanto tempo").select_option("1h")
+        dialogo.get_by_label("Motivo (opcional)").fill("troca do nobreak")
+        dialogo.get_by_role("button", name="Silenciar", exact=True).click()
+        expect(dialogo).to_have_count(0)
+        item = secao.locator("li.al-silencio").filter(has_text=nome)
+        expect(item).to_be_visible(timeout=10_000)
+        expect(item.locator(".al-tipo")).to_have_text("Silêncio")
+        expect(item).to_contain_text(re.compile(r"Até \d{2}:\d{2}"))
+        expect(item).to_contain_text("troca do nobreak")
+        item.get_by_role("button", name=re.compile("^Encerrar")).click()
+        expect(item).to_have_count(0, timeout=10_000)
+        assert api_json(page, "GET", "/silencios")["dados"] == []
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, [criado["corpo"]["id"]])
+        demo_de_volta(page)
+
+
+def test_criar_manutencao_pausa_e_mostra(page: Page, alvo: Alvo, alertas_semeados: Any) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    nome = "Impressora em manutenção do bloco B"
+    criado = page.evaluate(CRIAR_VIA_API, {"nome": nome, "ip": "10.99.60.232", "classe": "iot"})
+    assert criado["status"] == 201, criado
+    eid = criado["corpo"]["id"]
+    try:
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=15_000)
+        secao = abrir_alertas(page)
+        dialogo = abrir_dialogo_silencio(page, secao)
+        dialogo.get_by_role("button", name="Manutenção", exact=True).click()
+        expect(dialogo.get_by_role("heading", name="Janela de manutenção")).to_be_visible()
+        expect(dialogo).to_contain_text("também pausa a checagem")
+        escolher_equipamento(dialogo, nome)
+        # personalizado: o fim tem de estar no futuro e em até 30 dias
+        dialogo.get_by_label("Por quanto tempo").select_option("personalizado")
+        dialogo.get_by_role("button", name="Iniciar manutenção").click()
+        expect(dialogo.locator("#sil-fim-erro")).to_have_text("Informe quando termina.")
+        dialogo.get_by_label("Termina em").fill("2099-01-01T10:00")
+        dialogo.get_by_role("button", name="Iniciar manutenção").click()
+        expect(dialogo.locator("#sil-fim-erro")).to_have_text("No máximo 30 dias.")
+        dialogo.get_by_label("Por quanto tempo").select_option("4h")
+        dialogo.get_by_role("button", name="Iniciar manutenção").click()
+        expect(dialogo).to_have_count(0)
+        item = secao.locator("li.al-silencio").filter(has_text=nome)
+        expect(item).to_be_visible(timeout=10_000)
+        expect(item.locator(".al-tipo")).to_have_text("Manutenção")
+        expect(item).to_contain_text("1 equipamento pausado")
+        assert api_json(page, "GET", f"/equipamentos/{eid}")["dados"]["estado"] == "pausado"
+        item.get_by_role("button", name=re.compile("^Encerrar")).click()
+        expect(item).to_have_count(0, timeout=10_000)
+        assert api_json(page, "GET", f"/equipamentos/{eid}")["dados"]["estado"] != "pausado"
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, [eid])
+        demo_de_volta(page)
+
+
+def test_visualizador_ve_alertas_sem_botoes(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    erros = vigiar_console(page)
+    entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    secao = abrir_alertas(page)
+    aberto = linha_do_alerta(secao, alertas_semeados["aberto"])
+    expect(aberto).to_be_visible()
+    expect(aberto.get_by_role("button", name="Ver afetados")).to_be_visible()
+    for nome in (
+        re.compile("^Reconhecer"),
+        re.compile("^Silenciar"),
+        re.compile("^Encerrar"),
+        re.compile("manutenção$"),
+    ):
+        expect(secao.get_by_role("button", name=nome)).to_have_count(0)
+    expect(page.get_by_role("tab", name="Configurações")).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_deep_link_alertas_sem_piscar_lista(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    page.route("**/vendor/alpine-csp.min.js", lambda r: r.abort())
+    page.goto("/index.html#alertas")
+    page.reload()
+    assert page.evaluate("document.documentElement.dataset.aba") == "alertas"
+    expect(page.locator("#conteudo-lista")).to_be_hidden()
+    expect(page.locator(".aviso-sem-alpine")).to_be_visible(timeout=10_000)
+    page.unroute("**/vendor/alpine-csp.min.js")
+    erros = vigiar_console(page)
+    page.reload()
+    expect(page.locator("#conteudo-alertas")).to_be_visible(timeout=15_000)
+    expect(page.locator("#conteudo-lista")).to_be_hidden()
+    expect(page.get_by_role("tabpanel")).to_have_count(1)
+    expect(page).to_have_title("Sentinela · Alertas")
+    page.wait_for_timeout(1000)
+    assert erros == [], erros
+
+
+def test_alertas_360_sem_rolagem_horizontal(
+    browser: Browser, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": 360, "height": 740}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo)
+        abrir_alertas(page)
+        largura = page.evaluate(
+            "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+        )
+        assert largura[0] <= largura[1], largura
+    finally:
+        contexto.close()
+
+
+def abrir_configuracoes(page: Page) -> Any:
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    expect(secao.locator("#cfg-telegram")).to_be_visible(timeout=15_000)
+    return secao
+
+
+def test_telegram_token_nunca_volta_ao_formulario(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_configuracoes(page)
+    cartao = secao.locator("#cfg-telegram")
+    token = cartao.get_by_label("Token do bot")
+    chats = cartao.get_by_label("Destinos (um por linha)")
+    expect(cartao.locator("#tg-situacao")).to_have_text("Token não definido")
+    # validação no formulário, sem pedido à API
+    token.fill("isto-nao-e-um-token")
+    cartao.get_by_role("button", name="Salvar").click()
+    expect(cartao.locator("#tg-token-erro")).to_contain_text("formato inválido")
+    token.fill("")
+    chats.fill("\n".join(str(1000 + i) for i in range(11)))
+    cartao.get_by_role("button", name="Salvar").click()
+    expect(cartao.locator("#tg-chats-erro")).to_have_text("No máximo 10 destinos.")
+    # salva token + destino
+    token.fill(TOKEN_FICTICIO)
+    chats.fill("-1001234567890")
+    cartao.get_by_role("button", name="Salvar").click()
+    expect(cartao.locator("#tg-aviso")).to_have_text("Configuração do Telegram salva.")
+    expect(cartao.locator("#tg-situacao")).to_have_text("Token definido")
+    try:
+        expect(token).to_have_value("")
+        page.reload()
+        secao = abrir_configuracoes(page)
+        cartao = secao.locator("#cfg-telegram")
+        expect(cartao.locator("#tg-situacao")).to_have_text("Token definido")
+        expect(cartao.get_by_label("Token do bot")).to_have_value("")
+        expect(cartao.get_by_label("Destinos (um por linha)")).to_have_value("-1001234567890")
+        assert TOKEN_FICTICIO not in page.content()
+        assert TOKEN_FICTICIO not in page.evaluate(
+            "() => [...document.querySelectorAll('input, textarea')].map((e) => e.value).join()"
+        )
+        resposta = api_json(page, "GET", "/config/telegram")
+        assert resposta["dados"]["token_definido"] is True
+        assert TOKEN_FICTICIO not in str(resposta), "o token não pode voltar da API"
+        # campo vazio não apaga: o PATCH nem menciona o token
+        cartao.get_by_label("Destinos (um por linha)").fill("-1001234567890\n@canal_do_noc")
+        with page.expect_request(
+            lambda r: r.method == "PATCH" and r.url.endswith("/config/telegram")
+        ) as pedido:
+            cartao.get_by_role("button", name="Salvar").click()
+        assert "token" not in pedido.value.post_data_json
+        expect(cartao.locator("#tg-situacao")).to_have_text("Token definido")
+        # modo demonstração: o teste responde com o texto fixo do servidor
+        cartao.get_by_role("button", name="Enviar teste").click()
+        expect(cartao.locator("#tg-teste")).to_have_text("Indisponível no modo demonstração.")
+        # o 409 esperado vira "Failed to load resource" no console: só ele é descartado
+        erros[:] = [e for e in erros if "409" not in e]
+    finally:
+        api_json(page, "PATCH", "/config/telegram", {"token": "", "chats": []})
+    page.reload()
+    secao = abrir_configuracoes(page)
+    expect(secao.locator("#tg-situacao")).to_have_text("Token não definido")
+    assert erros == [], erros
+
+
+def test_configuracoes_mostra_fuso(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_configuracoes(page)
+    expect(secao.locator("#cfg-fuso")).to_have_text("America/Sao_Paulo")
+    expect(secao.get_by_role("heading", name="Fuso horário")).to_be_visible()
+    assert erros == [], erros
+
+
+HOSTIL = "<img src=x onerror=window.__xss=1>" + "A" * 300  # noqa: E501
+
+
+def test_texto_hostil_do_alerta_vira_texto_e_cabe_em_360(
+    browser: Browser, alvo: Alvo, novo_alerta: Any
+) -> None:
+    alerta = novo_alerta(renomear=HOSTIL)
+    contexto = browser.new_context(
+        viewport={"width": 360, "height": 740}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        erros = vigiar_console(page)
+        dialogos: list[str] = []
+        page.on("dialog", lambda d: (dialogos.append(d.message), d.dismiss()))
+        entrar(page, alvo)
+        secao = abrir_alertas(page)
+        linha = linha_do_alerta(secao, alerta)
+        expect(linha.locator(".al-texto")).to_have_text(f"{HOSTIL} caiu")
+        assert linha.locator("img").count() == 0
+        assert page.evaluate("window.__xss") is None
+        largura = page.evaluate(
+            "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+        )
+        assert largura[0] <= largura[1], largura
+        sobra = linha.evaluate("e => e.scrollWidth - e.clientWidth")
+        assert sobra <= 0, sobra  # o cartão contém a palavra de 300 letras
+        page.wait_for_timeout(500)
+        assert dialogos == [] and erros == [], (dialogos, erros)
+    finally:
+        contexto.close()
+
+
+# ---- Fase 4: telão /parede e Configurações → Telões ------------------------------------------
+
+PAREDE = Path(__file__).resolve().parents[1] / "src" / "parede"
+CODIGO_TELAO = re.compile(r"^[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}$")
+SEM_WEBGL = ["--disable-webgl", "--disable-3d-apis"]
+
+
+def abrir_teloes(page: Page) -> Any:
+    secao = abrir_configuracoes(page)
+    cartao = secao.locator("#cfg-teloes")
+    expect(cartao).to_be_visible()
+    return cartao
+
+
+def codigo_da_tv(tv: Page) -> str:
+    valor = tv.locator("#pr-codigo-valor")
+    expect(valor).to_have_text(CODIGO_TELAO, timeout=15_000)
+    return valor.inner_text().strip()
+
+
+def aprovar_pelo_painel(admin: Page, codigo: str, nome: str) -> None:
+    cartao = abrir_teloes(admin)
+    # minúsculas e espaço no lugar do hífen: a tela normaliza como o servidor
+    cartao.get_by_label("Código da TV").fill(codigo.lower().replace("-", " "))
+    cartao.get_by_label("Nome da tela").fill(nome)
+    cartao.get_by_role("button", name="Aprovar").click()
+    expect(cartao.locator("#tel-aviso")).to_contain_text(f"“{nome}” aprovado", timeout=10_000)
+    expect(cartao.locator("#tel-lista li", has_text=nome).first).to_be_visible()
+
+
+def esperar_telao(tv: Page, timeout: float = 15_000) -> None:
+    expect(tv.locator("body")).to_have_attribute("data-modo", "telao", timeout=timeout)
+    expect(tv.locator("#pr-n-online")).not_to_have_text("0", timeout=timeout)
+
+
+def parear(browser: Browser, admin: Page, alvo: Alvo, nome: str) -> Any:
+    """Novo contexto de TV emparelhado pelo painel; devolve ``(contexto, página)``."""
+    contexto = browser.new_context(
+        viewport={"width": 1920, "height": 1080}, ignore_https_errors=True, base_url=alvo.url
+    )
+    tv = contexto.new_page()
+    tv.goto("/parede/")
+    aprovar_pelo_painel(admin, codigo_da_tv(tv), nome)
+    esperar_telao(tv, timeout=10_000)  # a TV consulta a cada 5 s: entra sozinha
+    return contexto, tv
+
+
+def revogar_via_api(admin: Page, nome: str) -> None:
+    r = api_json(admin, "GET", "/paredes")
+    for p in r["dados"]:
+        if p["nome"] == nome and p["ativa"]:
+            assert api_json(admin, "DELETE", f"/paredes/{p['id']}")["status"] == 204
+
+
+@pytest.fixture(scope="module")
+def telao_pareado(browser: Browser, alvo: Alvo) -> Iterator[dict[str, Any]]:
+    """Um telão emparelhado para o módulo (o servidor limita 10 pedidos por IP por hora):
+    devolve o ``storage_state`` (com o cookie HttpOnly do token) para abrir outros contextos."""
+    admin_ctx = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    admin = admin_ctx.new_page()
+    entrar(admin, alvo)
+    contexto, _tv = parear(browser, admin, alvo, "TV Smoke")
+    estado = contexto.storage_state()
+    contexto.close()
+    try:
+        yield {"estado": estado, "nome": "TV Smoke"}
+    finally:
+        revogar_via_api(admin, "TV Smoke")
+        admin_ctx.close()
+
+
+def navegador_sem_webgl(browser_type: Any, browser_type_launch_args: dict[str, Any]) -> Any:
+    args = [*browser_type_launch_args.get("args", []), *SEM_WEBGL]
+    return browser_type.launch(**{**browser_type_launch_args, "args": args})
+
+
+def texto_e_dom(page: Page) -> str:
+    return str(page.evaluate("() => document.body.innerText + document.documentElement.outerHTML"))
+
+
+def test_bundles_do_telao_conferem_sha256() -> None:
+    # os bundles commitados são os que os .sha256 declaram (o Dockerfile confere igual)
+    for nome in ("parede.bundle.js", "teia-parede.bundle.js"):
+        esperado, arquivo = (PAREDE / f"{nome}.sha256").read_text(encoding="ascii").split()
+        assert arquivo == nome
+        assert hashlib.sha256((PAREDE / nome).read_bytes()).hexdigest() == esperado
+    assert not list(PAREDE.glob("*.map"))
+
+
+def test_parede_mostra_codigo_e_instrucao(page: Page) -> None:
+    erros = vigiar_console(page)
+    page.goto("/parede/")
+    codigo_da_tv(page)
+    expect(page.get_by_text("Aprove em Configurações → Telões")).to_be_visible()
+    expect(page.locator("body")).to_have_attribute("data-modo", "codigo")
+    expect(page.locator(".pr-http").first).to_be_hidden()  # HTTPS: sem o aviso de HTTP
+    expect(page).to_have_title("Sentinela · Emparelhar telão")
+    assert erros == [], erros
+
+
+def test_parede_emparelha_e_mostra_contadores_e_relogio(
+    page: Page, browser: Browser, alvo: Alvo
+) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    contexto, tv = parear(browser, page, alvo, "TV Portaria")
+    try:
+        erros_tv = vigiar_console(tv)
+        expect(tv.locator("#pr-nome")).to_have_text("TV Portaria")
+        expect(tv.locator("#pr-relogio")).to_have_text(re.compile(r"^\d{2}:\d{2}$"))
+        expect(tv).to_have_title("Sentinela · Telão")
+        soma = tv.evaluate(
+            "() => ['online', 'instavel', 'offline', 'inalcancavel']"
+            ".reduce((s, n) => s + Number(document.getElementById('pr-n-' + n).textContent), 0)"
+        )
+        assert 0 < soma <= TOTAL_DEMO, soma
+        # rótulo de texto em cada contador (estado nunca só por cor)
+        for grupo in ("online", "instavel", "offline", "inalcancavel"):
+            expect(tv.locator(f"#pr-r-{grupo}")).not_to_be_empty()
+        # headless tem WebGL por software: Teia reduzida, sem partículas (ou, se a cena ficar
+        # lenta demais, já o Organograma)
+        corpo = tv.locator("body")
+        expect(corpo).to_have_attribute("data-visao", re.compile("^(teia|organograma)$"))
+        if corpo.get_attribute("data-visao") == "teia":
+            expect(tv.locator("#pr-teia")).to_have_attribute(
+                "data-particulas", "nao", timeout=15_000
+            )
+        # o painel lista o telão como ativo, por HTTPS
+        linha = page.locator("#tel-lista li", has_text="TV Portaria").first
+        expect(linha).to_contain_text("HTTPS")
+        tv.wait_for_timeout(1000)
+        assert erros_tv == [], erros_tv
+    finally:
+        revogar_via_api(page, "TV Portaria")
+        contexto.close()
+    assert erros == [], erros
+
+
+def test_parede_nunca_mostra_ip_nem_mac(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    # sem WebGL o telão mostra o Organograma: os nomes de todos os equipamentos vão ao DOM
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        quadros: list[str] = []
+        tv.on("websocket", lambda ws: ws.on("framereceived", lambda q: quadros.append(str(q))))
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        expect(tv.locator("#pr-org .pr-org-item").first).to_be_visible()
+        tv.wait_for_timeout(2000)  # algumas mensagens de estado ao vivo
+        texto = texto_e_dom(tv)
+        recebido = "".join(quadros)
+        assert quadros, "nenhum quadro do WebSocket"
+        for proibido in ("10.99.", "02:00:00", '"ip"', '"mac"', "fabricante", "latencia"):
+            assert proibido not in texto, proibido
+            assert proibido not in recebido, proibido
+        assert erros == [], erros
+    finally:
+        navegador.close()
+
+
+def test_parede_revogar_volta_ao_codigo(page: Page, browser: Browser, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    contexto, tv = parear(browser, page, alvo, "TV Revogar")
+    try:
+        cartao = page.locator("#cfg-teloes")
+        linha = cartao.locator("#tel-lista li", has_text="TV Revogar").first
+        linha.get_by_role("button", name="Revogar TV Revogar").click()
+        dialogo = page.get_by_role("dialog", name="Revogar “TV Revogar”?")
+        dialogo.get_by_role("button", name="Revogar").click()
+        expect(cartao.locator("#tel-aviso")).to_have_text("“TV Revogar” revogado.")
+        expect(linha).to_contain_text("Revogado")
+        # a TV cai na hora (WS 4401) e volta a mostrar um código novo
+        expect(tv.locator("body")).to_have_attribute("data-modo", "codigo", timeout=10_000)
+        codigo_da_tv(tv)
+    finally:
+        contexto.close()
+    assert erros == [], erros
+
+
+def test_parede_sem_conexao_aviso_apos_60s(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    # sem WebGL: com o relógio falso, 60 s de Teia seriam ~3.600 quadros 3D desenhados à força
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        estado: dict[str, Any] = {"bloquear": False, "abertos": []}
+
+        def rota(ws: Any) -> None:
+            if estado["bloquear"]:
+                ws.close(code=1011)  # servidor "fora": toda tentativa nova cai
+                return
+            ws.connect_to_server()
+            estado["abertos"].append(ws)
+
+        tv.route_web_socket(re.compile(r"/ws/parede$"), rota)
+        tv.clock.install()
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        aviso = tv.locator("#pr-sem-conexao")
+        expect(aviso).to_be_hidden()
+        estado["bloquear"] = True
+        for ws in estado["abertos"]:
+            ws.close(code=1011)
+        tv.clock.run_for(55_000)
+        expect(aviso).to_be_hidden()  # 55 s sem contato: ainda não
+        tv.clock.run_for(6_000)
+        expect(aviso).to_be_visible()
+        expect(aviso).to_contain_text("Sem conexão com o servidor")
+        expect(tv.locator("body")).to_have_class(re.compile(r"\bpr-desconectado\b"))
+        # o servidor volta: a reconexão (recuo de até 30 s) traz um snapshot e o aviso some
+        estado["bloquear"] = False
+        tv.clock.run_for(31_000)
+        expect(aviso).to_be_hidden(timeout=10_000)
+    finally:
+        navegador.close()
+
+
+def test_parede_sem_webgl_usa_organograma(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        pedidos: list[str] = []
+        tv.on("request", lambda r: pedidos.append(r.url))
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        expect(tv.locator("body")).to_have_attribute("data-visao", "organograma")
+        expect(tv.locator("#pr-org")).to_be_visible()
+        expect(tv.locator("#pr-teia")).to_be_hidden()
+        expect(tv.locator("#pr-org .pr-org-classe").first).to_be_visible()
+        assert not [u for u in pedidos if "teia-parede.bundle.js" in u], pedidos
+        assert erros == [], erros
+    finally:
+        navegador.close()
+
+
+def test_parede_cursor_escondido_e_nada_clicavel(
+    browser: Browser, alvo: Alvo, telao_pareado: dict[str, Any]
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": 1920, "height": 1080},
+        ignore_https_errors=True,
+        base_url=alvo.url,
+        storage_state=telao_pareado["estado"],
+    )
+    try:
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        tv.wait_for_timeout(1500)  # Teia montada (ou Organograma)
+        cursores = tv.evaluate(
+            "() => [...document.querySelectorAll('body, body *')]"
+            ".filter((e) => e.getClientRects().length)"
+            ".map((e) => getComputedStyle(e).cursor)"
+        )
+        assert set(cursores) == {"none"}, set(cursores)
+        focaveis = tv.evaluate(
+            "() => [...document.querySelectorAll("
+            "'a[href], button, input, select, textarea, [tabindex], [contenteditable]')]"
+            ".map((e) => e.outerHTML.slice(0, 80))"
+        )
+        assert focaveis == [], focaveis
+        tv.keyboard.press("Tab")
+        tv.keyboard.press("Tab")
+        assert tv.evaluate("() => document.activeElement === document.body")
+        # clicar e arrastar no meio da tela não faz nada (nem muda de modo nem abre nada)
+        tv.mouse.click(960, 540)
+        expect(tv.locator("body")).to_have_attribute("data-modo", "telao")
+        assert erros == [], erros
+    finally:
+        contexto.close()
+
+
+def test_teloes_codigo_errado_mostra_erro_generico(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    cartao = abrir_teloes(page)
+    pedidos: list[str] = []
+    page.on("request", lambda r: pedidos.append(r.url) if "/paredes/aprovar" in r.url else None)
+    codigo = cartao.get_by_label("Código da TV")
+    # formato errado: barrado na tela, sem pedido à API
+    codigo.fill("ABC")
+    cartao.get_by_label("Nome da tela").fill("TV Teste")
+    cartao.get_by_role("button", name="Aprovar").click()
+    expect(cartao.locator("#tel-codigo-erro")).to_contain_text("8 caracteres")
+    assert pedidos == []
+    # formato certo, mas código que não existe: a mensagem genérica do servidor
+    codigo.fill("K7MQ-2XDP")
+    cartao.get_by_role("button", name="Aprovar").click()
+    expect(cartao.locator("#tel-codigo-erro")).to_have_text("Código inválido ou expirado.")
+    expect(codigo).to_have_attribute("aria-invalid", "true")
+    assert len(pedidos) == 1
+    # o 404 esperado vira "Failed to load resource" no console: só ele é descartado
+    erros[:] = [e for e in erros if "404" not in e]
+    assert erros == [], erros
+
+
+def test_permitir_http_mostra_aviso_hsts(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    cartao = abrir_teloes(page)
+    chave = cartao.locator("#tel-http")
+    aviso = cartao.locator("#tel-aviso-hsts")
+    expect(chave).to_have_attribute("aria-checked", "false")
+    expect(aviso).to_be_hidden()
+    try:
+        chave.click()
+        dialogo = page.get_by_role("dialog", name="Permitir telão sem HTTPS?")
+        dialogo.get_by_role("button", name="Permitir").click()
+        expect(chave).to_have_attribute("aria-checked", "true")
+        expect(aviso).to_be_visible()
+        expect(aviso).to_contain_text("HSTS")
+        expect(aviso).to_contain_text("sem cifra")
+        assert api_json(page, "GET", "/config/paredes")["dados"] == {"permitir_http": True}
+        page.reload()
+        cartao = abrir_teloes(page)
+        expect(cartao.locator("#tel-http")).to_have_attribute("aria-checked", "true")
+        expect(cartao.locator("#tel-aviso-hsts")).to_be_visible()
+        cartao.locator("#tel-http").click()  # desligar não pede confirmação
+        expect(cartao.locator("#tel-http")).to_have_attribute("aria-checked", "false")
+        expect(cartao.locator("#tel-aviso-hsts")).to_be_hidden()
+    finally:
+        api_json(page, "PATCH", "/config/paredes", {"permitir_http": False})
+    assert erros == [], erros
+
+
+# ---- Fase 4, rodada de correção: TV antiga, cena que quebra, 4403 e lista de telões viva ----
+
+# Chromium 63 (TV Tizen 5.0) não tem nada disto; o telão tem de funcionar sem eles
+TV_ANTIGA = """
+delete Intl.RelativeTimeFormat;
+delete window.AbortController;
+delete window.queueMicrotask;
+delete String.prototype.replaceAll;
+delete window.structuredClone;
+delete Array.prototype.at;
+delete Object.fromEntries;
+delete Array.prototype.flatMap;
+delete Object.hasOwn;
+"""
+QUEBRAR_WEBGL = """() => {
+    for (const ctx of [WebGLRenderingContext, window.WebGL2RenderingContext]) {
+        if (!ctx) continue;
+        for (const nome of ['drawElements', 'drawArrays', 'clear']) {
+            ctx.prototype[nome] = () => { throw new Error('falha de desenho simulada'); };
+        }
+    }
+}"""
+
+
+def test_parede_tv_antiga_mostra_codigo_e_entra_com_a_teia(
+    page: Page, browser: Browser, alvo: Alvo
+) -> None:
+    entrar(page, alvo)
+    contexto = browser.new_context(
+        viewport={"width": 1920, "height": 1080}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        contexto.add_init_script(TV_ANTIGA)
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        tv.goto("/parede/")
+        assert tv.evaluate("typeof Intl.RelativeTimeFormat") == "undefined"
+        aprovar_pelo_painel(page, codigo_da_tv(tv), "TV Antiga")
+        esperar_telao(tv, timeout=10_000)
+        for grupo in ("online", "instavel", "offline", "inalcancavel"):
+            expect(tv.locator(f"#pr-r-{grupo}")).not_to_be_empty()
+        # com os esboços de compat-teia.js o bundle ES2017 da Teia monta (não é a queda)
+        expect(tv.locator("#pr-teia canvas")).to_have_count(1, timeout=15_000)
+        expect(tv.locator("#pr-teia")).to_have_attribute("data-girando", "sim")
+        tv.wait_for_timeout(1500)
+        assert erros == [], erros
+    finally:
+        revogar_via_api(page, "TV Antiga")
+        contexto.close()
+
+
+def test_parede_cena_que_quebra_vai_para_o_organograma(
+    browser: Browser, alvo: Alvo, telao_pareado: dict[str, Any]
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": 1280, "height": 900},
+        ignore_https_errors=True,
+        base_url=alvo.url,
+        storage_state=telao_pareado["estado"],
+    )
+    try:
+        tv = contexto.new_page()
+        erros: list[str] = []
+        tv.on("pageerror", lambda e: erros.append(str(e)))
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        expect(tv.locator("#pr-teia canvas")).to_have_count(1, timeout=15_000)
+        expect(tv.locator("body")).to_have_attribute("data-visao", "teia")
+        tv.evaluate(QUEBRAR_WEBGL)  # o próximo quadro do three lança dentro do laço dele
+        expect(tv.locator("body")).to_have_attribute("data-visao", "organograma", timeout=10_000)
+        expect(tv.locator("#pr-org .pr-org-classe").first).to_be_visible()
+        expect(tv.locator("#pr-teia")).to_be_hidden()
+        assert any("falha de desenho simulada" in e for e in erros), erros
+    finally:
+        contexto.close()
+
+
+def test_parede_recusado_nao_mostra_sem_conexao_por_cima(browser: Browser, alvo: Alvo) -> None:
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        tv = contexto.new_page()
+        tv.route_web_socket(re.compile(r"/ws/parede$"), lambda ws: ws.close(code=4403))
+        tv.clock.install()
+        tv.goto("/parede/")
+        status = tv.locator("#pr-codigo-status")
+        expect(status).to_contain_text("O servidor recusou este telão")
+        expect(tv.locator("#pr-codigo-valor")).to_be_hidden()
+        tv.clock.run_for(61_000)  # passa dos 60 s e a nova tentativa também é recusada
+        expect(status).to_contain_text("O servidor recusou este telão")
+        tv.clock.run_for(61_000)
+        expect(tv.locator("#pr-sem-conexao")).to_be_hidden()
+        expect(tv.locator("body")).not_to_have_class(re.compile(r"\bpr-desconectado\b"))
+    finally:
+        contexto.close()
+
+
+def test_teloes_lista_recarrega_ao_voltar_e_a_cada_30s(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    pedidos: list[str] = []
+    page.on(
+        "request",
+        lambda r: pedidos.append(r.url) if r.url.endswith("/api/v1/paredes") else None,
+    )
+    page.clock.install()
+    entrar(page, alvo)
+    abrir_teloes(page)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 1, pedidos
+    page.get_by_role("tab", name="Lista").click()
+    abrir_teloes(page)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 2, pedidos  # cada entrada na aba busca a lista de novo
+    page.clock.run_for(31_000)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 3, pedidos  # e, com a aba aberta, a cada 30 s
+    page.get_by_role("tab", name="Lista").click()
+    page.clock.run_for(61_000)
+    page.wait_for_timeout(500)
+    assert len(pedidos) == 3, pedidos  # fora de Configurações não busca
+    assert erros == [], erros
+
+
+# ---- Fase 4A: cartão de alerta na tela (painel e telão) -----------------------------------------
+ESPIA_AUDIO = """() => {
+    window.__bips = 0;
+    window.AudioContext = function () {
+        this.currentTime = 0;
+        this.state = 'running';
+        this.destination = {};
+        this.resume = () => {};
+        this.createOscillator = () => {
+            window.__bips += 1;
+            return { type: '', frequency: {}, connect() {}, start() {}, stop() {} };
+        };
+        this.createGain = () => ({
+            gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+            connect() {},
+        });
+    };
+}"""
+
+
+def agora_iso() -> str:
+    import datetime as dt
+
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
+def cartoes(page: Page) -> Any:
+    return page.locator("#cartoes-alerta article.ca")
+
+
+def cartao_de(page: Page, alerta_id: int) -> Any:
+    return page.locator(f'#cartoes-alerta article.ca[data-id="{alerta_id}"]')
+
+
+def alerta_da_api(page: Page, alerta_id: int) -> dict[str, Any]:
+    r = api_json(page, "GET", f"/alertas/{alerta_id}")
+    assert r["status"] == 200, r
+    dados: dict[str, Any] = dict(r["dados"])
+    dados.pop("afetados", None)  # a mensagem do WS traz só a linha, sem a lista
+    return dados
+
+
+def injetar(page: Page, ponte: Any, acao: str, alerta_id: int, **mudancas: Any) -> dict[str, Any]:
+    """Mensagem ``alerta`` no WebSocket do painel, com a linha real do banco (+ ``mudancas``)."""
+    alerta = {**alerta_da_api(page, alerta_id), **mudancas}
+    ponte.injetar({"tipo": "alerta", "acao": acao, "id": alerta_id, "alerta": alerta, "abertos": 9})
+    return alerta
+
+
+def entrar_com_ponte(page: Page, alvo: Alvo, login: str = "", senha: str = "") -> Any:
+    from conftest import PonteWs
+
+    ponte = PonteWs(page)
+    entrar(page, alvo, login, senha)
+    expect(page.locator("#cartoes-alerta")).to_be_attached()
+    expect(cartoes(page)).to_have_count(0)  # o que já estava aberto na carga não vira cartão
+    return ponte
+
+
+def test_cartao_aparece_ao_vivo_com_ip_e_dados(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    eq = api_json(page, "GET", f"/equipamentos/{a['equipamento_id']}")["dados"]
+    alerta = injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    expect(cartao).to_be_visible(timeout=10_000)
+    expect(cartao.locator(".ca-nome")).to_have_text(alerta["equipamento_nome"])
+    expect(cartao.locator(".ca-marca")).to_have_text("Fora do ar")
+    expect(cartao).to_contain_text(eq["ip"])
+    expect(cartao.locator(".ca-dados dt", has_text="MAC")).to_be_visible(timeout=10_000)
+    expect(cartao.locator(".ca-dados dt", has_text="Checagem")).to_be_visible()
+    expect(cartao.locator(".ca-dados dt", has_text="Desde")).to_be_visible()
+    expect(cartao.locator(".ca-sub")).to_contain_text("Online")  # estado em texto + ícone
+    # papel de alerta só no título; ações do admin
+    expect(cartao.locator('[role="alert"]:visible')).to_have_count(1)
+    for nome in ("Ver na Teia", "Ver alerta", "Reconhecer", "Silenciar…"):
+        expect(cartao.get_by_role("button", name=re.compile(f"^{nome}"))).to_be_visible()
+    # o foco não é roubado e Esc num botão do cartão o fecha
+    assert page.evaluate("document.activeElement.closest('#cartoes-alerta')") is None
+    cartao.get_by_role("button", name="Ver alerta").focus()
+    page.keyboard.press("Escape")
+    expect(cartao).to_have_count(0)
+    # fechado por Esc: a mesma mensagem não o reabre sozinho
+    injetar(page, ponte, "aberto", a["id"])
+    page.wait_for_timeout(500)
+    expect(cartao).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_cartao_nao_abre_para_silenciado_nem_para_o_que_ja_estava_aberto(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", alertas_semeados["silenciado"]["id"])  # silenciado=true
+    injetar(page, ponte, "atualizado", alertas_semeados["aberto"]["id"])  # já aberto na carga
+    injetar(page, ponte, "atualizado", alertas_semeados["pendente"]["id"], afetados_total=4)
+    page.wait_for_timeout(800)
+    expect(cartoes(page)).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_cartao_pilha_de_3_mais_n_e_transicoes(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    ids = [novo_alerta()["id"] for _ in range(5)]
+    ponte = entrar_com_ponte(page, alvo)
+    for i in ids:
+        injetar(page, ponte, "aberto", i)
+        injetar(page, ponte, "aberto", i)  # repetida: um cartão por alerta
+    expect(cartoes(page)).to_have_count(3, timeout=10_000)
+    expect(page.locator("#cartoes-alerta .ca-mais")).to_have_text("e mais 2 alertas")
+    # os 3 mais novos à vista (o mais novo em cima)
+    assert [c.get_attribute("data-id") for c in cartoes(page).all()] == [str(i) for i in ids[:1:-1]]
+    # removido (absorvido pelo pai): o cartão some e o seguinte da pilha assume
+    ponte.injetar(
+        {"tipo": "alerta", "acao": "removido", "id": ids[4], "alerta": None, "abertos": 4}
+    )
+    expect(cartao_de(page, ids[4])).to_have_count(0)
+    expect(cartoes(page)).to_have_count(3)
+    expect(page.locator("#cartoes-alerta .ca-mais")).to_have_text("e mais 1 alerta")
+    # fechado: fica verde, "voltou após ...", e some sozinho em 10 s
+    injetar(page, ponte, "fechado", ids[3], fechado_em=agora_iso())
+    voltou = cartao_de(page, ids[3])
+    expect(voltou).to_have_class(re.compile(r"\bca-ok\b"))
+    expect(voltou.locator(".ca-marca")).to_have_text("Voltou")
+    expect(voltou).to_contain_text("voltou após")
+    expect(voltou).to_have_count(0, timeout=15_000)
+    page.locator("#cartoes-alerta .ca-mais").click()
+    assert page.url.endswith("#alertas"), page.url
+    assert erros == [], erros
+
+
+def test_cartao_de_grupo_lista_afetados_com_ip(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    ponte = entrar_com_ponte(page, alvo)
+    alerta = injetar(page, ponte, "aberto", alertas_semeados["aberto"]["id"])
+    cartao = cartao_de(page, alerta["id"])
+    expect(cartao.locator(".ca-ver")).to_contain_text("3 equipamentos afetados", timeout=10_000)
+    expect(cartao.locator(".ca-afetados li")).to_have_count(0)  # recolhida até o clique
+    cartao.locator(".ca-ver").click()
+    expect(cartao.locator(".ca-afetados li")).to_have_count(3, timeout=10_000)
+    expect(cartao.locator(".ca-afetados li").first).to_contain_text("10.99.")
+    expect(cartao.locator(".ca-ver")).to_have_attribute("aria-expanded", "true")
+    assert erros == [], erros
+
+
+def test_cartao_instavel_tem_estilo_de_aviso(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta(tipo="instavel")
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    expect(cartao).to_have_class(re.compile(r"\bca-aviso\b"))
+    expect(cartao.locator(".ca-marca")).to_have_text("Instável")
+    assert erros == [], erros
+
+
+def test_cartao_reconhecer_e_silenciar_pelo_cartao(
+    page: Page, alvo: Alvo, novo_alerta: Any
+) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    cartao.get_by_role("button", name=re.compile("^Reconhecer")).click()
+    expect(cartao).to_contain_text("Reconhecido por admin", timeout=10_000)
+    expect(cartao.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(0)
+    assert api_json(page, "GET", f"/alertas/{a['id']}")["dados"]["reconhecido_por"] == "admin"
+    cartao.get_by_role("button", name="Silenciar…").click()
+    dialogo = page.locator("dialog[open]")
+    expect(dialogo).to_be_visible()
+    expect(dialogo.locator("#sil-alvo-nome")).to_have_text(re.compile(r"\S"))
+    page.keyboard.press("Escape")
+    expect(dialogo).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_cartao_ver_na_teia_abre_a_ficha(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    alerta = injetar(page, ponte, "aberto", a["id"])
+    cartao_de(page, a["id"]).get_by_role("button", name="Ver na Teia").click()
+    assert page.url.endswith("#teia"), page.url
+    ficha = page.locator("#painel-equipamento")
+    expect(ficha).to_be_visible(timeout=20_000)
+    expect(ficha.locator("#titulo-equip")).to_have_text(alerta["equipamento_nome"])
+    assert erros == [], erros
+
+
+def test_cartao_visualizador_so_ve_os_botoes_de_leitura(
+    page: Page, alvo: Alvo, novo_alerta: Any
+) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador neste alvo")
+    a = novo_alerta()
+    ponte = entrar_com_ponte(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    injetar(page, ponte, "aberto", a["id"])
+    cartao = cartao_de(page, a["id"])
+    expect(cartao.get_by_role("button", name="Ver na Teia")).to_be_visible(timeout=10_000)
+    expect(cartao.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(0)
+    expect(cartao.get_by_role("button", name="Silenciar…")).to_have_count(0)
+
+
+def test_som_nos_alertas_so_depois_do_gesto_e_lembrado(
+    page: Page, alvo: Alvo, novo_alerta: Any
+) -> None:
+    erros = vigiar_console(page)
+    page.add_init_script(f"({ESPIA_AUDIO})()")
+    a, b = novo_alerta(), novo_alerta()
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", a["id"])
+    expect(cartao_de(page, a["id"])).to_be_visible(timeout=10_000)
+    assert page.evaluate("window.__bips") == 0  # desligado por padrão
+    abrir_alertas(page)
+    caixa = page.get_by_label("Som nos alertas")
+    expect(caixa).not_to_be_checked()
+    caixa.check()  # o clique é o gesto: um bip de confirmação
+    assert page.evaluate("window.__bips") == 1
+    injetar(page, ponte, "aberto", b["id"])
+    expect(cartao_de(page, b["id"])).to_be_visible(timeout=10_000)
+    assert page.evaluate("window.__bips") == 2
+    page.reload()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    abrir_alertas(page)
+    expect(page.get_by_label("Som nos alertas")).to_be_checked()
+    assert erros == [], erros
+
+
+def test_parede_cartao_de_queda_sem_ip_mac_nem_fabricante(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    from conftest import PonteWs
+
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        ponte = PonteWs(tv, r".*/ws/parede$")
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        snap = tv.evaluate("async () => (await (await fetch('/api/v1/parede/snapshot')).json())")
+        eq = snap["equipamentos"][0]
+        expect(tv.locator("#pr-cartoes .pr-ca")).to_have_count(0)
+        alerta = {
+            "id": 987001, "tipo": "queda", "texto": f"{eq['nome']} caiu · 14 afetados",
+            "aberto_em": agora_iso(), "equipamento_id": eq["id"], "afetados": 14,
+        }  # fmt: skip
+        cartao = tv.locator("#pr-cartoes .pr-ca")
+        silenciado = {**alerta, "id": 987009, "silenciado": True}
+        ponte.injetar({"tipo": "alerta", "acao": "aberto", "alerta": silenciado})
+        tv.wait_for_timeout(600)
+        expect(cartao).to_have_count(0)  # alerta silenciado: só a faixa, sem cartão
+        ponte.injetar(
+            {"tipo": "alerta", "acao": "aberto", "alerta": {**alerta, "silenciado": False}}
+        )
+        expect(cartao).to_have_count(1)
+        expect(cartao.locator(".pr-ca-nome")).to_have_text(eq["nome"])
+        expect(cartao).to_contain_text("14 equipamentos afetados")
+        expect(cartao.locator(".pr-ca-dados")).to_contain_text("Desde")
+        dentro = cartao.inner_text() + cartao.inner_html()
+        for proibido in ("10.99.", "02:00:00", "Fabricante", "Checagem", "latência"):
+            assert proibido not in dentro, proibido
+        assert "10.99." not in texto_e_dom(tv)
+        # no máximo 2 cartões; fechado some sozinho em 10 s
+        for n in (987002, 987003):
+            ponte.injetar({"tipo": "alerta", "acao": "aberto", "alerta": {**alerta, "id": n}})
+        expect(cartao).to_have_count(2)
+        for n in (987003, 987002, 987001):
+            ponte.injetar({"tipo": "alerta", "acao": "fechado", "id": n})
+        expect(cartao).to_have_count(0, timeout=17_000)
+        assert erros == [], erros
+    finally:
+        navegador.close()

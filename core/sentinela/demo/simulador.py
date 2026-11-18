@@ -7,13 +7,13 @@ resultados. Tudo em ``10.99.0.0/16`` e MACs ``02:00:00:xx:xx:xx`` (localmente ad
 import random
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.db.modelos import Classe, Equipamento, Fonte, SubRede
+from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte, Parede, SubRede
 from sentinela.descoberta.fontes.simulada import PORTA_MIKROTIK, PORTA_SNMP
 from sentinela.monitor.estados import ResultadoChecagem
 from sentinela.rede.guarda import DestinoAutorizado
@@ -122,10 +122,29 @@ _P_QUEDA = 0.003  # por checagem; com ~3 min médios de queda dá ~3% de falhas
 _QUEDA_MIN_S, _QUEDA_MAX_S = 60.0, 300.0
 _INTERVALO_SWITCH_S = 600.0
 _SWITCH_MIN, _SWITCH_MAX = 8, 15
+_QUEDA_CORRELACIONADA_INICIO_S = 90.0
+_QUEDA_CORRELACIONADA_CICLO_S = 600.0
+_QUEDA_CORRELACIONADA_DURACAO_S = 180.0
+_FILHOS_DO_PAI = 14
+NOME_TELAO_DEMO = "TV Portaria (demo)"
 
 
 def _sub24(ip: str) -> str:
     return ip.rsplit(".", 1)[0]
+
+
+def hierarquia_demo(
+    rede: list[EquipamentoDemo], seed: int = 366
+) -> tuple[EquipamentoDemo, list[EquipamentoDemo]]:
+    """Pai e filhos da queda correlacionada da demonstração, determinísticos pela seed.
+
+    O pai é o primeiro switch por nome; os 14 filhos saem de câmeras e pontos de acesso (nunca
+    gravador, que tem a própria hierarquia de canais).
+    """
+    pai = min((e for e in rede if e.classe == "switch"), key=lambda e: e.nome)
+    candidatos = [e for e in rede if e.classe in ("camera", "wifi")]
+    rng = random.Random(seed + 1)  # noqa: S311 - dados sintéticos, sem uso criptográfico  # nosec B311
+    return pai, rng.sample(candidatos, _FILHOS_DO_PAI)
 
 
 class ChecagemSimulada:
@@ -138,6 +157,7 @@ class ChecagemSimulada:
         seed: int = 366,
         relogio: Relogio | None = None,
         rede: list[EquipamentoDemo] | None = None,
+        queda_correlacionada: tuple[str, list[str]] | None = None,
     ) -> None:
         self._rng = random.Random(seed)  # noqa: S311 - dados sintéticos, sem uso criptográfico  # nosec B311
         self._relogio: Relogio = relogio or RelogioReal()
@@ -148,6 +168,20 @@ class ChecagemSimulada:
         self._elegiveis = [s for s, ips in self._por_subrede.items() if len(ips) >= _SWITCH_MIN]
         self._fim_queda: dict[str, float] = {}  # ip -> instante em que volta; no máx. 1 por IP
         self._proxima_queda_switch = self._relogio.agora() + self._intervalo_switch()
+        self._p_queda = _P_QUEDA
+        self._t0 = self._relogio.agora()
+        # pai e filhos programados: falham juntos a cada ciclo (ver ``_programada``)
+        self._programada: frozenset[str] = (
+            frozenset([queda_correlacionada[0], *queda_correlacionada[1]])
+            if queda_correlacionada
+            else frozenset()
+        )
+
+    def _em_queda_programada(self, ip: str, agora: float) -> bool:
+        if ip not in self._programada:
+            return False
+        t = agora - self._t0 - _QUEDA_CORRELACIONADA_INICIO_S
+        return t >= 0 and t % _QUEDA_CORRELACIONADA_CICLO_S < _QUEDA_CORRELACIONADA_DURACAO_S
 
     def _intervalo_switch(self) -> float:
         return _INTERVALO_SWITCH_S * self._rng.uniform(0.8, 1.2)
@@ -180,11 +214,13 @@ class ChecagemSimulada:
         if agora >= self._proxima_queda_switch:
             self._queda_de_switch(agora)
         ip = str(IPv4Address(destino.ip))
+        if self._em_queda_programada(ip, agora):
+            return ResultadoChecagem(ok=False, latencia_ms=None, erro="sem resposta (simulado)")
         fim = self._fim_queda.get(ip)
         if fim is not None and agora >= fim:
             del self._fim_queda[ip]
             fim = None
-        if fim is None and self._rng.random() < _P_QUEDA:
+        if fim is None and self._rng.random() < self._p_queda:
             fim = self._fim_queda[ip] = agora + self._duracao()
         if fim is not None:
             return ResultadoChecagem(ok=False, latencia_ms=None, erro="sem resposta (simulado)")
@@ -252,6 +288,67 @@ async def semear_fontes_demo(sessoes: async_sessionmaker[AsyncSession]) -> bool:
                     equipamento_id=equipamento_id,
                 )
             )
+        await db.commit()
+    return True
+
+
+async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: datetime) -> bool:
+    """Hierarquia (pai e 14 filhos), dois alertas históricos e um telão pareado (idempotente:
+    a marca é o telão demo, então vale também num volume que já tem alertas). Nenhum
+    socket, nenhuma mensagem: ``envio='nao_aplica'``."""
+    async with sessoes() as db:
+        # marca da semeadura: o telão demo (alertas reais da simulação podem já existir)
+        if await db.scalar(select(Parede.id).where(Parede.nome == NOME_TELAO_DEMO)):
+            return False
+        por_ip = {ip: id_ for ip, id_ in await db.execute(select(Equipamento.ip, Equipamento.id))}
+        pai, filhos = hierarquia_demo(gerar_rede())
+        pai_id = por_ip[pai.ip]
+        ids_filhos = [por_ip[f.ip] for f in filhos]
+        for filho in (
+            await db.execute(select(Equipamento).where(Equipamento.id.in_(ids_filhos)))
+        ).scalars():
+            if filho.pai_id is None:
+                filho.pai_id = pai_id
+        fechado = agora - timedelta(minutes=100)
+        db.add(
+            Alerta(
+                tipo="queda",
+                equipamento_id=pai_id,
+                quedas=[pai_id],
+                afetados=ids_filhos,
+                voltaram=[pai_id, *ids_filhos],
+                aberto_em=fechado - timedelta(minutes=5),
+                fechado_em=fechado,
+                envio="nao_aplica",
+            )
+        )
+        camera = next(
+            e for e in gerar_rede() if e.classe == "camera" and e.ip not in {f.ip for f in filhos}
+        )
+        camera_id = por_ip[camera.ip]
+        aberto = agora - timedelta(minutes=35)
+        db.add(
+            Alerta(
+                tipo="queda",
+                equipamento_id=camera_id,
+                quedas=[camera_id],
+                afetados=[],
+                voltaram=[camera_id],
+                aberto_em=aberto,
+                fechado_em=aberto + timedelta(seconds=80),
+                breve=True,
+                envio="nao_aplica",
+            )
+        )
+        db.add(
+            Parede(
+                nome=NOME_TELAO_DEMO,
+                token_hash=None,  # sem token utilizável: só mostra a tela de Telões
+                modo="https",
+                criado_em=agora - timedelta(days=2),
+                ultimo_acesso=agora - timedelta(minutes=3),
+            )
+        )
         await db.commit()
     return True
 

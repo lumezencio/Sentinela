@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sentinela.api import ws as ws_mod
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.config import Settings
-from sentinela.db.modelos import Classe, Equipamento, Sessao
+from sentinela.db.modelos import Alerta, Classe, Equipamento, Sessao
 from sentinela.main import criar_app
 from sentinela.monitor.agendador import Agendador
 from sentinela.relogio import RelogioFalso
@@ -281,7 +281,7 @@ async def test_snapshot_com_equipamentos_e_classes(
     ws = await _aberto(abrir_ws, cliente_visualizador)
     snap = await ws.json()
     assert snap["tipo"] == "snapshot"
-    assert set(snap) == {"tipo", "classes", "equipamentos", "pendentes"}
+    assert set(snap) == {"tipo", "classes", "equipamentos", "pendentes", "alertas_abertos"}
     assert snap["pendentes"] == 0
     assert {c["slug"] for c in snap["classes"]} >= {"camera", "roteador"}
     assert set(snap["classes"][0]) == {
@@ -331,6 +331,107 @@ async def test_repassa_estado_e_latencias_do_barramento(
     barramento.publicar(Mensagem("latencias", {"lote": [["eq1", 2.5], ["eq2", None]]}))
     assert await ws.json() == {"tipo": "estado", **estado}
     assert await ws.json() == {"tipo": "latencias", "lote": [["eq1", 2.5], ["eq2", None]]}
+
+
+async def test_repassa_silencio_criado_pela_api(
+    cliente_admin: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    await cliente_admin.post("/api/v1/subredes", json={"cidr": "10.99.0.0/24"})
+    eq = await cliente_admin.post(
+        "/api/v1/equipamentos", json={"nome": "A", "ip": "10.99.0.10", "classe": "camera"}
+    )
+    ws = await _aberto(abrir_ws, cliente_admin)
+    await ws.json()  # snapshot
+    corpo = {"tipo": "silencio", "alvo_tipo": "equipamento", "alvo": eq.json()["id"]}
+    r = await cliente_admin.post("/api/v1/silencios", json=corpo | {"atalho": "1h"})
+    assert await ws.json() == {"tipo": "silencio", "acao": "criado", "id": r.json()["id"]}
+
+
+async def _alerta_no_banco(app: FastAPI, eq_id: str, fechado: bool = False) -> int:
+    async with _sessoes(app)() as db:
+        a = Alerta(
+            tipo="queda",
+            equipamento_id=eq_id,
+            quedas=[eq_id],
+            aberto_em=DESDE,
+            fechado_em=DESDE if fechado else None,
+        )
+        db.add(a)
+        await db.commit()
+        return a.id
+
+
+async def test_snapshot_traz_alertas_abertos(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    (eq,) = await _criar_equipamentos(app, 1)
+    await _alerta_no_banco(app, eq)
+    await _alerta_no_banco(app, eq)
+    await _alerta_no_banco(app, eq, fechado=True)
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    assert (await ws.json())["alertas_abertos"] == 2
+
+
+async def test_mensagem_alerta_chega_enriquecida(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    (eq,) = await _criar_equipamentos(app, 1)
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    await ws.json()  # snapshot
+    a = await _alerta_no_banco(app, eq)
+    barramento: Barramento = app.state.barramento
+    barramento.publicar(Mensagem("alerta", {"acao": "aberto", "id": a, "abertos": 1}))
+    msg = await ws.json()
+    assert msg["tipo"] == "alerta" and msg["acao"] == "aberto" and msg["abertos"] == 1
+    assert msg["alerta"]["id"] == a
+    assert msg["alerta"]["texto"] == "Equipamento 0 caiu"
+    assert msg["alerta"]["equipamento_id"] == eq
+    assert msg["alerta"]["envio"] == "pendente"
+    assert set(msg["alerta"]) == {
+        "id", "tipo", "texto", "equipamento_id", "equipamento_nome", "classe",
+        "afetados_total", "aberto_em", "fechado_em", "breve", "reconhecido_por",
+        "reconhecido_em", "silenciado", "envio",
+    }  # fmt: skip
+
+
+async def test_alerta_com_nome_hostil_chega_como_texto(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    (eq,) = await _criar_equipamentos(app, 1)
+    hostil = "<b>" + "x" * 300
+    async with _sessoes(app)() as db:
+        e = await db.get(Equipamento, eq)
+        assert e is not None
+        e.nome = hostil
+        await db.commit()
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    await ws.json()  # snapshot
+    a = await _alerta_no_banco(app, eq)
+    barramento: Barramento = app.state.barramento
+    barramento.publicar(Mensagem("alerta", {"acao": "aberto", "id": a, "abertos": 1}))
+    msg = await ws.json()
+    assert msg["alerta"]["texto"] == f"{hostil} caiu"
+
+
+async def test_alerta_removido_chega_sem_linha(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    (eq,) = await _criar_equipamentos(app, 1)
+    existente = await _alerta_no_banco(app, eq)  # ``removido`` nunca lê a linha
+    ws = await _aberto(abrir_ws, cliente_visualizador)
+    await ws.json()  # snapshot
+    barramento: Barramento = app.state.barramento
+    barramento.publicar(Mensagem("alerta", {"acao": "removido", "id": existente, "abertos": 0}))
+    assert await ws.json() == {
+        "tipo": "alerta",
+        "acao": "removido",
+        "id": existente,
+        "alerta": None,
+        "abertos": 0,
+    }
+    # alerta já apagado quando a mensagem é lida: também sem linha
+    barramento.publicar(Mensagem("alerta", {"acao": "atualizado", "id": 9999, "abertos": 0}))
+    assert (await ws.json())["alerta"] is None
 
 
 async def test_snapshot_traz_pendentes(
@@ -510,6 +611,9 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
             "sentinela-descarga",
             "sentinela-descoberta",
             "sentinela-canais",
+            "sentinela-silencios",
+            "sentinela-alertas",
+            "sentinela-telegram",
             "sentinela-agendador",
         ]
         assert not any(t.done() for t in vistas)

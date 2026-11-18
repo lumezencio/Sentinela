@@ -4,10 +4,10 @@
 // por x-text. A fila carrega 100 por vez ("Carregar mais"); as edições (classe, nome) e a
 // seleção ficam fora da reatividade e sobrevivem às recargas.
 import { api } from "./api.js";
+import { limparTexto } from "./lista.js";
 
 export const POR_PAGINA_NOVOS = 100;
 const MAX_LOTE = 200;
-const CONTROLES = /[\u0000-\u001f\u007f-\u009f]/g;
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const MSG_FALHA = "Não foi possível concluir. Tente de novo.";
 export const AVISO_ARP = "Sondar gera um pedido ARP na rede (um broadcast do sistema operacional)" +
@@ -15,8 +15,7 @@ export const AVISO_ARP = "Sondar gera um pedido ARP na rede (um broadcast do sis
 
 /** Texto da rede pronto para x-text: sem caracteres de controle e com tamanho limitado. */
 export function textoSeguro(texto, max = 200) {
-  if (texto === null || texto === undefined) return "";
-  return String(texto).replace(CONTROLES, "").slice(0, max);
+  return limparTexto(texto, max);
 }
 
 const nomeDaClasse = (nomes, slug) =>

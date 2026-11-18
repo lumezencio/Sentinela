@@ -13,7 +13,8 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
-from sentinela.db.modelos import Auditoria, Fonte
+from sentinela.alertas.telegram import ErroTelegram
+from sentinela.db.modelos import Auditoria, Config, Fonte
 from sentinela.descoberta.fontes.base import CertificadoNaoConfiado, ErroColeta, ResultadoTeste
 from sentinela.relogio import RelogioFalso
 from tests.api.apoio_descoberta import (
@@ -197,3 +198,62 @@ async def test_segredos_nao_vazam(
         assert marca not in caplog.text, marca
         assert not [a for a in auditoria if marca in a], marca
         assert not [f for f in fontes if marca in f], marca
+
+
+MARCA_TOKEN_TELEGRAM = "MARCA-bot-4e4e-" + "x" * 20
+
+
+async def test_token_do_telegram_nao_vaza(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Exceção do cliente com a URL completa (``/bot<token>/sendMessage``) no texto: o token
+    não aparece em resposta, log, auditoria nem em ``config.telegram_status``."""
+    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="sentinela")
+    token = "123456789:" + MARCA_TOKEN_TELEGRAM
+
+    class Cliente:
+        def __init__(self, erro: Exception) -> None:
+            self.erro = erro
+
+        async def enviar(self, token: str, chat: str, texto: str) -> int | None:
+            raise self.erro
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    erros: list[Exception] = [
+        RuntimeError(f"Client error '401' for url '{url}'"),
+        httpx.ConnectError(f"falha em {url}"),
+        ErroTelegram("Token recusado pelo Telegram.", temporario=False),
+    ]
+    respostas: list[httpx.Response] = []
+    r = await cliente_admin.patch(
+        "/api/v1/config/telegram", json={"token": token, "chats": ["-100123"]}
+    )
+    respostas.append(r)
+    assert r.status_code == 200
+    respostas.append(
+        await cliente_admin.patch("/api/v1/config/telegram", json={"token": "x" + token})
+    )
+    for erro in erros:
+        app.state.cliente_telegram = Cliente(erro)
+        r = await cliente_admin.post("/api/v1/config/telegram/teste")
+        assert r.status_code == 200 and r.json()["ok"] is False
+        respostas.append(r)
+        respostas.append(await cliente_admin.get("/api/v1/config/telegram"))
+    assert any(r.status_code == 422 for r in respostas)
+
+    textos = [r.text for r in respostas] + [str(dict(r.headers)) for r in respostas]
+    async with sessoes(app)() as db:
+        auditoria = [
+            repr((a.acao, a.alvo, a.antes, a.depois, a.ip))
+            for a in (await db.execute(select(Auditoria))).scalars()
+        ]
+        config = [repr((c.chave, c.valor)) for c in (await db.execute(select(Config))).scalars()]
+    status_telegram = [c for c in config if "telegram_status" in c]
+    assert status_telegram and "ultimo_erro" in status_telegram[0]
+    assert not [t for t in textos if MARCA_TOKEN_TELEGRAM in t]
+    assert MARCA_TOKEN_TELEGRAM not in caplog.text
+    assert not [a for a in auditoria if MARCA_TOKEN_TELEGRAM in a]
+    assert not [c for c in status_telegram if MARCA_TOKEN_TELEGRAM in c]
+    # o token só existe cifrado na linha de configuração
+    assert not [c for c in config if MARCA_TOKEN_TELEGRAM in c]

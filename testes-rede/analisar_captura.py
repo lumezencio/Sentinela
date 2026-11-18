@@ -4,7 +4,7 @@ Uso::
 
     python analisar_captura.py captura.pcap --origem 10.99.250.10 --origem 02:00:00:fa:00:10 \
         --arp-permitido 10.99.250.11,10.99.250.20,10.99.250.32/28 [--rede 10.99.250.0/24] \
-        [--exigir-contato 10.99.250.11,10.99.250.12]
+        [--exigir-contato 10.99.250.11,10.99.250.12] [--unicast-permitido 10.99.250.5,...]
 
 Reprova (código 1) todo quadro emitido pela origem (o Sentinela: IP e/ou MAC) cujo destino seja
 broadcast ou multicast: MAC ``ff:ff:ff:ff:ff:ff``, ``01:00:5e:*``, ``33:33:*`` ou qualquer MAC de
@@ -13,6 +13,10 @@ multicast. A única exceção é o ARP request (operação 1) para um IP de ``--
 (IPs ou CIDRs: hosts das fontes, aprovados, sondados e a faixa varrida), contado e relatado.
 Num CIDR permitido, o endereço de rede e o de broadcast **não** são permitidos (a varredura
 os pula; ARP para eles reprova).
+
+Com ``--unicast-permitido`` (IPs/CIDRs), todo unicast IPv4 do Sentinela para destino fora da
+lista também reprova ("unicast para destino não autorizado <ip>"); sem a opção, qualquer
+unicast é aceito.
 
 Prova inválida (código 2): argumento malformado; ``--exigir-contato`` presente mas vazio;
 captura sem quadros, sem nenhum quadro da origem, ou sem unicast do Sentinela para algum IP de
@@ -144,6 +148,7 @@ def analisar(
     origens_mac: set[bytes],
     permitidos: list[Rede],
     redes: list[Rede] | None = None,
+    unicast_permitido: list[Rede] | None = None,
 ) -> Resultado:
     res = Resultado()
     broadcasts_dirigidos = {r.broadcast_address for r in redes or []}
@@ -193,6 +198,14 @@ def analisar(
         if not motivos:
             if isinstance(ip_destino, ipaddress.IPv4Address):
                 res.unicast_para[str(ip_destino)] += 1
+                if unicast_permitido is not None and not any(
+                    ip_destino in r for r in unicast_permitido
+                ):
+                    res.proibidos += 1
+                    if len(res.violacoes) < 50:
+                        res.violacoes.append(
+                            f"quadro {q.numero}: unicast para destino não autorizado {ip_destino}"
+                        )
             continue
         res.difusao_da_origem += 1
 
@@ -240,6 +253,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="IPs (vírgula) que precisam ter recebido unicast do Sentinela: hosts das fontes",
     )
+    ap.add_argument(
+        "--unicast-permitido",
+        default=None,
+        help="IPs/CIDRs (vírgula): todo unicast IPv4 do Sentinela para fora da lista reprova",
+    )
     a = ap.parse_args(argv)
     try:
         exigidos: list[ipaddress.IPv4Address] = []
@@ -253,11 +271,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--exigir-contato: IPv4 inválido") from None
         ips, macs = _origens(a.origem)
         permitidos, redes = _redes(a.arp_permitido), _redes(a.rede)
+        unicast = None if a.unicast_permitido is None else _redes(a.unicast_permitido)
     except (ValueError, argparse.ArgumentTypeError) as erro:
         print(f"erro: {erro}", file=sys.stderr)
         return 2
     try:
-        res = analisar(a.pcap, ips, macs, permitidos, redes)
+        res = analisar(a.pcap, ips, macs, permitidos, redes, unicast)
     except (ErroCaptura, OSError) as erro:
         print(f"erro: {erro}", file=sys.stderr)
         return 2

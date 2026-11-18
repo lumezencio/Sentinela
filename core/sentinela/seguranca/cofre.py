@@ -14,8 +14,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
 
 # só estes campos da credencial são segredo; ``usuario``, ``versao``, ``auth`` e ``priv``
-# ("admin", "3", "SHA256", "AES") apareceriam mascarados em textos legítimos do aparelho
-CHAVES_SECRETAS = frozenset({"senha", "comunidade", "senha_auth", "senha_priv"})
+# ("admin", "3", "SHA256", "AES") apareceriam mascarados em textos legítimos do aparelho;
+# ``token`` é o do bot do Telegram
+CHAVES_SECRETAS = frozenset({"senha", "comunidade", "senha_auth", "senha_priv", "token"})
 
 
 class ErroCofre(Exception):

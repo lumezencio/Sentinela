@@ -77,11 +77,14 @@ export const api = {
   sair: () => requisitar("POST", "/auth/logout", { redirecionar401: false }),
   eu: () => requisitar("GET", "/auth/eu"),
   criarEquipamento: (dados) => requisitar("POST", "/equipamentos", { json: dados }),
+  verEquipamento: (id) => requisitar("GET", `/equipamentos/${encodeURIComponent(id)}`),
   eventosEquipamento: (id) =>
     requisitar("GET", `/equipamentos/${encodeURIComponent(id)}/eventos?limit=50`),
   pausarEquipamento: (id) => requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/pausar`),
   retomarEquipamento: (id) =>
     requisitar("POST", `/equipamentos/${encodeURIComponent(id)}/retomar`),
+  definirPai: (id, paiId) =>
+    requisitar("PATCH", `/equipamentos/${encodeURIComponent(id)}`, { json: { pai_id: paiId } }),
   listarSubredes: () => requisitar("GET", "/subredes"),
   criarSubrede: (cidr) => requisitar("POST", "/subredes", { json: { cidr } }),
   removerSubrede: (id) => requisitar("DELETE", `/subredes/${encodeURIComponent(id)}`),
@@ -118,6 +121,28 @@ export const api = {
   cancelarVarredura: () => requisitar("DELETE", "/varredura"),
   verAjustes: () => requisitar("GET", "/config/descoberta"),
   editarAjustes: (dados) => requisitar("PATCH", "/config/descoberta", { json: dados }),
+  // ---- alertas, silêncios e Telegram (Fase 4) ----
+  listarAlertas: ({ filtro = "abertos", classe = "", desde = "", pagina = 1, porPagina = 50 }) => {
+    const q = new URLSearchParams({ filtro, pagina: String(pagina), por_pagina: String(porPagina) });
+    if (classe) q.set("classe", classe);
+    if (desde) q.set("desde", desde);
+    return requisitar("GET", `/alertas?${q}`);
+  },
+  verAlerta: (id) => requisitar("GET", `/alertas/${encodeURIComponent(id)}`),
+  reconhecerAlerta: (id) => requisitar("POST", `/alertas/${encodeURIComponent(id)}/reconhecer`),
+  listarSilencios: () => requisitar("GET", "/silencios"),
+  criarSilencio: (dados) => requisitar("POST", "/silencios", { json: dados }),
+  encerrarSilencio: (id) => requisitar("POST", `/silencios/${encodeURIComponent(id)}/encerrar`),
+  verTelegram: () => requisitar("GET", "/config/telegram"),
+  editarTelegram: (dados) => requisitar("PATCH", "/config/telegram", { json: dados }),
+  testarTelegram: () => requisitar("POST", "/config/telegram/teste"),
+  verGeral: () => requisitar("GET", "/config/geral"),
+  // ---- telões (Fase 4) ----
+  listarParedes: () => requisitar("GET", "/paredes"),
+  aprovarParede: (dados) => requisitar("POST", "/paredes/aprovar", { json: dados }),
+  revogarParede: (id) => requisitar("DELETE", `/paredes/${encodeURIComponent(id)}`),
+  verConfigParedes: () => requisitar("GET", "/config/paredes"),
+  editarConfigParedes: (dados) => requisitar("PATCH", "/config/paredes", { json: dados }),
   importarCsv: (arquivo) => {
     const form = new FormData();
     form.append("arquivo", arquivo);

@@ -12,8 +12,11 @@ Nome = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Mac = Annotated[str, StringConstraints(max_length=32), AfterValidator(normalizar_mac)]
 Ip = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=45)]
 ChaveClasse = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+IdPai = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 TipoChecagem = Literal["icmp", "tcp", "http"]
-EstadoFiltro = Literal["desconhecido", "online", "instavel", "suspeito", "offline", "pausado"]
+EstadoFiltro = Literal[
+    "desconhecido", "online", "instavel", "suspeito", "offline", "pausado", "inalcancavel"
+]
 
 
 class EquipamentoEntrada(BaseModel):
@@ -25,10 +28,11 @@ class EquipamentoEntrada(BaseModel):
     classe: ChaveClasse
     checagem: TipoChecagem = "icmp"
     porta: int | None = None
+    pai_id: IdPai | None = None  # "Depende de"
 
 
 class EquipamentoEdicao(BaseModel):
-    """Campos ausentes não mudam; ``mac``/``porta`` com null são apagados."""
+    """Campos ausentes não mudam; ``mac``/``porta``/``pai_id`` com null são apagados."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -38,6 +42,7 @@ class EquipamentoEdicao(BaseModel):
     classe: ChaveClasse | None = None
     checagem: TipoChecagem | None = None
     porta: int | None = None
+    pai_id: IdPai | None = None
 
 
 class EquipamentoSaida(BaseModel):
@@ -56,6 +61,7 @@ class EquipamentoSaida(BaseModel):
     pausado: bool
     criado_em: datetime
     visto_em: datetime | None
+    pai_id: str | None
 
     @classmethod
     def de(cls, eq: Equipamento, classe_slug: str) -> "EquipamentoSaida":
@@ -75,6 +81,7 @@ class EquipamentoSaida(BaseModel):
             pausado=eq.pausado,
             criado_em=eq.criado_em,
             visto_em=eq.visto_em,
+            pai_id=eq.pai_id,
         )
 
 

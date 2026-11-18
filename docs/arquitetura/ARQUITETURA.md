@@ -268,7 +268,12 @@ stateDiagram-v2
     online --> pausado: manutenção
     offline --> pausado: manutenção
     pausado --> desconhecido: fim da manutenção
+    online --> inalcancavel: pai caiu (causa pai:ID)
+    offline --> inalcancavel: pai caiu (causa pai:ID)
+    inalcancavel --> desconhecido: pai voltou, removido ou pausado
 ```
+
+`inalcancavel` (Fase 4A) é o estado do filho cujo pai caiu: a checagem do filho é suspensa enquanto o pai está fora, e o evento guarda a causa `pai:<id do pai>`. Se o pai volta, é removido, perde o `pai_id` ou é pausado, o filho volta a `desconhecido` e é checado de novo (nunca fica preso, nem após reinício do núcleo). Mostra-se com a cor do pausado (`#7A8194`) e um ícone de elo partido na Teia, no Organograma, na Lista e na legenda: status nunca só por cor.
 
 "Suspeito" não aparece como vermelho na tela (só um leve tremor da esfera) e não gera alerta. Isso elimina o pisca-pisca.
 
@@ -284,7 +289,16 @@ stateDiagram-v2
 
 ### 9.4 Correlação de quedas
 
-Quando um equipamento-pai (switch, AP, gravador) cai, os filhos que caírem nos 60 s seguintes são marcados como **"inalcançáveis (causa: pai)"** em vez de offline independente. O alerta sai como um só: "Switch Bloco B caiu — 14 equipamentos afetados".
+Regras implementadas (Fase 4A, `alertas/agrupador.py`):
+
+- **Janela retroativa de 60 s:** quando um pai cai, os filhos que já tinham caído nos 60 s anteriores ou que caem nos seguintes entram no mesmo alerta; os que estavam online passam a `inalcancavel`. A hierarquia vale até a profundidade 8; ciclo no `pai_id` é recusado.
+- **Um alerta, uma mensagem:** o principal é o pai (ou o gravador, quando ele responde a ping mas a leitura de canais falha); `quedas` guarda quem caiu por conta própria e `afetados` todos os demais (quedas agrupadas mais filhos inalcançáveis). Ex.: "Switch Bloco B caiu às 14:32 — 14 equipamentos afetados".
+- **Quedas sem pai comum** dentro de 30 s agrupam-se num alerta só.
+- **Caiu e voltou em menos de 2 min** (`breve`): se ainda não foi enviado, sai uma mensagem "caiu e voltou"; se já foi, a mensagem enviada é editada (`editMessageText`), sem mensagem de volta.
+- **`instavel`** só alerta classe crítica e depois de 5 min; **`fonte_falhou`** após 3 coletas seguidas com erro.
+- **Silêncio e manutenção** (`alertas/silencios.py`): o alerta é registrado com `silenciado=true` e nada vai ao Telegram. A manutenção do pai cobre a cadeia de descendentes; manutenções sobrepostas só retomam o equipamento quando a última termina, e a pausa manual feita durante a manutenção não é desfeita.
+- Membro de queda que é pausado ou removido conta como resolvido para fechar o alerta (sem volta); o alerta fecha quando volta o último membro.
+
 
 ## 10. Modelo de dados
 
@@ -308,7 +322,18 @@ erDiagram
     AUDITORIA { int id; int usuario_id; text acao; text alvo; json antes; json depois; text ip; datetime em }
 ```
 
-Tabelas auxiliares: `sub_rede` (cidr, permite_varredura), `config` (chave/valor tipado), `silencio` (equipamento ou classe, início, fim), `amostra_5min` (agregado), `parede` (código de emparelhamento com hash, criado, último acesso), `sessao` (refresh com `jti`, revogável).
+Tabelas auxiliares: `sub_rede` (cidr, permite_varredura), `config` (chave/valor tipado; a Fase 4A usa as chaves `telegram`, `telegram_status` e `paredes_http`), `amostra_5min` (agregado), `sessao` (refresh com `jti`, revogável).
+
+Tabelas da Fase 4A (migração Alembic `0004`, reversível):
+
+| Tabela | Conteúdo |
+|---|---|
+| `alerta` | `tipo` (`queda`, `volta`, `instavel`, `fonte_falhou`), equipamento ou fonte, `quedas`, `afetados`, `voltaram`, `aberto_em`/`fechado_em`, `breve`, `reconhecido_por/em`, `silenciado`, estado do envio (`envio` = `nao_aplica`, `pendente`, `enviado`, `falhou`; tentativas, próxima tentativa, `enviado_para`, `telegram_msgs`). Retenção de 90 dias |
+| `silencio` | silêncio ou manutenção, alvo por equipamento ou classe, `inicio`/`fim` (fim obrigatório, ≤ 30 dias), motivo, `pausados` (ids pausados pela manutenção, para retomar só esses) |
+| `parede` | telão pareado: nome, **hash** do token, modo `https`/`http`, `ip_vinculado` (só modo http), último acesso/IP, `revogada_em` |
+| `parede_pedido` | pedido de pareamento: hash do código, hash do segredo de consulta, IP, validade de 10 min, aprovação e consumo |
+
+O `downgrade` converte `inalcancavel` em `offline` (equipamento e eventos), remove as tabelas e apaga as chaves de `config` da fase. O banco continua em UTC; o fuso (`SENTINELA_FUSO`) só vale para textos e atalhos de silêncio.
 
 **Retenção:** `amostra` 48 h; `amostra_5min` 30 dias; `evento` 1 ano; `auditoria` 1 ano. Limpeza diária às 03:00.
 **Escrita:** amostras acumulam em memória e gravam em lote a cada 60 s (uma transação). Eventos de estado gravam na hora.
@@ -328,6 +353,11 @@ REST em `/api/v1`, JSON, autenticação por cookie de sessão (`HttpOnly`, `Secu
 | `/topologia` | grafo pronto para a teia: nós e ligações |
 | `/eventos` | linha do tempo filtrável |
 | `/config`, `/usuarios`, `/auditoria` | administração (papel admin) |
+| `/alertas` | listar (filtros, paginação ≤ 100), ver, `POST /{id}/reconhecer` |
+| `/silencios` | listar, criar (silêncio ou manutenção, com fim), `POST /{id}/encerrar` |
+| `/config/telegram` | ver (token nunca retorna), `PATCH`, `POST /teste` (409 na demonstração) |
+| `/paredes`, `/config/paredes` | listar telões, aprovar código, revogar; chave "telão sem HTTPS" |
+| `/parede/pedido`, `/parede/snapshot` | **sem sessão** (a TV): pedir código, consultar, ler o retrato reduzido; isentas de CSRF e limitadas por IP |
 | `/saude` | healthcheck sem dados sensíveis |
 
 **WebSocket `/ws`** — o cliente recebe primeiro um retrato completo (`snapshot`) e depois só diferenças:
@@ -337,6 +367,10 @@ REST em `/api/v1`, JSON, autenticação por cookie de sessão (`HttpOnly`, `Secu
 { "tipo": "latencia", "lote": [["8f1c…", 3.2], ["91aa…", 1.1]] }
 { "tipo": "descoberta", "id": 412, "classe_sugerida": "camera", "confianca": 0.86 }
 ```
+
+Mensagens novas da Fase 4A: `{ "tipo": "alerta", "acao": "aberto"|"atualizado"|"fechado"|"removido", "alerta": {…} }` e `{ "tipo": "silencio", "acao": "criado"|"encerrado", "id": 7 }`; o `estado` ganha `"inalcancavel"` com `causa: "pai:<id>"`.
+
+**WebSocket `/ws/parede`** (telão): só leitura, só o token do telão; `snapshot` com `nome`, `fuso`, `classes`, `equipamentos` (apenas `id` opaco, nome, classe, estado, `pai_id`) e `alertas`, depois `estado`, `equipamento`, `alerta` e `ping`. Nunca IP, MAC, fabricante ou latência. Fecha com 4401 (sem token válido ou revogado, revalidado a cada 60 s) ou 4403 (origem).
 
 Latências são enviadas em lote a cada 5 s. Mudanças de estado saem na hora. Reconexão automática com recuo exponencial e novo `snapshot`.
 
@@ -374,9 +408,11 @@ HTML + CSS com tokens + **Alpine.js** nas telas comuns. **3d-force-graph** (Thre
 | **Organograma** | uma árvore 2D por classe (Classe → pai → equipamento), em SVG, leve, funciona no celular |
 | **Lista** | tabela filtrável; vira cartões abaixo de 768 px |
 | **Novos** | descobertas pendentes com sinais ("por que é câmera") e aprovação em lote |
-| **Alertas** | linha do tempo, silêncios, manutenção |
-| **Configurações** | fontes, sub-redes, ritmo e teto, Telegram, usuários, emparelhar telão |
-| **Parede** (`/parede`) | Teia em tela cheia com rotação lenta, contadores e faixa de alertas |
+| **Alertas** | abertos e histórico paginado com filtros, reconhecer, silêncios e manutenções (atalhos 1 h, 4 h, até amanhã 08:00 no fuso, personalizado) |
+| **Configurações** | fontes, sub-redes, ritmo e teto, **Telegram** (token, chats, incluir IP, enviar teste), **Telões** (emparelhar com código, revogar, chave "sem HTTPS"), usuários |
+| **Parede** (`/parede`) | sem login: mostra o código de emparelhamento; pareada, a Teia em tela cheia com rotação lenta, contadores e faixa de alertas; cai para o Organograma se FPS < 30 por 10 s; "sem conexão" após 60 s; cartão de alerta reduzido, **sem IP** |
+
+Decisões do dono na Fase 4A: **IP dentro de cada bolinha** na Teia e no Organograma do painel (o telão não mostra IP: "só no painel"); **cartão de alerta na tela** ao cair um equipamento (painel com IP e todos os dados; telão reduzido, sem IP/MAC/fabricante/latência; som desligado por padrão); rótulos e faixa de filtros da Teia ajustados (sem corte nas bordas). A Teia do telão roda no Chromium 63 (Tizen 5) com compatibilidade reduzida.
 
 ### 12.3 Linguagem visual "quântica"
 
@@ -410,7 +446,8 @@ O layout por força roda alguns segundos e **congela** (`cooldownTicks`). Posiç
 | Sentinela usado como scanner | invasor com login força varredura na internet | guarda de rede: só sub-redes privadas declaradas; varredura só para admin, com auditoria |
 | XSS por dado de equipamento | título HTTP malicioso de um aparelho | todo texto vindo da rede é tratado como não confiável; escape no front; CSP sem `unsafe-inline` |
 | SSRF | URL de checagem HTTP aponta para serviço interno do host | checagem HTTP só para IP de equipamento cadastrado, via guarda; sem seguir redirecionamento para outro host |
-| Telão roubado/clonado | código de emparelhamento vazado | código de uso único, armazenado por hash, acesso só leitura e revogável |
+| Telão roubado/clonado | código de emparelhamento vazado | código de 8 caracteres de uso único e 10 min, armazenado por hash; ≤ 10 pedidos por IP/h e ≤ 20 pendentes; token com escopo `parede` (só abre o retrato reduzido e `/ws/parede`, nunca rota de escrita), cookie `HttpOnly`/`SameSite=Strict`, hash no banco, revogável na hora; modo HTTP desligado por padrão e amarrado ao IP |
+| Saída para a internet (Telegram) | token do bot vazado ou destino trocado | **única exceção** à Guarda: `DestinoExterno("telegram")` = `api.telegram.org:443`, HTTPS com verificação normal de certificado, IP resolvido sem broadcast/multicast/loopback/link-local; sem Telegram configurado nenhum pacote sai (nem DNS); token cifrado, nunca em log, auditoria ou erro; mensagens com dado mínimo (IP só se ligado) |
 | Cadeia de suprimentos | dependência comprometida | versões fixadas com hash (`uv lock`); `pip-audit` e `trivy` no CI; poucas dependências |
 | Dado de cliente no repositório público | print ou CSV real commitado | `gitleaks` em pre-commit e CI; `.gitignore` de `*.csv`, `dados/`, `*.sqlite`; exemplos só com `10.99.0.0/16` e MACs fictícios |
 | Interrupção da rede | bug gera rajada | limitador global obrigatório; teste de carga confere o teto |
@@ -544,6 +581,8 @@ Sentinela/
 | 009 | Câmeras atrás do NVR lidas pelo gravador | ignorar; rotear até a rede do NVR | essas câmeras são o caso mais comum; consultar o gravador não exige mexer na rede |
 | 010 | Regras do classificador em TOML (`tomllib`) | YAML (`yaml.safe_load`) | TOML está na biblioteca padrão do Python 3.11+: nenhuma dependência nova na imagem; sintaxe sem as ambiguidades de tipo do YAML; regras validadas ao carregar (classes, condições e regex com teto) |
 | 011 | Classificação passiva; sondagem só com autorização | sondar todo achado novo (portas/título) | sondar um IP inédito faz o sistema operacional emitir ARP (broadcast); a sondagem só acontece em sub-rede com varredura ligada, no clique "Sondar" (auditado) ou após a aprovação, e o teste de captura aceita ARP só para esses IPs |
+| 012 | Telegram por destino externo nomeado na Guarda | liberar saída HTTPS genérica; webhook de entrada; bot local | a Guarda segue o único ponto de saída e a exceção é uma só, fixa no código (`api.telegram.org:443`), com verificação de certificado; só há saída (sem webhook, sem porta aberta) e, sem token, nenhum pacote sai |
+| 013 | Código mostrado na TV e aprovado no painel | digitar código/URL na TV; QR; token na URL | TV sem teclado prático: ela exibe um código curto e o admin autenticado o aprova; uso único, 10 min, hash no banco, sem sessão na TV nem rota de escrita |
 
 ## 18. Roteiro de entrega
 
@@ -552,7 +591,8 @@ Sentinela/
 | **1. Núcleo** (concluída em 2026-11-16) | guarda de rede, cadastro manual/CSV, agendador + limitador, ICMP/TCP/HTTP, máquina de estados, lista, WebSocket, login, **modo demonstração** | 300 equipamentos simulados com estados ao vivo na lista; testes do guarda e do limitador verdes |
 | **2. Visual** (concluída em 2026-11-17: Teia 3D com 5 estilos e Organograma; ver nota de desempenho no README. Lighthouse 13.6.0, preset desktop, perfil limpo, logado, contra a demo: Lista e Organograma com desempenho 100, acessibilidade 100, boas práticas 100 e SEO 100; CLS 0,014/0,017. Nota para o upstream: o Alpine CSP lê todas as globais do `window` ao carregar e dispara o aviso de depreciação da API Fenced Frame; o `tema.js` remove a global `fence` antes dele, até o Alpine passar a ignorar "fence" como já faz com "styleMedia" e "sharedStorage") | Teia 3D, Organograma, painel lateral, tema quântico, fallback | teia com 1.000 nós a 60 fps; organograma no celular; Lighthouse ≥ 90 |
 | **3. Descoberta** (concluída em 2026-11-17: fontes MikroTik por api-ssl com impressão confiada, SNMP v2c/v3, gravadores Hikvision/Dahua com estado das câmeras filhas; classificador TOML por pontos com 39 regras e base OUI embutida; abas Novos e Configurações; varredura lenta opcional; credenciais cifradas. Núcleo com 897 testes (`pytest -W error`), front com 151 testes de unidade, smoke Playwright verde 3×; primeira tela 83,2 KB gzip (teto 150 KB); Lighthouse 100 nas quatro categorias em Novos e Configurações (Lighthouse 13.6.0, preset desktop). Prova de captura no Docker Desktop 29.6.2 (rodada final): 584 quadros, 373 do Sentinela, 132 ARP request todos para IPs autorizados (18 IPs: 3 fontes, 1 aprovado, 1 sondado, 13 da faixa varrida), 0 broadcast/multicast proibido. A prova cobre IPv4: o IPv6 fica desligado na rede de teste; a ausência de multicast IPv6 é garantida pela Guarda (`ff00::/8`) e pelos testes estáticos. Demo com 3 fontes simuladas e 40 descobertas pendentes) | MikroTik v6/v7, SNMP, gravadores Hikvision/Dahua, classificador, tela de Novos, varredura opcional | descoberta contra simuladores; teste de captura sem broadcast |
-| **4. Operação** | alertas Telegram com agrupamento e correlação, `/parede` com emparelhamento, TOTP, instalador, update/backup/restore, imagens multi-arquitetura | instalação limpa num Raspberry Pi em < 10 min; pipeline de segurança verde |
+| **4A. Alertas e telão** (concluída em 2026-11-18: núcleo com 1.219 testes (`pytest -W error`), front com 251 testes de unidade, smoke Playwright verde 3× (103 testes); primeira tela 115,1 KB gzip (teto 150 KB); Lighthouse 13.6.0 desktop contra o compose (nginx real) com 100 nas quatro categorias em Alertas, Configurações, Teia, Organograma, Lista e `/parede`; `pip-audit` limpo e `trivy` 0 HIGH/CRITICAL corrigíveis nas duas imagens. Prova de captura no Docker Desktop: 829 quadros, 517 do Sentinela, 164 ARP request todos para 20 IPs autorizados, 0 broadcast/multicast proibido, com Telegram falso e telão na cena. Demo com switch pai e 14 filhos, queda correlacionada programada a cada 10 min e 2 alertas semeados. Aceite pendente do dono: abrir `/parede` na Samsung UN65RU7100 (Tizen 5.0)) | alertas com correlação pai/filho e estado `inalcancavel`, silêncio/manutenção, Telegram, `/parede` com emparelhamento, IP nas bolinhas e cartões de alerta | demo com queda correlacionada ao vivo; captura sem broadcast cobrindo Telegram e telão |
+| **4B. Operação** | TOTP, backup/restore/update, imagens multi-arquitetura | instalação limpa num Raspberry Pi em < 10 min; pipeline de segurança verde |
 
 ## 19. Riscos
 

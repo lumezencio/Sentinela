@@ -11,8 +11,11 @@
 //     useWebGPU, que a Teia não usa; o stub tira o renderizador WebGPU inteiro do bundle.
 // Depois do build, as licenças completas de cada pacote empacotado são acrescentadas ao
 // .LEGAL.txt (que o construir-teia.sh move para LICENSES-teia.txt).
+// Os plugins e a anexação das licenças são exportados para o empacotar-parede.mjs (Teia do
+// telão); o build daqui só roda quando este arquivo é o chamado pela linha de comando.
 import { appendFile, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const SAIDA = "src/vendor/teia-3d.bundle.js";
@@ -20,7 +23,7 @@ const COM_ESTILO = /[\\/]node_modules[\\/](3d-force-graph|three-render-objects|f
 const CHAMADA = "styleInject(css_248z);";
 const SCENE_GLOBAL = "window.scene = state.scene;";
 
-const semEstiloInjetado = {
+export const semEstiloInjetado = {
   name: "sem-estilo-injetado",
   setup(b) {
     b.onLoad({ filter: COM_ESTILO }, async (args) => {
@@ -39,7 +42,7 @@ const semEstiloInjetado = {
   },
 };
 
-const semWebgpu = {
+export const semWebgpu = {
   name: "sem-webgpu",
   setup(b) {
     b.onResolve({ filter: /^three\/webgpu$/ }, () => ({ path: "three-webgpu-stub", namespace: "teia-stub" }));
@@ -50,34 +53,40 @@ const semWebgpu = {
   },
 };
 
-const resultado = await build({
-  entryPoints: ["build/teia-entrada.js"],
-  bundle: true,
-  format: "esm",
-  minify: true,
-  legalComments: "external",
-  target: "es2022",
-  outfile: SAIDA,
-  sourcemap: false,
-  metafile: true,
-  logLevel: "warning",
-  plugins: [semEstiloInjetado, semWebgpu],
-});
+/** Acrescenta ao `arquivoLegal` a licença completa de cada pacote que entrou no bundle. */
+export async function anexarLicencas(metafile, arquivoLegal) {
+  // pacotes que de fato entraram no bundle (raiz de cada node_modules/<pacote>)
+  const raizes = new Set();
+  for (const entrada of Object.keys(metafile.inputs)) {
+    const m = entrada.replaceAll("\\", "/").match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
+    if (m) raizes.add(m[1]);
+  }
 
-// pacotes que de fato entraram no bundle (raiz de cada node_modules/<pacote>)
-const raizes = new Set();
-for (const entrada of Object.keys(resultado.metafile.inputs)) {
-  const m = entrada.replaceAll("\\", "/").match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
-  if (m) raizes.add(m[1]);
+  let texto = "\n\n==== Licenças completas dos pacotes empacotados ====\n";
+  for (const nome of [...raizes].sort()) {
+    const dir = path.join("node_modules", nome);
+    const pkg = JSON.parse(await readFile(path.join(dir, "package.json"), "utf8"));
+    const arquivo = (await readdir(dir)).sort().find((f) => /^(licen[cs]e|copying)/i.test(f));
+    if (!arquivo) throw new Error(`${nome}: sem arquivo de licença`);
+    const corpo = (await readFile(path.join(dir, arquivo), "utf8")).replaceAll("\r\n", "\n").trim();
+    texto += `\n---- ${nome}@${pkg.version} (${pkg.license}) ----\n${corpo}\n`;
+  }
+  await appendFile(arquivoLegal, texto);
 }
 
-let texto = "\n\n==== Licenças completas dos pacotes empacotados ====\n";
-for (const nome of [...raizes].sort()) {
-  const dir = path.join("node_modules", nome);
-  const pkg = JSON.parse(await readFile(path.join(dir, "package.json"), "utf8"));
-  const arquivo = (await readdir(dir)).sort().find((f) => /^(licen[cs]e|copying)/i.test(f));
-  if (!arquivo) throw new Error(`${nome}: sem arquivo de licença`);
-  const corpo = (await readFile(path.join(dir, arquivo), "utf8")).replaceAll("\r\n", "\n").trim();
-  texto += `\n---- ${nome}@${pkg.version} (${pkg.license}) ----\n${corpo}\n`;
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const resultado = await build({
+    entryPoints: ["build/teia-entrada.js"],
+    bundle: true,
+    format: "esm",
+    minify: true,
+    legalComments: "external",
+    target: "es2022",
+    outfile: SAIDA,
+    sourcemap: false,
+    metafile: true,
+    logLevel: "warning",
+    plugins: [semEstiloInjetado, semWebgpu],
+  });
+  await anexarLicencas(resultado.metafile, `${SAIDA}.LEGAL.txt`);
 }
-await appendFile(`${SAIDA}.LEGAL.txt`, texto);

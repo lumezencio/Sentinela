@@ -20,16 +20,19 @@ CHECAGENS = "monitor/checagens/"  # prefixo: qualquer módulo de checagem
 MIKROTIK = "descoberta/fontes/mikrotik_api.py"
 SONDAGEM = "descoberta/classificador/sondagem.py"
 GRAVADOR = "descoberta/fontes/gravador_http.py"
+TELEGRAM = "alertas/telegram.py"  # única saída para a internet (DestinoExterno da Guarda)
 
 # biblioteca -> arquivos (relativos a ``sentinela/``) ou prefixos terminados em "/"
 PERMITIDOS: dict[str, tuple[str, ...]] = {
     "pysnmp": ("descoberta/fontes/snmp.py",),
-    "httpx": ("monitor/checagens/http.py", GRAVADOR, SONDAGEM),
-    "httpcore": (GRAVADOR,),  # backend de rede próprio (destino e impressão TLS conferidos)
+    "httpx": ("monitor/checagens/http.py", GRAVADOR, SONDAGEM, TELEGRAM),
+    # backend de rede próprio (destino e impressão TLS conferidos; Telegram: destino travado)
+    "httpcore": (GRAVADOR, TELEGRAM),
     "icmplib": ("monitor/checagens/icmp.py", "descoberta/varredura.py"),
-    "socket": (CHECAGENS, MIKROTIK, SONDAGEM),
-    # TLS próprio: impressão do certificado conferida no adaptador (RouterOS e gravadores)
-    "ssl": (MIKROTIK, GRAVADOR),
+    "socket": (CHECAGENS, MIKROTIK, SONDAGEM, TELEGRAM),
+    # TLS próprio: impressão do certificado conferida no adaptador (RouterOS e gravadores);
+    # Telegram: verificação normal de cadeia e nome (certifi + CA adicional)
+    "ssl": (MIKROTIK, GRAVADOR, TELEGRAM),
     "urllib.request": (),
     "http.client": (),
     "aiohttp": (),
@@ -149,5 +152,8 @@ def test_permitidos_por_prefixo_e_arquivo() -> None:
     assert not _permitido("descoberta/fontes/mikrotik_api.py", "icmplib")
     assert _permitido(MIKROTIK, "ssl") and _permitido(GRAVADOR, "ssl")
     assert not _permitido(SONDAGEM, "ssl")
+    for biblioteca in ("httpx", "httpcore", "socket", "ssl"):
+        assert _permitido(TELEGRAM, biblioteca)
+        assert not _permitido("alertas/despachante.py", biblioteca)
     for nenhum in ("urllib.request", "http.client", "aiohttp", "requests"):
         assert not _permitido("main.py", nenhum)

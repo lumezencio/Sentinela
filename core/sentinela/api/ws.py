@@ -2,9 +2,11 @@
 
 Protocolo (servidor → cliente, JSON):
 
-- ``{"tipo": "snapshot", "classes": [...], "equipamentos": [...], "pendentes": n}`` logo
-  após conectar (``pendentes``: descobertas na fila);
-- ``{"tipo": "estado", "id", "estado", "desde"}`` a cada transição;
+- ``{"tipo": "snapshot", "classes": [...], "equipamentos": [...], "pendentes": n,
+  "alertas_abertos": n}`` logo após conectar (``pendentes``: descobertas na fila);
+- ``{"tipo": "estado", "id", "estado", "desde"}`` a cada transição, com ``"causa"`` nas
+  forçadas; ``estado`` pode ser ``inalcancavel`` (caiu junto com o pai, causa
+  ``"pai:<id do pai>"``, Fase 4) e a liberação volta a ``desconhecido``;
 - ``{"tipo": "latencias", "lote": [[id, ms | null], ...]}`` em lote a cada 5 s;
 - ``{"tipo": "descoberta", "acao": "nova"|"atualizada"|"removida", "id", "classe_sugerida",
   "confianca"}``, ``{"tipo": "pendentes", "total"}`` e ``{"tipo": "varredura", "cidr",
@@ -15,6 +17,12 @@ Protocolo (servidor → cliente, JSON):
   linha no MESMO formato de ``snapshot.equipamentos`` (aprovação, IP mudado pela descoberta,
   checagem trocada depois da aprovação), ou ``{"tipo": "equipamento", "acao": "removido",
   "id"}`` se ele já não existe;
+- ``{"tipo": "silencio", "acao": "criado"|"encerrado", "id"}`` quando um silêncio ou uma
+  manutenção começa ou termina (Fase 4);
+- ``{"tipo": "alerta", "acao": "aberto"|"atualizado"|"fechado"|"removido", "alerta":
+  AlertaSaida | null, "abertos": n}`` com a linha no formato de ``GET /alertas`` (``removido``
+  ou alerta já apagado: ``alerta`` nulo e ``id`` no topo); ``snapshot.alertas_abertos`` traz
+  o total ao conectar (Fase 4);
 - ``{"tipo": "ping"}`` a cada 25 s (mantém proxies e detecta conexão morta).
 
 Fechamentos: ``4403`` origem diferente do host, ``4401`` sem sessão válida (no handshake ou
@@ -26,7 +34,7 @@ recusa é "aceita e fecha" sem enviar dados (R19): fechar antes do accept chega 
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,10 +42,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinela.api.alertas import contar_abertos, saida_alerta
 from sentinela.api.deps import usuario_do_cookie
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.config import Settings
-from sentinela.db.modelos import Classe, Descoberta, Equipamento, Usuario
+from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento, Usuario
 from sentinela.monitor.agendador import Agendador
 from sentinela.relogio import Relogio
 
@@ -49,9 +58,9 @@ FECHA_NAO_AUTENTICADO = 4401
 FECHA_ORIGEM_PROIBIDA = 4403
 FECHA_CLIENTE_LENTO = 1013  # "try again later"
 FECHA_ERRO_INTERNO = 1011
-# ``alvo_recusado`` é interno; ``equipamento`` é enriquecido com a linha do banco
+# ``alvo_recusado`` é interno; ``equipamento`` e ``alerta`` são enriquecidos com a linha do banco
 TIPOS_REPASSADOS = frozenset(
-    {"estado", "latencias", "descoberta", "pendentes", "varredura", "fonte"}
+    {"estado", "latencias", "descoberta", "pendentes", "varredura", "fonte", "silencio"}
 )
 PING = {"tipo": "ping"}
 
@@ -92,7 +101,7 @@ async def sessao_valida(sessoes: async_sessionmaker[AsyncSession], websocket: We
     return await _usuario(sessoes, websocket) is not None
 
 
-async def _recusar(websocket: WebSocket, codigo: int) -> None:
+async def recusar(websocket: WebSocket, codigo: int) -> None:
     """Aceita e fecha na hora, sem enviar dados, para o navegador ver o código (R19)."""
     await websocket.accept()
     await websocket.close(codigo)
@@ -105,11 +114,11 @@ async def ws_autenticado(websocket: WebSocket) -> Usuario | None:
     devolve o usuário; quem chamou faz o ``accept``.
     """
     if not origem_permitida(websocket):
-        await _recusar(websocket, FECHA_ORIGEM_PROIBIDA)
+        await recusar(websocket, FECHA_ORIGEM_PROIBIDA)
         return None
     usuario = await _usuario(websocket.app.state.sessoes, websocket)
     if usuario is None:
-        await _recusar(websocket, FECHA_NAO_AUTENTICADO)
+        await recusar(websocket, FECHA_NAO_AUTENTICADO)
         return None
     return usuario
 
@@ -146,6 +155,27 @@ async def mensagem_equipamento(db: AsyncSession, acao: str, id: str) -> dict[str
     return {"tipo": "equipamento", "acao": acao, "equipamento": item_equipamento(eq, slug)}
 
 
+async def mensagem_alerta(db: AsyncSession, dados: dict[str, Any]) -> dict[str, Any]:
+    """Mensagem ``alerta`` do barramento com a linha do banco; apagado (ou ``removido``):
+    ``alerta`` nulo."""
+    id = dados["id"]
+    acao = str(dados.get("acao"))
+    alerta = None if acao == "removido" else await db.get(Alerta, id)
+    if alerta is None:
+        acao = "removido"
+    return {
+        "tipo": "alerta",
+        "acao": acao,
+        "id": id,
+        "alerta": None
+        if alerta is None
+        else (await saida_alerta(db, alerta)).model_dump(mode="json"),
+        "abertos": dados["abertos"]
+        if isinstance(dados.get("abertos"), int)
+        else await contar_abertos(db),
+    }
+
+
 async def montar_snapshot(db: AsyncSession) -> dict[str, Any]:
     """Classes, equipamentos com os campos que a tela usa (sem MAC nem fabricante) e o total
     de descobertas pendentes."""
@@ -176,7 +206,80 @@ async def montar_snapshot(db: AsyncSession) -> dict[str, Any]:
             )
             or 0
         ),
+        "alertas_abertos": await contar_abertos(db),
     }
+
+
+type Transformar = Callable[[Mensagem], Awaitable[dict[str, Any] | None]]
+
+
+class FecharConexao(Exception):  # noqa: N818 - sinal de controle, não erro
+    """Levantada por um ``Transformar`` para encerrar a conexão na hora com ``codigo``."""
+
+    def __init__(self, codigo: int) -> None:
+        super().__init__(codigo)
+        self.codigo = codigo
+
+
+def transformador_painel(sessoes: async_sessionmaker[AsyncSession]) -> Transformar:
+    """O que o painel (``/ws``) recebe de cada mensagem do barramento."""
+
+    async def transformar(m: Mensagem) -> dict[str, Any] | None:
+        if m.tipo in TIPOS_REPASSADOS:
+            return {**m.dados, "tipo": m.tipo}
+        if m.tipo == "equipamento" and isinstance(m.dados.get("id"), str):
+            acao = "criado" if m.dados.get("acao") == "criado" else "atualizado"
+            async with sessoes() as db:
+                return await mensagem_equipamento(db, acao, m.dados["id"])
+        if m.tipo == "alerta" and isinstance(m.dados.get("id"), int):
+            async with sessoes() as db:
+                return await mensagem_alerta(db, m.dados)
+        return None
+
+    return transformar
+
+
+async def atender(
+    websocket: WebSocket,
+    snapshot: Callable[[AsyncSession], Awaitable[dict[str, Any]]],
+    transformar: Transformar,
+    validar: Callable[[], Awaitable[bool]],
+) -> None:
+    """Corpo comum de uma conexão já aceita: snapshot, repasse, ping e revalidação."""
+    estado = websocket.app.state
+    sessoes: async_sessionmaker[AsyncSession] = estado.sessoes
+    barramento: Barramento = estado.barramento
+    agendador: Agendador = estado.agendador
+    conexao = _Conexao(websocket, estado.config_ws, estado.relogio, transformar, validar)
+    tarefas: list[asyncio.Task[None]] = []
+    # assina ANTES de ler o banco: nada publicado depois da leitura se perde
+    async with barramento.assinar() as fluxo:
+        try:
+            await agendador.aguardar_gravacoes()  # transições já publicadas chegam ao banco
+            # revogada entre a autenticação e a assinatura (a mensagem se perdeu): cai já
+            if await validar():
+                async with sessoes() as db:
+                    conexao.enfileirar(await snapshot(db))
+                for corpo in (
+                    conexao.enviar(),
+                    conexao.ouvir(),
+                    conexao.repassar(fluxo),
+                    conexao.pingar(),
+                    conexao.revalidar(),
+                ):
+                    tarefas.append(asyncio.create_task(conexao.guardar(corpo)))
+                codigo = await conexao.fim
+            else:
+                codigo = FECHA_NAO_AUTENTICADO
+        finally:
+            for t in tarefas:
+                t.cancel()
+            await asyncio.gather(*tarefas, return_exceptions=True)
+    if codigo is not None:
+        try:
+            await websocket.close(codigo)
+        except (RuntimeError, WebSocketDisconnect):
+            pass  # o cliente caiu no meio do fechamento
 
 
 class _Conexao:
@@ -187,12 +290,16 @@ class _Conexao:
         websocket: WebSocket,
         config: ConfigWs,
         relogio: Relogio,
-        sessoes: async_sessionmaker[AsyncSession],
+        transformar: Transformar,
+        validar: Callable[[], Awaitable[bool]],
     ) -> None:
+        """``transformar``: mensagem do barramento -> o que o cliente recebe (``None``: nada;
+        ``FecharConexao``: encerra com o código). ``validar``: a credencial ainda vale?"""
         self._ws = websocket
         self._config = config
         self._relogio = relogio
-        self._sessoes = sessoes
+        self._transformar = transformar
+        self._validar = validar
         self._fila: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=config.fila_max)
         self.fim: asyncio.Future[int | None] = asyncio.get_running_loop().create_future()
 
@@ -233,12 +340,13 @@ class _Conexao:
 
     async def repassar(self, fluxo: AsyncIterator[Mensagem]) -> None:
         async for m in fluxo:
-            if m.tipo in TIPOS_REPASSADOS:
-                self.enfileirar({**m.dados, "tipo": m.tipo})
-            elif m.tipo == "equipamento" and isinstance(m.dados.get("id"), str):
-                acao = "criado" if m.dados.get("acao") == "criado" else "atualizado"
-                async with self._sessoes() as db:
-                    self.enfileirar(await mensagem_equipamento(db, acao, m.dados["id"]))
+            try:
+                saida = await self._transformar(m)
+            except FecharConexao as e:
+                self.encerrar(e.codigo)
+                return
+            if saida is not None:
+                self.enfileirar(saida)
 
     async def pingar(self) -> None:
         while True:
@@ -248,7 +356,7 @@ class _Conexao:
     async def revalidar(self) -> None:
         while True:
             await self._relogio.dormir(self._config.revalidar_s)
-            if not await sessao_valida(self._sessoes, self._ws):
+            if not await self._validar():
                 self.encerrar(FECHA_NAO_AUTENTICADO)
                 return
 
@@ -258,35 +366,9 @@ async def ao_vivo(websocket: WebSocket) -> None:
     if await ws_autenticado(websocket) is None:
         return
     await websocket.accept()
+    sessoes: async_sessionmaker[AsyncSession] = websocket.app.state.sessoes
 
-    estado = websocket.app.state
-    sessoes: async_sessionmaker[AsyncSession] = estado.sessoes
+    async def validar() -> bool:
+        return await sessao_valida(sessoes, websocket)
 
-    barramento: Barramento = estado.barramento
-    agendador: Agendador = estado.agendador
-    conexao = _Conexao(websocket, estado.config_ws, estado.relogio, sessoes)
-    tarefas: list[asyncio.Task[None]] = []
-    # assina ANTES de ler o banco: nada publicado depois da leitura se perde
-    async with barramento.assinar() as fluxo:
-        try:
-            await agendador.aguardar_gravacoes()  # transições já publicadas chegam ao banco
-            async with sessoes() as db:
-                conexao.enfileirar(await montar_snapshot(db))
-            for corpo in (
-                conexao.enviar(),
-                conexao.ouvir(),
-                conexao.repassar(fluxo),
-                conexao.pingar(),
-                conexao.revalidar(),
-            ):
-                tarefas.append(asyncio.create_task(conexao.guardar(corpo)))
-            codigo = await conexao.fim
-        finally:
-            for t in tarefas:
-                t.cancel()
-            await asyncio.gather(*tarefas, return_exceptions=True)
-    if codigo is not None:
-        try:
-            await websocket.close(codigo)
-        except (RuntimeError, WebSocketDisconnect):
-            pass  # o cliente caiu no meio do fechamento
+    await atender(websocket, montar_snapshot, transformador_painel(sessoes), validar)

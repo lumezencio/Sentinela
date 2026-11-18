@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   alinhamentoAtras, direcaoDeAproximacao, distanciaParaRaio, DIST_MAX_ROTULO, enquadrar,
-  ESCALA_ROTULO, posicaoDoRotulo, projetarNaTela, raioEnvolvente,
+  ESCALA_ROTULO, manterRotuloNoPalco, posicaoDoRotulo, projetarNaTela, raioEnvolvente,
 } from "../../src/js/teia/enquadramento.js";
 
 const perto = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -72,4 +72,39 @@ test("posicaoDoRotulo: atrás da câmera, longe ou fora da tela → escondido; e
   assert.deepEqual(r, { visivel: true, x: 400, y: 150, escala: 1 });
   assert.equal(posicaoDoRotulo({ ndc: { x: 0, y: 0, z: 0.5 }, distancia: 10, largura: 800, altura: 600 }).escala, ESCALA_ROTULO.max);
   assert.equal(posicaoDoRotulo({ ndc: { x: 0, y: 0, z: 0.5 }, distancia: 1400, largura: 800, altura: 600 }).escala, ESCALA_ROTULO.min);
+});
+
+test("manterRotuloNoPalco: caixa perto da borda desliza para dentro; âncora fora some", () => {
+  const base = { largura: 100, altura: 24, palcoL: 800, palcoA: 600, desloque: 14, folga: 4 };
+  // no meio: não mexe
+  assert.deepEqual(manterRotuloNoPalco({ ...base, x: 400, y: 300 }), { visivel: true, x: 400, y: 300 });
+  // borda direita: o centro recua para a caixa terminar na folga
+  const d = manterRotuloNoPalco({ ...base, x: 790, y: 300 });
+  assert.equal(d.x + 50, 796);
+  // borda esquerda
+  const e = manterRotuloNoPalco({ ...base, x: 3, y: 300 });
+  assert.equal(e.x - 50, 4);
+  // embaixo: topo da caixa (y + deslocamento) + altura cabe no palco
+  const b = manterRotuloNoPalco({ ...base, x: 400, y: 599 });
+  assert.equal(b.y + 14 + 24, 596);
+  // em cima: a caixa (abaixo da âncora) já fica dentro
+  const c = manterRotuloNoPalco({ ...base, x: 400, y: 0 });
+  assert.ok(c.y + 14 >= 4);
+  // âncora fora do palco: some
+  assert.equal(manterRotuloNoPalco({ ...base, x: -5, y: 300 }).visivel, false);
+  assert.equal(manterRotuloNoPalco({ ...base, x: 400, y: 601 }).visivel, false);
+  // mais larga que o palco: centraliza (nunca passa a folga do mesmo lado errado)
+  assert.equal(manterRotuloNoPalco({ ...base, largura: 900, x: 100, y: 300 }).x, 400);
+});
+
+test("manterRotuloNoPalco: rótulo ACIMA da âncora (desloque negativo) fica inteiro dentro do palco", () => {
+  const altura = 40, desloque = -(14 + altura), palcoA = 600;
+  for (const y of [0, 10, 30, 300, 590, 600]) {
+    const r = manterRotuloNoPalco({
+      x: 400, y, largura: 100, altura, palcoL: 800, palcoA, desloque, folga: 4,
+    });
+    assert.equal(r.visivel, true);
+    assert.ok(r.y + desloque >= 4, `topo ${r.y + desloque}`);
+    assert.ok(r.y + desloque + altura <= palcoA - 4, `base ${r.y + desloque + altura}`);
+  }
 });

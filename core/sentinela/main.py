@@ -10,26 +10,40 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from sentinela.alertas.agrupador import Agrupador
+from sentinela.alertas.despachante import Despachante
+from sentinela.alertas.silencios import Silencios
+from sentinela.alertas.telegram import ClienteTelegram
 from sentinela.api import (
+    alertas,
     auth,
     classes,
     config_descoberta,
+    config_geral,
+    config_telegram,
     descobertas,
     equipamentos,
     fontes,
     importacao,
+    parede,
+    paredes,
     saude,
+    silencios,
     subredes,
     varredura,
     ws,
+    ws_parede,
 )
-from sentinela.api.deps import verificar_csrf
+from sentinela.api.deps import agora_utc, verificar_csrf
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.demo.simulador import (
     ChecagemSimulada,
     banco_e_demo,
+    gerar_rede,
+    hierarquia_demo,
+    semear_alertas_demo,
     semear_demo,
     semear_fontes_demo,
     tem_equipamentos,
@@ -44,6 +58,7 @@ from sentinela.descoberta.orquestrador import (
     fabricar_coletor,
 )
 from sentinela.descoberta.varredura import Ping, Varredura, ping_icmp
+from sentinela.horario import zona
 from sentinela.monitor.gravador import GravadorAmostras
 from sentinela.monitor.limpeza import limpar_periodicamente
 from sentinela.monitor.montagem import Monitor, montar_monitor
@@ -96,7 +111,12 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
         log.warning("modo demonstração: as checagens são simuladas, nenhum pacote é enviado")
         await semear_demo(app.state.sessoes)
         await semear_fontes_demo(app.state.sessoes)
-        simulada = ChecagemSimulada(relogio=app.state.relogio)  # uma por app, para todo tipo
+        await semear_alertas_demo(app.state.sessoes, agora_utc())
+        pai, filhos = hierarquia_demo(gerar_rede())
+        simulada = ChecagemSimulada(  # uma por app, para todo tipo
+            relogio=app.state.relogio,
+            queda_correlacionada=(pai.ip, [f.ip for f in filhos]),
+        )
         monitor = await montar_monitor(
             app.state.sessoes, settings, lambda _tipo: simulada, app.state.relogio
         )
@@ -109,7 +129,33 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     app.state.limitador = monitor.limitador
     app.state.gravador = monitor.gravador
     app.state.agendador = monitor.agendador
+    app.state.silencios = Silencios(
+        app.state.sessoes, monitor.agendador, monitor.barramento, app.state.relogio, agora_utc
+    )
+    app.state.agrupador = Agrupador(
+        app.state.sessoes,
+        monitor.barramento,
+        app.state.silencios,
+        app.state.relogio,
+        agora_utc,
+        enviar=not settings.demo,  # demonstração não tem Telegram: nada fica "pendente"
+    )
     _montar_descoberta(app, settings, monitor)
+    _montar_telegram(app, settings, monitor)
+
+
+def _montar_telegram(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
+    """Cliente e despachante do Telegram (laço não iniciado). No modo demonstração não há
+    cliente nem despachante: nenhum pacote sai, nem para a internet."""
+    if settings.demo:
+        app.state.cliente_telegram = None
+        app.state.despachante = None
+        return
+    cliente = ClienteTelegram(monitor.guarda, ca_adicional=settings.ca_adicional)
+    app.state.cliente_telegram = cliente
+    app.state.despachante = Despachante(
+        app.state.sessoes, cliente, app.state.cofre, app.state.relogio, agora_utc, zona(settings)
+    )
 
 
 def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
@@ -156,8 +202,10 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
 @asynccontextmanager
 async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     """Inicia a limpeza diária, a descarga periódica, a descoberta (orquestrador e leitura de
-    canais) e ``agendador.executar``; no shutdown, cancela a varredura e
-    encerra e espera, nessa ordem (o agendador cancelado drena as transições e descarrega).
+    canais), os silêncios, o agrupador de alertas, o envio ao Telegram (fora do modo
+    demonstração) e ``agendador.executar``; no shutdown,
+    cancela a varredura e encerra e espera, nessa ordem (o agendador cancelado drena as
+    transições e descarrega).
     """
     tarefas: list[asyncio.Task[None]] = []
     app.state.tarefas_monitor = tarefas
@@ -182,6 +230,17 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         tarefas.append(
             asyncio.create_task(app.state.leitor_canais.executar(), name="sentinela-canais")
         )
+        tarefas.append(
+            asyncio.create_task(app.state.silencios.executar(), name="sentinela-silencios")
+        )
+        # antes do agendador: assina o barramento antes da primeira transição
+        tarefas.append(
+            asyncio.create_task(app.state.agrupador.executar(), name="sentinela-alertas")
+        )
+        if app.state.despachante is not None:  # nunca no modo demonstração
+            tarefas.append(
+                asyncio.create_task(app.state.despachante.executar(), name="sentinela-telegram")
+            )
         # o agendador por último: os laços da descoberta o usam e param antes dele
         tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
@@ -195,7 +254,7 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
         await app.state.orquestrador.encerrar()
         for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, descoberta,
-            # leitura de canais e agendador
+            # leitura de canais, silêncios, alertas, Telegram e agendador
             tarefa.cancel()
             # falha já registrada por ``_laco_terminou``; aqui só espera o fim
             await asyncio.gather(tarefa, return_exceptions=True)
@@ -274,6 +333,8 @@ def criar_app(
     app.state.falhas_fantasma = BloqueioFantasma(relogio)
     # testar/coletar/sondar/varredura: 10 por minuto por usuário (mesma janela do login)
     app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
+    # telão: no máximo 10 pedidos de emparelhamento por IP por hora (rota sem sessão)
+    app.state.pedidos_ip = LimitadorIP(relogio, max_falhas=10, janela_s=3600)
     app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
@@ -284,6 +345,13 @@ def criar_app(
     app.include_router(fontes.router)
     app.include_router(descobertas.router)
     app.include_router(varredura.router)
+    app.include_router(silencios.router)
+    app.include_router(alertas.router)
     app.include_router(config_descoberta.router)
+    app.include_router(config_geral.router)
+    app.include_router(config_telegram.router)
+    app.include_router(parede.router)
+    app.include_router(paredes.router)
     app.include_router(ws.router)
+    app.include_router(ws_parede.router)
     return app

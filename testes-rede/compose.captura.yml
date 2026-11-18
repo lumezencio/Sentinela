@@ -7,6 +7,9 @@
 #   .11 sim-routeros  API RouterOS por TLS (8729)
 #   .12 sim-snmp      agente SNMP v2c (161/udp)
 #   .35 sim-gravador  gravador Hikvision (ISAPI, Digest, 80/tcp), dentro do /28 varrido
+#   .60 sim-telegram  Telegram falso (HTTPS 443, certificado de api.telegram.org de uma CA
+#                     descartável); api.telegram.org -> .60 via extra_hosts do `captura`
+#   .50 (ninguém)     equipamento cadastrado pela cena só para cair e disparar o alerta
 # Projeto próprio (-p sentinela-captura), imagens com tag própria: nada da instalação real
 # (projeto "sentinela", volumes sentinela_*) é tocado.
 name: sentinela-captura
@@ -39,6 +42,9 @@ services:
     cap_add: [NET_RAW, NET_ADMIN, SETUID, SETGID]
     security_opt: ["no-new-privileges:true"]
     volumes: ["./saida:/saida"]
+    # o namespace (e o /etc/hosts) é daqui: o núcleo, que entra nele por network_mode, resolve
+    # api.telegram.org para o Telegram falso sem consultar DNS nenhum
+    extra_hosts: ["api.telegram.org:10.99.250.60"]
     sysctls:
       # ICMP sem privilégio para o núcleo (como no compose de produção)
       net.ipv4.ping_group_range: "0 2147483647"
@@ -65,12 +71,14 @@ services:
       SENTINELA_CHAVE_SESSAO: ${SENTINELA_CHAVE_SESSAO:?gerada pelo rodar.sh}
       SENTINELA_CHAVE_CREDENCIAIS: ${SENTINELA_CHAVE_CREDENCIAIS:?gerada pelo rodar.sh}
       SENTINELA_AMBIENTE: producao
+      SENTINELA_CA_ADICIONAL: /certs-teste/ca.pem
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     user: "10001:10001"
     # banco em memória: a captura não deixa volume para trás
     tmpfs: [/tmp, "/dados:uid=10001,gid=10001,mode=0700"]
+    volumes: ["./saida/certs-teste:/certs-teste:ro"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/saude',timeout=3).status==200 else 1)"]
       interval: 2s
@@ -101,6 +109,17 @@ services:
         ipv4_address: 10.99.250.35
         mac_address: "02:00:00:fa:00:35"
 
+  sim-telegram:
+    <<: *simulador
+    command: ["rodar.py", "telegram"]
+    volumes: ["./saida/certs-teste:/certs-teste:ro"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0" # 443 sem capacidade nem root
+    networks:
+      captura:
+        ipv4_address: 10.99.250.60
+        mac_address: "02:00:00:fa:00:60"
+
   cena:
     <<: *simulador
     profiles: [cena]
@@ -108,8 +127,10 @@ services:
     environment:
       SENTINELA_CENA_SENHA: ${SENTINELA_CENA_SENHA:-}
     volumes: ["./saida:/saida"]
+    extra_hosts: ["api.telegram.org:10.99.250.60"]
     depends_on:
       core: { condition: service_healthy }
+      sim-telegram: { condition: service_started }
     networks:
       captura:
         ipv4_address: 10.99.250.5

@@ -73,3 +73,10 @@ test("anel de seleção: sprite compartilhado, sem raycast, por cima (sem depthT
     delete globalThis.document;
   }
 });
+
+test("objetos: a forma 'elo' do inalcançável tem marca própria no código da Teia", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const fonte = await readFile(new URL("../../src/js/teia/objetos.js", import.meta.url), "utf8");
+  assert.match(fonte, /forma === "elo"/);
+  assert.match(fonte, /ap\.forma === "elo"/); // vestirCorpo desenha a marca para ela
+});

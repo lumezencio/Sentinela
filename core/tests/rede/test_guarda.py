@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from sentinela.rede.guarda import DestinoAutorizado, DestinoProibido, Guarda
+from sentinela.rede.guarda import DestinoAutorizado, DestinoExterno, DestinoProibido, Guarda
 
 REDE = IPv4Network("10.99.0.0/24")
 
@@ -211,3 +211,62 @@ def test_atualizar_invalido_nao_altera_nada() -> None:
     assert g.validar("10.99.0.7", None, "icmp").ip == IPv4Address("10.99.0.7")
     with pytest.raises(DestinoProibido):
         g.validar("10.99.1.7", None, "icmp")
+
+
+# ---- destino externo nomeado (Telegram) ------------------------------------
+
+
+def test_externo_telegram_ip_publico_aceito(guarda: Guarda) -> None:
+    d = guarda.validar_externo("telegram", "149.154.167.220")
+    assert (d.nome, d.host, d.porta) == ("telegram", "api.telegram.org", 443)
+    assert d.ip == IPv4Address("149.154.167.220")
+
+
+def test_externo_ip_privado_aceito(guarda: Guarda) -> None:
+    # fora das sub-redes declaradas: o destino externo não depende delas
+    assert guarda.validar_externo("telegram", "172.20.0.5").ip == IPv4Address("172.20.0.5")
+
+
+@pytest.mark.parametrize("nome", ["outro", "Telegram", "", "api.telegram.org"])
+def test_externo_nome_desconhecido_recusado(guarda: Guarda, nome: str) -> None:
+    with pytest.raises(DestinoProibido, match="Destino externo não permitido."):
+        guarda.validar_externo(nome, "149.154.167.220")
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "255.255.255.255",
+        "224.0.0.251",
+        "239.255.255.250",
+        "127.0.0.1",
+        "127.0.0.2",
+        "169.254.10.1",
+        "0.0.0.0",  # noqa: S104 - endereço recusado, não bind
+        "0.0.0.5",
+        "2001:67c:4e8:f004::9",
+        "::1",
+        "não-é-ip",
+    ],
+)
+def test_externo_recusa_enderecos_proibidos(guarda: Guarda, ip: str) -> None:
+    with pytest.raises(DestinoProibido):
+        guarda.validar_externo("telegram", ip)
+
+
+def test_externo_loopback_so_127_0_0_1_quando_permitido() -> None:
+    g = Guarda([REDE], permitir_loopback=True)
+    assert g.validar_externo("telegram", "127.0.0.1").ip == IPv4Address("127.0.0.1")
+    with pytest.raises(DestinoProibido):
+        g.validar_externo("telegram", "127.0.0.2")
+
+
+def test_destino_externo_nao_pode_ser_criado_fora_da_guarda() -> None:
+    with pytest.raises(TypeError):
+        DestinoExterno("telegram", "api.telegram.org", 443, IPv4Address("1.1.1.1"), object())
+
+
+def test_replace_nao_forja_destino_externo(guarda: Guarda) -> None:
+    d = guarda.validar_externo("telegram", "149.154.167.220")
+    with pytest.raises((TypeError, ValueError)):
+        dataclasses.replace(d, host="exemplo.invalid")  # type: ignore[call-arg]
