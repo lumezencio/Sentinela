@@ -11,7 +11,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from sentinela.alertas.agrupador import Agrupador
+from sentinela.alertas.despachante import Despachante
 from sentinela.alertas.silencios import Silencios
+from sentinela.alertas.telegram import ClienteTelegram
 from sentinela.api import (
     alertas,
     auth,
@@ -48,6 +50,7 @@ from sentinela.descoberta.orquestrador import (
     fabricar_coletor,
 )
 from sentinela.descoberta.varredura import Ping, Varredura, ping_icmp
+from sentinela.horario import zona
 from sentinela.monitor.gravador import GravadorAmostras
 from sentinela.monitor.limpeza import limpar_periodicamente
 from sentinela.monitor.montagem import Monitor, montar_monitor
@@ -120,6 +123,21 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
         app.state.sessoes, monitor.barramento, app.state.silencios, app.state.relogio, agora_utc
     )
     _montar_descoberta(app, settings, monitor)
+    _montar_telegram(app, settings, monitor)
+
+
+def _montar_telegram(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
+    """Cliente e despachante do Telegram (laço não iniciado). No modo demonstração não há
+    cliente nem despachante: nenhum pacote sai, nem para a internet."""
+    if settings.demo:
+        app.state.cliente_telegram = None
+        app.state.despachante = None
+        return
+    cliente = ClienteTelegram(monitor.guarda, ca_adicional=settings.ca_adicional)
+    app.state.cliente_telegram = cliente
+    app.state.despachante = Despachante(
+        app.state.sessoes, cliente, app.state.cofre, app.state.relogio, agora_utc, zona(settings)
+    )
 
 
 def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
@@ -166,7 +184,8 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
 @asynccontextmanager
 async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     """Inicia a limpeza diária, a descarga periódica, a descoberta (orquestrador e leitura de
-    canais), os silêncios, o agrupador de alertas e ``agendador.executar``; no shutdown,
+    canais), os silêncios, o agrupador de alertas, o envio ao Telegram (fora do modo
+    demonstração) e ``agendador.executar``; no shutdown,
     cancela a varredura e encerra e espera, nessa ordem (o agendador cancelado drena as
     transições e descarrega).
     """
@@ -200,6 +219,10 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         tarefas.append(
             asyncio.create_task(app.state.agrupador.executar(), name="sentinela-alertas")
         )
+        if app.state.despachante is not None:  # nunca no modo demonstração
+            tarefas.append(
+                asyncio.create_task(app.state.despachante.executar(), name="sentinela-telegram")
+            )
         # o agendador por último: os laços da descoberta o usam e param antes dele
         tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
@@ -213,7 +236,7 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
         await app.state.orquestrador.encerrar()
         for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, descoberta,
-            # leitura de canais, silêncios, alertas e agendador
+            # leitura de canais, silêncios, alertas, Telegram e agendador
             tarefa.cancel()
             # falha já registrada por ``_laco_terminou``; aqui só espera o fim
             await asyncio.gather(tarefa, return_exceptions=True)

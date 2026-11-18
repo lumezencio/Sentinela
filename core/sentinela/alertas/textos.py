@@ -1,19 +1,25 @@
-"""Texto de um alerta para o painel e o telão: só texto puro, nunca HTML.
+"""Texto de um alerta para o painel, o telão e o Telegram: só texto puro, nunca HTML.
 
 O nome do equipamento vem do cadastro e pode ser hostil (``<b>``, 300 caracteres): sai como
-veio, sem escape e sem truncar; quem exibe usa ``textContent`` e decide a quebra de linha.
+veio, sem escape e sem truncar; quem exibe usa ``textContent`` e decide a quebra de linha. O
+Telegram recebe o texto sem ``parse_mode``, então nada é interpretado como marcação.
+
+Telegram: só nome, horário (no fuso configurado) e duração; IP apenas com ``incluir_ip``
+(minimização de dados, desligado por padrão).
 """
 
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte
-from sentinela.horario import formatar_duracao
+from sentinela.horario import formatar_duracao, hora_local
 
 NOME_REMOVIDO = "Equipamento removido"
+TEXTO_TESTE = "✅ Teste do Sentinela: as mensagens estão chegando."
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,37 @@ def texto_painel(d: DadosAlerta) -> str:
     if d.afetados:
         return f"{d.nome} caiu · {d.afetados} {'afetado' if d.afetados == 1 else 'afetados'}"
     return f"{d.nome} caiu"
+
+
+def texto_telegram(d: DadosAlerta, fuso: ZoneInfo, incluir_ip: bool) -> str:
+    nome = f"{d.nome} ({d.ip})" if incluir_ip and d.ip else d.nome
+    if d.tipo == "fonte_falhou":
+        return f"⚠️ Fonte {d.fonte or d.nome} sem coleta desde {hora_local(d.aberto_em, fuso)}"
+    if d.tipo == "instavel":
+        return f"🟠 {nome} instável desde {hora_local(d.aberto_em, fuso)}"
+    if d.tipo == "volta":
+        # com a origem, ``fechado_em`` é o instante da volta; sem ela, o próprio ``aberto_em``
+        instante = d.fechado_em or d.aberto_em
+        dur = _duracao(d)
+        texto = f"🟢 {nome} voltou às {hora_local(instante, fuso)}"
+        return texto + (f" (fora por {dur})" if dur else "")
+    grupo = d.quedas > 1
+    if d.breve:
+        dur = _duracao(d)
+        base = f"{d.quedas} equipamentos caíram e voltaram" if grupo else f"{nome} caiu e voltou"
+        return f"🟡 {base}" + (f" ({dur})" if dur else "")
+    hora = hora_local(d.aberto_em, fuso)
+    if grupo:
+        return f"🔴 {d.quedas} equipamentos caíram às {hora}"
+    if d.afetados:
+        plural = "equipamento afetado" if d.afetados == 1 else "equipamentos afetados"
+        return f"🔴 {nome} caiu às {hora} — {d.afetados} {plural}"
+    return f"🔴 {nome} caiu às {hora}"
+
+
+def texto_resumo(n: int) -> str:
+    """Fila acumulada além do limite por minuto: uma mensagem só pelos ``n`` restantes."""
+    return f"… e mais {n} {'alerta' if n == 1 else 'alertas'}, veja no painel"
 
 
 def total_afetados(a: Alerta) -> int:

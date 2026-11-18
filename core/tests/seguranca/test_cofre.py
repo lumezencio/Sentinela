@@ -64,5 +64,9 @@ def test_segredos_so_das_chaves_secretas() -> None:
     v2c = {"versao": "2c", "comunidade": "publica-x"}
     assert cofre.segredos(cofre.cifrar(v2c)) == ["publica-x"]
     assert cofre.segredos(cofre.cifrar({"usuario": "admin", "senha": "x1"})) == ["x1"]
+    # token do bot do Telegram também é segredo
+    assert cofre.segredos(cofre.cifrar({"token": "123456:token-ficticio"})) == [
+        "123456:token-ficticio"
+    ]
     assert cofre.segredos(b"lixo") == []
     assert cofre.segredos(b"") == []
