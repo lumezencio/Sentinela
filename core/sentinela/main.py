@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from sentinela.alertas.silencios import Silencios
 from sentinela.api import (
     auth,
     classes,
@@ -19,11 +20,12 @@ from sentinela.api import (
     fontes,
     importacao,
     saude,
+    silencios,
     subredes,
     varredura,
     ws,
 )
-from sentinela.api.deps import verificar_csrf
+from sentinela.api.deps import agora_utc, verificar_csrf
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
@@ -109,6 +111,9 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     app.state.limitador = monitor.limitador
     app.state.gravador = monitor.gravador
     app.state.agendador = monitor.agendador
+    app.state.silencios = Silencios(
+        app.state.sessoes, monitor.agendador, monitor.barramento, app.state.relogio, agora_utc
+    )
     _montar_descoberta(app, settings, monitor)
 
 
@@ -182,6 +187,9 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         tarefas.append(
             asyncio.create_task(app.state.leitor_canais.executar(), name="sentinela-canais")
         )
+        tarefas.append(
+            asyncio.create_task(app.state.silencios.executar(), name="sentinela-silencios")
+        )
         # o agendador por último: os laços da descoberta o usam e param antes dele
         tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
@@ -195,7 +203,7 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
         await app.state.orquestrador.encerrar()
         for tarefa in tarefas:  # uma de cada vez, na ordem: limpeza, descarga, descoberta,
-            # leitura de canais e agendador
+            # leitura de canais, silêncios e agendador
             tarefa.cancel()
             # falha já registrada por ``_laco_terminou``; aqui só espera o fim
             await asyncio.gather(tarefa, return_exceptions=True)
@@ -284,6 +292,7 @@ def criar_app(
     app.include_router(fontes.router)
     app.include_router(descobertas.router)
     app.include_router(varredura.router)
+    app.include_router(silencios.router)
     app.include_router(config_descoberta.router)
     app.include_router(ws.router)
     return app

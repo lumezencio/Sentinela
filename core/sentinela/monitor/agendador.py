@@ -295,6 +295,11 @@ class Agendador:
         if not reg.em_voo:
             self._agendar_inicial(reg, rapido=self._rodando)  # R13: com o laço, em até 5 s
 
+    @property
+    def guarda(self) -> Guarda:
+        """A Guarda viva (a mesma que valida cada checagem), para revalidar destinos."""
+        return self._guarda
+
     def estado_de(self, id: str) -> Estado | None:
         reg = self._registros.get(id)
         return None if reg is None else reg.maquina.estado

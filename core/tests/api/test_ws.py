@@ -333,6 +333,20 @@ async def test_repassa_estado_e_latencias_do_barramento(
     assert await ws.json() == {"tipo": "latencias", "lote": [["eq1", 2.5], ["eq2", None]]}
 
 
+async def test_repassa_silencio_criado_pela_api(
+    cliente_admin: httpx.AsyncClient, abrir_ws: AbrirWs
+) -> None:
+    await cliente_admin.post("/api/v1/subredes", json={"cidr": "10.99.0.0/24"})
+    eq = await cliente_admin.post(
+        "/api/v1/equipamentos", json={"nome": "A", "ip": "10.99.0.10", "classe": "camera"}
+    )
+    ws = await _aberto(abrir_ws, cliente_admin)
+    await ws.json()  # snapshot
+    corpo = {"tipo": "silencio", "alvo_tipo": "equipamento", "alvo": eq.json()["id"]}
+    r = await cliente_admin.post("/api/v1/silencios", json=corpo | {"atalho": "1h"})
+    assert await ws.json() == {"tipo": "silencio", "acao": "criado", "id": r.json()["id"]}
+
+
 async def test_snapshot_traz_pendentes(
     app: FastAPI, cliente_visualizador: httpx.AsyncClient, abrir_ws: AbrirWs
 ) -> None:
@@ -510,6 +524,7 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
             "sentinela-descarga",
             "sentinela-descoberta",
             "sentinela-canais",
+            "sentinela-silencios",
             "sentinela-agendador",
         ]
         assert not any(t.done() for t in vistas)

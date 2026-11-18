@@ -17,6 +17,8 @@ Protocolo (servidor → cliente, JSON):
   linha no MESMO formato de ``snapshot.equipamentos`` (aprovação, IP mudado pela descoberta,
   checagem trocada depois da aprovação), ou ``{"tipo": "equipamento", "acao": "removido",
   "id"}`` se ele já não existe;
+- ``{"tipo": "silencio", "acao": "criado"|"encerrado", "id"}`` quando um silêncio ou uma
+  manutenção começa ou termina (Fase 4);
 - ``{"tipo": "ping"}`` a cada 25 s (mantém proxies e detecta conexão morta).
 
 Fechamentos: ``4403`` origem diferente do host, ``4401`` sem sessão válida (no handshake ou
@@ -53,7 +55,7 @@ FECHA_CLIENTE_LENTO = 1013  # "try again later"
 FECHA_ERRO_INTERNO = 1011
 # ``alvo_recusado`` é interno; ``equipamento`` é enriquecido com a linha do banco
 TIPOS_REPASSADOS = frozenset(
-    {"estado", "latencias", "descoberta", "pendentes", "varredura", "fonte"}
+    {"estado", "latencias", "descoberta", "pendentes", "varredura", "fonte", "silencio"}
 )
 PING = {"tipo": "ping"}
 
