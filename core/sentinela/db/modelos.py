@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Float,
@@ -119,6 +120,24 @@ class Usuario(Base):
     papel: Mapped[str] = mapped_column(String(16), default="visualizador")
     falhas: Mapped[int] = mapped_column(Integer, default=0)
     bloqueado_ate: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    # base64 do blob do Cofre de {"segredo_totp": base32}; pendente = cifrado sem contador,
+    # ativo = ambos preenchidos
+    totp_cifrado: Mapped[str | None] = mapped_column(String(512), default=None)
+    totp_ultimo_contador: Mapped[int | None] = mapped_column(BigInteger, default=None)
+
+
+class CodigoRecuperacao(Base):
+    """Código de recuperação do TOTP: só o hash argon2id; vale uma vez (`usado_em`)."""
+
+    __tablename__ = "codigo_recuperacao"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    usuario_id: Mapped[int] = mapped_column(
+        ForeignKey("usuario.id", ondelete="CASCADE"), index=True
+    )
+    hash_codigo: Mapped[str] = mapped_column(String(255))
+    criado_em: Mapped[datetime] = mapped_column(UTCDateTime)
+    usado_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
 
 
 class Sessao(Base):
