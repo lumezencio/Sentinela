@@ -7,7 +7,7 @@ import {
   atrasDoGravador, ESTADOS, formatarLatencia, grupoDe, haQuanto, paginar, rotuloChecagem,
 } from "./lista.js";
 
-export const ABAS = ["lista", "teia", "organograma", "novos", "configuracoes"];
+export const ABAS = ["lista", "teia", "organograma", "alertas", "novos", "configuracoes"];
 
 /** Aba a partir de location.hash ("#teia" → "teia"); qualquer outra coisa → "lista". */
 export function abaDoHash(hash) {

@@ -17,7 +17,7 @@ const MSG_PAUSA = "Não foi possível pausar/retomar.";
 const MAX_DEP = 50;
 const MSG_DEPENDENCIA = "Não foi possível salvar a dependência.";
 const TITULOS = {
-  lista: "Lista", teia: "Teia", organograma: "Organograma", novos: "Novos",
+  lista: "Lista", teia: "Teia", organograma: "Organograma", alertas: "Alertas", novos: "Novos",
   configuracoes: "Configurações",
 };
 
@@ -115,8 +115,12 @@ export function visoesDoPainel(store) {
         if (autenticado) this.entrarNaTeia();
       } else {
         if (controle) controle.pausar();
+        if (autenticado && nova === "alertas") this.entrarEmAlertas();
         if (autenticado && nova === "novos") this.entrarEmNovos();
-        if (autenticado && nova === "configuracoes") this.entrarEmConfiguracoes();
+        if (autenticado && nova === "configuracoes") {
+          this.entrarEmConfiguracoes();
+          this.entrarEmTelegram();
+        }
         this.agendarRender();
       }
     },
@@ -142,6 +146,9 @@ export function visoesDoPainel(store) {
     },
     get abaOrganograma() {
       return this.aba === "organograma";
+    },
+    get abaAlertas() {
+      return this.aba === "alertas";
     },
     get abaNovos() {
       return this.aba === "novos";

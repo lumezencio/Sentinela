@@ -39,6 +39,7 @@ html[data-aba="organograma"] #conteudo-lista {
 }
 
 .abas {
+  position: relative; /* o texto só para leitor de tela (absoluto) dos contadores fica contido */
   display: flex;
   gap: 4px;
   margin-left: 8px;

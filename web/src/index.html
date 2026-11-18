@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="css/base.css">
   <link rel="stylesheet" href="css/componentes.css">
   <link rel="stylesheet" href="css/novos.css">
+  <link rel="stylesheet" href="css/alertas.css">
   <script src="js/tema.js"></script>
   <script type="module" src="js/app.js"></script>
   <script defer src="vendor/alpine-csp.min.js"></script>
@@ -46,6 +47,7 @@
         <button class="aba" role="tab" type="button" id="aba-lista" aria-controls="conteudo-lista" aria-selected="true" :aria-selected="abaSelecionada('lista')" @click="irPara('lista')">Lista</button>
         <button class="aba" role="tab" type="button" id="aba-teia" aria-controls="conteudo-teia" aria-selected="false" :aria-selected="abaSelecionada('teia')" @click="irPara('teia')">Teia</button>
         <button class="aba" role="tab" type="button" id="aba-organograma" aria-controls="conteudo-organograma" aria-selected="false" :aria-selected="abaSelecionada('organograma')" @click="irPara('organograma')">Organograma</button>
+        <button class="aba" role="tab" type="button" id="aba-alertas" aria-controls="conteudo-alertas" aria-selected="false" :aria-selected="abaSelecionada('alertas')" @click="irPara('alertas')">Alertas<span class="aba-contador aba-contador-alerta" id="contador-alertas" x-show="temAlertasAbertos" x-cloak><span x-text="rotuloAlertasAbertos">0</span><span class="so-leitor"> abertos</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-novos" aria-controls="conteudo-novos" aria-selected="false" :aria-selected="abaSelecionada('novos')" @click="irPara('novos')">Novos<span class="aba-contador" id="contador-pendentes" x-show="temPendentes" x-cloak><span x-text="rotuloPendentes">0</span><span class="so-leitor"> pendentes</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-configuracoes" aria-controls="conteudo-configuracoes" aria-selected="false" :aria-selected="abaSelecionada('configuracoes')" @click="irPara('configuracoes')" hidden :hidden="!admin">Configurações</button>
       </nav>
@@ -453,6 +455,117 @@
     <p class="vazio" x-show="orgVazio" x-cloak>Nenhum equipamento com esses filtros.</p>
   </section>
 
+  <section class="casca" id="conteudo-alertas" role="tabpanel" aria-labelledby="aba-alertas" hidden :hidden="!abaAlertas">
+    <div class="banner" role="status" aria-live="polite" x-show="bannerVisivel" x-cloak :class="bannerErro ? 'banner-erro' : ''">
+      <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span><span x-text="textoBanner"></span>
+    </div>
+    <header class="secao-cabeca">
+      <div class="secao-intro">
+        <h1 class="secao-titulo" tabindex="-1">Alertas</h1>
+        <p class="dica">Quedas e instabilidades agrupadas: um defeito num switch vira um alerta só.</p>
+      </div>
+      <div class="segmentos" role="group" aria-label="Quais alertas mostrar">
+        <button class="segmento" type="button" :aria-pressed="filtroAlertasAtivo('abertos')" @click="filtrarAlertasPor('abertos')">Abertos</button>
+        <button class="segmento" type="button" :aria-pressed="filtroAlertasAtivo('reconhecidos')" @click="filtrarAlertasPor('reconhecidos')">Reconhecidos</button>
+        <button class="segmento" type="button" :aria-pressed="filtroAlertasAtivo('todos')" @click="filtrarAlertasPor('todos')">Todos</button>
+      </div>
+    </header>
+    <p class="alerta alerta-ok cfg-aviso" id="al-aviso" role="status" x-show="alertasAviso" x-text="alertasAviso"></p>
+
+    <section class="cfg-bloco al-bloco" aria-labelledby="al-sil-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="al-sil-titulo">Silêncios e manutenções</h2>
+          <p class="dica">Silêncio só deixa de avisar no Telegram; manutenção também pausa a checagem. Ambos terminam sozinhos.</p>
+        </div>
+        <button class="botao botao-primario" id="al-novo-silencio" type="button" x-show="admin" x-cloak @click="abrirSilencio()">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Silenciar ou manutenção
+        </button>
+      </div>
+      <p class="alerta" role="alert" x-show="silenciosErro" x-text="silenciosErro"></p>
+      <ul class="al-silencios" id="lista-silencios" aria-label="Silêncios e manutenções ativos">
+        <template x-for="s in silencios" :key="s.id">
+          <li class="al-silencio" :data-id="s.id">
+            <span class="al-tipo" :class="s.manutencao ? 'al-tipo-manutencao' : 'al-tipo-silencio'"><svg class="icone-status" aria-hidden="true"><use :href="s.icone"/></svg><span x-text="s.rotuloTipo"></span></span>
+            <div class="al-corpo">
+              <p class="al-texto"><span class="suave" x-text="s.rotuloAlvo"></span> <strong x-text="s.alvo"></strong></p>
+              <p class="al-meta"><span x-text="s.ate"></span><span x-show="s.motivo" x-text="s.motivo"></span><span x-show="s.pausados" x-text="s.pausados"></span><span x-show="s.criadoPor">por <span x-text="s.criadoPor"></span></span></p>
+            </div>
+            <template x-if="admin">
+              <button class="botao" type="button" @click="encerrarSilencio(s.id)" :aria-label="s.rotuloEncerrar">Encerrar</button>
+            </template>
+          </li>
+        </template>
+      </ul>
+      <p class="dica" x-show="semSilencios" x-cloak>Nenhum silêncio nem manutenção ativos.</p>
+    </section>
+
+    <section class="ferramentas al-ferramentas" aria-label="Filtros dos alertas">
+      <div class="campo-form">
+        <label for="al-classe">Classe</label>
+        <select id="al-classe" x-model="classeAlertas" @change="aoFiltrarAlertas">
+          <option value="">Todas</option>
+          <template x-for="c in classes" :key="c.slug">
+            <option :value="c.slug" x-text="c.nome"></option>
+          </template>
+        </select>
+      </div>
+      <div class="campo-form">
+        <label for="al-periodo">Período</label>
+        <select id="al-periodo" x-model="periodoAlertas" @change="aoFiltrarAlertas">
+          <template x-for="p in periodos" :key="p.valor">
+            <option :value="p.valor" x-text="p.rotulo"></option>
+          </template>
+        </select>
+      </div>
+      <p class="dica al-resumo" id="al-resumo" role="status" x-text="alertasResumo"></p>
+    </section>
+
+    <p class="alerta" role="alert" x-show="alertasErro" x-text="alertasErro"></p>
+    <ol class="al-lista" id="lista-alertas" aria-label="Alertas">
+      <template x-for="a in alertasLinhas" :key="a.id">
+        <li :class="a.classeLinha" :data-id="a.id">
+          <span class="al-marca"><svg class="icone-status" aria-hidden="true"><use :href="a.icone"/></svg><span x-text="a.rotuloMarca"></span></span>
+          <div class="al-corpo">
+            <p class="al-texto" x-text="a.texto"></p>
+            <p class="al-meta">
+              <span><span class="suave">Desde</span> <time x-text="a.hora"></time> <span class="suave">(<span x-text="a.quando"></span>)</span></span>
+              <span x-show="a.classeNome" x-text="a.classeNome"></span>
+              <span x-show="a.rotuloAfetados" x-text="a.rotuloAfetados"></span>
+              <span class="al-envio" x-show="a.rotuloEnvio" x-text="a.rotuloEnvio"></span>
+              <span x-show="a.fechado" x-text="a.fechado"></span>
+              <span x-show="a.reconhecimento" x-text="a.reconhecimento"></span>
+            </p>
+          </div>
+          <div class="al-acoes">
+            <button class="botao botao-fantasma" type="button" x-show="a.afetados" @click="alternarAfetados(a.id)" :aria-expanded="a.ariaExpandido" :aria-controls="a.idDetalhe" x-text="a.rotuloVer"></button>
+            <template x-if="admin">
+              <button class="botao" type="button" x-show="a.reconhecivel" @click="reconhecerAlerta(a.id)" :aria-label="a.rotuloReconhecer">Reconhecer</button>
+            </template>
+            <template x-if="admin">
+              <button class="botao botao-fantasma" type="button" x-show="a.equipamentoId" @click="abrirSilencioDoAlerta(a.id)">Silenciar…</button>
+            </template>
+          </div>
+          <div class="al-detalhe" :id="a.idDetalhe" x-show="a.expandido">
+            <p class="dica" x-show="a.detalhe.carregando">Carregando…</p>
+            <p class="alerta" role="alert" x-show="a.detalhe.erro" x-text="a.detalhe.erro"></p>
+            <p class="dica" x-show="a.detalhe.vazio">Os equipamentos afetados já foram removidos do cadastro.</p>
+            <ul class="al-afetados">
+              <template x-for="x in a.detalhe.lista" :key="x.id">
+                <li><span :class="x.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="x.estadoIcone"/></svg><span x-text="x.estadoRotulo"></span></span> <strong x-text="x.nome"></strong> <span class="suave" x-text="x.classeNome"></span></li>
+              </template>
+            </ul>
+          </div>
+        </li>
+      </template>
+    </ol>
+    <p class="vazio" id="al-vazio" x-show="alertasVazio" x-cloak x-text="alertasTextoVazio"></p>
+    <p class="vazio" x-show="alertasCarregando" x-cloak>Carregando…</p>
+    <div class="al-mais" x-show="alertasMais" x-cloak>
+      <button class="botao" type="button" :disabled="alertasCarregando" @click="maisAlertas">Mostrar mais alertas</button>
+    </div>
+  </section>
+
   <section class="casca" id="conteudo-novos" role="tabpanel" aria-labelledby="aba-novos" hidden :hidden="!abaNovos">
     <div class="banner" role="status" aria-live="polite" x-show="bannerVisivel" x-cloak :class="bannerErro ? 'banner-erro' : ''">
       <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span><span x-text="textoBanner"></span>
@@ -591,13 +704,14 @@
     <header class="secao-cabeca">
       <div class="secao-intro">
         <h1 class="secao-titulo">Configurações</h1>
-        <p class="dica">De onde vêm as descobertas, onde a varredura pode falar com a rede e quando aprovar sozinho.</p>
+        <p class="dica">De onde vêm as descobertas, onde a varredura pode falar com a rede, quando aprovar sozinho e para onde vão os alertas.</p>
       </div>
     </header>
     <p class="alerta alerta-ok cfg-aviso" id="cfg-aviso" role="status" x-show="cfgAviso" x-text="cfgAviso"></p>
 
     <!-- só admin: o visualizador nunca vê estes controles (e um link direto o leva à Lista) -->
-    <div class="cfg-conteudo" x-show="admin" x-cloak>
+    <p class="vazio" id="cfg-carregando" x-show="cfgAguardando" x-cloak>Carregando…</p>
+    <div class="cfg-conteudo" x-show="cfgMostrar" x-cloak>
     <section class="cfg-bloco" aria-labelledby="cfg-fontes-titulo">
       <div class="cfg-bloco-cabeca">
         <div>
@@ -609,7 +723,6 @@
         </button>
       </div>
       <p class="alerta" role="alert" x-show="cfgErro" x-text="cfgErro"></p>
-      <p class="vazio" x-show="cfgCarregando">Carregando…</p>
       <div class="cfg-fontes">
         <template x-for="f in cfgFontes" :key="f.id">
           <article class="cfg-fonte" :class="f.ativa ? '' : 'cfg-inativa'" :data-id="f.id" :aria-labelledby="f.idTitulo">
@@ -712,6 +825,58 @@
         </div>
       </div>
     </section>
+
+    <section class="cfg-bloco" id="cfg-telegram" aria-labelledby="cfg-tg-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-tg-titulo">Alertas no Telegram</h2>
+          <p class="dica">As mensagens saem do seu servidor direto para o Telegram (api.telegram.org); nada passa por terceiros. Elas levam só o nome, a classe, o horário e a duração. Sem token e destino, nada é enviado.</p>
+        </div>
+        <span class="selo" :class="tg.definido ? 'selo-canal' : ''" id="tg-situacao" x-text="tgRotuloToken"></span>
+      </div>
+      <p class="alerta alerta-ok" id="tg-aviso" role="status" x-show="tgAviso" x-text="tgAviso"></p>
+      <p class="alerta" id="tg-erro-geral" role="alert" x-show="tgErroGeral" x-text="tgErroGeral"></p>
+      <form class="cfg-tg-form" @submit.prevent="salvarTelegram" novalidate autocomplete="off">
+        <div class="campo-form">
+          <label for="tg-token">Token do bot</label>
+          <input id="tg-token" type="password" autocomplete="new-password" spellcheck="false" maxlength="100" x-model="tgForm.token" aria-describedby="tg-token-dica tg-token-erro" :aria-invalid="tgInvalidoToken">
+          <p class="dica" id="tg-token-dica" x-text="tgDicaToken"></p>
+          <p class="campo-erro" id="tg-token-erro" role="alert" x-show="tgErros.token" x-text="tgErros.token"></p>
+        </div>
+        <div class="campo-form">
+          <label for="tg-chats">Destinos (um por linha)</label>
+          <textarea id="tg-chats" rows="3" spellcheck="false" maxlength="600" placeholder="-1001234567890" x-model="tgForm.chats" aria-describedby="tg-chats-dica tg-chats-erro" :aria-invalid="tgInvalidoChats"></textarea>
+          <p class="dica" id="tg-chats-dica">Número do chat ou grupo, ou @canal. No máximo 10.</p>
+          <p class="campo-erro" id="tg-chats-erro" role="alert" x-show="tgErros.chats" x-text="tgErros.chats"></p>
+        </div>
+        <div class="cfg-tg-ip">
+          <button class="chave" id="tg-incluir-ip" type="button" role="switch" :aria-checked="tgIpMarcado" @click="alternarIpTelegram">
+            <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+            <span class="chave-rotulo">Incluir o IP na mensagem</span>
+          </button>
+          <p class="dica">Desligado por padrão: o IP do equipamento é um dado da sua rede e só deve sair dela se você precisar.</p>
+        </div>
+        <div class="cfg-acoes">
+          <button class="botao botao-primario" type="submit" :disabled="tgSalvando">Salvar</button>
+          <button class="botao" id="tg-testar" type="button" :disabled="tgSemTesteDisponivel" @click="testarTelegram">Enviar teste</button>
+          <button class="botao botao-fantasma botao-remover" type="button" x-show="tg.definido" x-cloak :disabled="tgSalvando" @click="removerTokenTelegram">Remover token</button>
+          <span class="giro-banner" aria-hidden="true" x-show="tgSemTesteDisponivel" x-cloak></span>
+        </div>
+      </form>
+      <p class="alerta" :class="tgTesteClasse" id="tg-teste" role="status" x-show="tgTeste" x-cloak x-text="tgTesteTexto"></p>
+      <p class="dica" id="tg-envio" x-text="tgTextoEnvio"></p>
+      <p class="alerta" id="tg-ultimo-erro" x-show="tg.ultimoErro"><strong>Último erro:</strong> <span x-text="tg.ultimoErro"></span></p>
+    </section>
+
+    <section class="cfg-bloco" aria-labelledby="cfg-fuso-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-fuso-titulo">Fuso horário</h2>
+          <p class="dica">Os horários dos alertas, do Telegram e do atalho “até amanhã 08:00” seguem este fuso. O banco guarda tudo em UTC.</p>
+        </div>
+      </div>
+      <p class="cfg-fuso"><strong class="mono" id="cfg-fuso" x-text="fuso"></strong> <span class="suave">definido pelo servidor (SENTINELA_FUSO)</span></p>
+    </section>
     </div>
   </section>
   </main>
@@ -773,6 +938,71 @@
         </li>
       </template>
     </ol>
+  </dialog>
+
+  <dialog class="dialogo dialogo-rolavel" x-ref="dlgSilencio" aria-labelledby="titulo-silencio" @close="aoFecharSilencio">
+    <form @submit.prevent="criarSilencio" novalidate>
+      <h2 id="titulo-silencio" x-text="silTitulo">Silenciar alertas</h2>
+      <div class="segmentos" role="group" aria-label="Tipo">
+        <button class="segmento" id="sil-tipo-silencio" type="button" :aria-pressed="silTipoAtivo('silencio')" @click="silEscolherTipo('silencio')">Silêncio</button>
+        <button class="segmento" id="sil-tipo-manutencao" type="button" :aria-pressed="silTipoAtivo('manutencao')" @click="silEscolherTipo('manutencao')">Manutenção</button>
+      </div>
+      <p class="dica" x-text="silDica"></p>
+      <div class="campo-form">
+        <label for="sil-alvo-tipo">Vale para</label>
+        <select id="sil-alvo-tipo" x-model="silForm.alvo_tipo" @change="aoTrocarAlvoTipo">
+          <option value="equipamento">Um equipamento</option>
+          <option value="classe">Uma classe inteira</option>
+        </select>
+      </div>
+      <div class="campo-form" x-show="silSemAlvoEscolhido">
+        <label for="sil-busca">Buscar equipamento</label>
+        <input id="sil-busca" type="search" autocomplete="off" placeholder="Nome ou IP" x-model="silBusca" @input="aoBuscarAlvo" aria-describedby="sil-alvo-erro">
+        <ul class="al-candidatos" aria-label="Equipamentos encontrados">
+          <template x-for="c in silCandidatos" :key="c.id">
+            <li><button class="botao botao-fantasma al-candidato" type="button" @click="escolherAlvo(c.id)" x-text="c.rotulo"></button></li>
+          </template>
+        </ul>
+      </div>
+      <div class="al-alvo" x-show="silComAlvoEscolhido">
+        <span class="rotulo">Equipamento</span>
+        <p class="al-alvo-nome"><strong id="sil-alvo-nome" x-text="silAlvoNome"></strong></p>
+        <button class="botao botao-fantasma" type="button" @click="trocarAlvo">Trocar</button>
+      </div>
+      <div class="campo-form" x-show="!silEquipamento">
+        <label for="sil-classe">Classe</label>
+        <select id="sil-classe" x-model="silForm.alvo" aria-describedby="sil-alvo-erro">
+          <option value="">Escolha…</option>
+          <template x-for="c in classes" :key="c.slug">
+            <option :value="c.slug" x-text="c.nome"></option>
+          </template>
+        </select>
+      </div>
+      <p class="campo-erro" id="sil-alvo-erro" role="alert" x-show="silErros.alvo" x-text="silErros.alvo"></p>
+      <div class="campo-form">
+        <label for="sil-atalho">Por quanto tempo</label>
+        <select id="sil-atalho" x-model="silForm.atalho">
+          <template x-for="a in atalhos" :key="a.valor">
+            <option :value="a.valor" x-text="a.rotulo"></option>
+          </template>
+        </select>
+      </div>
+      <div class="campo-form" x-show="silPersonalizado">
+        <label for="sil-fim">Termina em</label>
+        <input id="sil-fim" type="datetime-local" x-model="silForm.fimLocal" aria-describedby="sil-fim-dica sil-fim-erro">
+        <p class="dica" id="sil-fim-dica" x-text="silDicaFuso"></p>
+        <p class="campo-erro" id="sil-fim-erro" role="alert" x-show="silErros.fim" x-text="silErros.fim"></p>
+      </div>
+      <div class="campo-form">
+        <label for="sil-motivo">Motivo (opcional)</label>
+        <input id="sil-motivo" maxlength="200" autocomplete="off" x-model="silForm.motivo" placeholder="Ex.: troca do nobreak">
+      </div>
+      <p class="alerta" role="alert" x-show="silErroGeral" x-text="silErroGeral"></p>
+      <div class="rodape">
+        <button class="botao botao-fantasma" type="button" @click="fecharSilencio">Cancelar</button>
+        <button class="botao botao-primario" type="submit" :disabled="silEnviando" x-text="silRotuloEnviar">Silenciar</button>
+      </div>
+    </form>
   </dialog>
 
   <dialog class="dialogo" x-ref="dlgNovo" aria-labelledby="titulo-novo">

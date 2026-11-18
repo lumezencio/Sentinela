@@ -7,18 +7,17 @@ Não é coletado pelo smoke normal (nome fora de ``test_*``). Rodar de ``core/``
 
 O demo não deixa o admin forçar ``inalcancavel``; aqui o WebSocket do navegador é
 interceptado e o snapshot reescrito (o equipamento "filho" vira inalcançável com causa
-``pai:<id>`` e o pai, offline). Só dados fictícios. A Task 10 (``capturar_telas.py``) pode
-reaproveitar ``LARGURAS`` e ``reescrever_snapshot``.
+``pai:<id>`` e o pai, offline). Só dados fictícios. A Task 10 (``capturar_telas.py``) é o
+roteiro comum (larguras, pasta de saída e interceptação do WebSocket vêm de lá).
 """
 
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Page, WebSocketRoute, expect
+from capturar_telas import ALTURA, LARGURAS, interceptar_ws, pasta_saida
+from playwright.sync_api import Page, expect
 from test_smoke import (
     CRIAR_VIA_API,
     TOTAL_DEMO,
@@ -30,17 +29,9 @@ from test_smoke import (
 
 from conftest import Alvo
 
-LARGURAS = (360, 390, 768, 1024, 1280, 1366, 1440, 1920)
-ALTURA = 900
 PAI = "Switch Torre Norte"
 FILHO = "Impressora do Financeiro, sala 2 do segundo andar do bloco B"
 OUTRO = "Câmera do Pátio"
-
-
-def pasta_saida() -> Path:
-    pasta = Path(os.environ.get("SENTINELA_CAPTURAS") or tempfile.mkdtemp(prefix="sentinela-capt-"))
-    pasta.mkdir(parents=True, exist_ok=True)
-    return pasta
 
 
 def reescrever_snapshot(texto: str, ids: dict[str, str]) -> str:
@@ -67,17 +58,6 @@ def reescrever_snapshot(texto: str, ids: dict[str, str]) -> str:
     return json.dumps(msg)
 
 
-def interceptar_ws(page: Page, ids: dict[str, str]) -> None:
-    def ao_ws(ws: WebSocketRoute) -> None:
-        servidor = ws.connect_to_server()
-        ws.on_message(lambda m: servidor.send(m))
-        servidor.on_message(
-            lambda m: ws.send(reescrever_snapshot(m, ids) if isinstance(m, str) else m)
-        )
-
-    page.route_web_socket(re.compile(r".*/ws.*"), ao_ws)
-
-
 def test_capturar_dependencia(page: Page, alvo: Alvo) -> None:
     saida = pasta_saida()
     entrar(page, alvo)
@@ -90,7 +70,7 @@ def test_capturar_dependencia(page: Page, alvo: Alvo) -> None:
         for nome in (FILHO, OUTRO):
             r = api_json(page, "PATCH", f"/equipamentos/{ids[nome]}", {"pai_id": ids[PAI]})
             assert r["status"] == 200, r
-        interceptar_ws(page, ids)
+        interceptar_ws(page, lambda texto: reescrever_snapshot(texto, ids))
         page.reload()
         expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 3), timeout=20_000)
         expect(page.locator("#contador-inalcancavel")).to_have_text("2")
@@ -104,14 +84,6 @@ def test_capturar_dependencia(page: Page, alvo: Alvo) -> None:
             page.get_by_role("combobox", name="Estado").select_option("inalcancavel")
             expect(page.locator("#lista tbody tr.linha").first).to_be_visible()
             page.evaluate("window.scrollTo(0, 0)")
-            sobra = page.evaluate(
-                "(() => { const c = document.querySelector('.painel-lista');"
-                " const t = c.querySelector('table');"
-                " return [c.scrollWidth - c.clientWidth,"
-                " Math.round(t.getBoundingClientRect().right"
-                " - c.getBoundingClientRect().right)]; })()"
-            )
-            print("SOBRA", largura, sobra)
             page.screenshot(path=str(saida / f"lista-{largura}.png"))
             page.get_by_role("combobox", name="Estado").select_option("")
             # ficha no Organograma, com o editor de "Depende de" aberto

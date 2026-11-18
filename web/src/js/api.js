@@ -120,6 +120,22 @@ export const api = {
   cancelarVarredura: () => requisitar("DELETE", "/varredura"),
   verAjustes: () => requisitar("GET", "/config/descoberta"),
   editarAjustes: (dados) => requisitar("PATCH", "/config/descoberta", { json: dados }),
+  // ---- alertas, silêncios e Telegram (Fase 4) ----
+  listarAlertas: ({ filtro = "abertos", classe = "", desde = "", pagina = 1, porPagina = 50 }) => {
+    const q = new URLSearchParams({ filtro, pagina: String(pagina), por_pagina: String(porPagina) });
+    if (classe) q.set("classe", classe);
+    if (desde) q.set("desde", desde);
+    return requisitar("GET", `/alertas?${q}`);
+  },
+  verAlerta: (id) => requisitar("GET", `/alertas/${encodeURIComponent(id)}`),
+  reconhecerAlerta: (id) => requisitar("POST", `/alertas/${encodeURIComponent(id)}/reconhecer`),
+  listarSilencios: () => requisitar("GET", "/silencios"),
+  criarSilencio: (dados) => requisitar("POST", "/silencios", { json: dados }),
+  encerrarSilencio: (id) => requisitar("POST", `/silencios/${encodeURIComponent(id)}/encerrar`),
+  verTelegram: () => requisitar("GET", "/config/telegram"),
+  editarTelegram: (dados) => requisitar("PATCH", "/config/telegram", { json: dados }),
+  testarTelegram: () => requisitar("POST", "/config/telegram/teste"),
+  verGeral: () => requisitar("GET", "/config/geral"),
   importarCsv: (arquivo) => {
     const form = new FormData();
     form.append("arquivo", arquivo);

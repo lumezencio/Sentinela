@@ -1,0 +1,368 @@
+/* Fase 4A: aba Alertas, silêncios e manutenções, cartão do Telegram e fuso.
+   Mesmo sistema das fases anteriores (tokens, cores suaves, espaçamentos de 4 px). Estado
+   nunca só por cor: cada linha leva ícone + rótulo de texto. Texto de alerta cresce em altura,
+   nunca é cortado nem vira reticências. */
+
+/* link direto para #alertas: a Lista não pisca antes do Alpine */
+html[data-aba="alertas"] #conteudo-lista {
+  display: none;
+}
+
+html[data-aba="alertas"] .aviso-sem-alpine {
+  display: block;
+  animation: surgir-aviso 0.3s ease 3s both;
+}
+
+/* a margem do 1º título não pode "vazar" para fora do <main> (a própria <main> pularia 24 px
+   quando a aba aparece: deslocamento de layout) */
+html[data-aba="alertas"] .conteudo,
+html[data-aba="configuracoes"] .conteudo {
+  display: flow-root;
+}
+
+/* a barra de rolagem aparece quando a lista chega e empurrava o conteúdo centralizado 8 px:
+   a calha fica reservada desde o início (só nestas abas) */
+html[data-aba="alertas"],
+html[data-aba="configuracoes"] {
+  scrollbar-gutter: stable;
+}
+
+/* idem para o título da própria aba (só quando visível: o atributo hidden continua mandando) */
+#conteudo-alertas:not([hidden]),
+#conteudo-configuracoes:not([hidden]) {
+  display: flow-root;
+}
+
+/* contador de alertas abertos na aba (texto escuro no vermelho suave, branco no claro) */
+.aba-contador-alerta {
+  background: var(--offline);
+}
+
+/* ---------- lista de alertas ---------- */
+.al-lista,
+.al-silencios,
+.al-afetados,
+.al-candidatos {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.al-lista {
+  display: grid;
+  gap: 12px;
+}
+
+.al-silencios {
+  display: grid;
+  gap: 8px;
+}
+
+.al-linha,
+.al-silencio {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 16px;
+  padding: 16px 20px;
+  border: 1px solid var(--borda);
+  border-radius: 16px;
+  background: var(--superficie);
+}
+
+.al-linha {
+  border-left: 4px solid var(--cor-status, var(--borda));
+  box-shadow: var(--sombra);
+}
+
+.al-silencio {
+  grid-template-columns: 144px minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--superficie-2);
+}
+
+.al-aberto {
+  --cor-status: var(--offline);
+}
+
+.al-instavel {
+  --cor-status: var(--instavel);
+}
+
+.al-fechado {
+  --cor-status: var(--online);
+}
+
+.al-marca,
+.al-tipo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.al-marca {
+  min-height: 24px;
+}
+
+.al-marca .icone-status {
+  color: var(--cor-status);
+}
+
+.al-tipo-silencio {
+  --cor-status: var(--instavel);
+}
+
+.al-tipo-manutencao {
+  --cor-status: var(--pausado);
+}
+
+.al-corpo {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.al-texto {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  overflow-wrap: anywhere;
+}
+
+.al-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  color: var(--texto-suave);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.al-meta > span {
+  overflow-wrap: anywhere;
+}
+
+.al-envio {
+  padding: 0 8px;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.al-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.al-acoes .botao,
+.al-silencio .botao {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.al-detalhe {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--borda);
+}
+
+.al-afetados {
+  display: grid;
+  gap: 8px;
+}
+
+.al-afetados li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  overflow-wrap: anywhere;
+}
+
+.al-afetados .estado {
+  min-width: 112px;
+}
+
+.al-mais {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+/* filtros: duas listas e o resumo */
+.ferramentas.al-ferramentas {
+  grid-template-columns: repeat(2, minmax(160px, 260px)) minmax(0, 1fr);
+}
+
+.al-resumo {
+  align-self: center;
+  text-align: right;
+}
+
+/* ---------- diálogo de silêncio ---------- */
+.dialogo-rolavel {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+
+/* os botões do diálogo ficam sempre à vista, mesmo com a lista de resultados e os erros */
+.dialogo-rolavel .rodape {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -22px -22px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--borda);
+  background: var(--superficie);
+}
+
+.al-candidatos {
+  display: grid;
+  gap: 4px;
+  max-height: 176px;
+  overflow-y: auto;
+}
+
+.al-candidato {
+  width: 100%;
+  justify-content: flex-start;
+  height: auto;
+  min-height: 36px;
+  padding: 8px 12px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.al-alvo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.al-alvo-nome {
+  flex: 1 1 160px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.campo-erro {
+  margin: 0;
+  padding: 4px 8px;
+  border-left: 3px solid var(--offline);
+  color: var(--texto);
+  font-size: 13px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 12px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--fundo);
+  color: var(--texto);
+  font: inherit;
+  resize: vertical;
+}
+
+textarea:focus-visible {
+  outline: 2px solid var(--primaria);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+/* ---------- Configurações: Telegram e fuso ---------- */
+.cfg-tg-form {
+  display: grid;
+  gap: 16px;
+  max-width: 640px;
+}
+
+.cfg-tg-ip {
+  display: grid;
+  gap: 4px;
+}
+
+#tg-teste,
+#tg-ultimo-erro {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+#tg-envio {
+  margin-top: 12px;
+}
+
+.cfg-fuso {
+  margin: 0;
+}
+
+/* seis abas não cabem ao lado da marca e das ações: a faixa de abas desce e quebra linha
+   (nada fica escondido atrás da borda da tela nem exige rolagem lateral) */
+@media (max-width: 960px) {
+  .topo-interno {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+  .abas {
+    flex-wrap: wrap;
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 899px) {
+  .al-linha {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+  .al-linha .al-acoes {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+  .al-silencio {
+    grid-template-columns: 144px minmax(0, 1fr);
+  }
+  .al-silencio > .botao {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+@media (max-width: 1024px) {
+  .ferramentas.al-ferramentas {
+    grid-template-columns: 1fr 1fr;
+  }
+  .al-resumo {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+}
+
+@media (max-width: 559px) {
+  .al-linha,
+  .al-silencio {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px 16px;
+  }
+  .al-linha .al-acoes,
+  .al-silencio > .botao {
+    grid-column: 1;
+  }
+  .al-linha .al-acoes .botao,
+  .al-silencio .botao {
+    flex: 1 1 auto;
+  }
+}

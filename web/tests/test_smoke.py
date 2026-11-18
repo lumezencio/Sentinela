@@ -1672,3 +1672,326 @@ def test_cancelar_depende_de_devolve_o_foco_ao_botao(page: Page, alvo: Alvo) -> 
     finally:
         apagar_equipamentos(page, ids[::-1])
     demo_de_volta(page)
+
+
+# ---------- Fase 4A: aba Alertas, silêncios e Telegram ----------
+TOKEN_FICTICIO = "1234567890:AAExampleExampleExampleExampleExample12"  # noqa: S105 - só o formato, nunca um token real
+
+
+def abrir_alertas(page: Page) -> Any:
+    page.get_by_role("tab", name=re.compile("^Alertas")).click()
+    expect(page.get_by_role("tab", name=re.compile("^Alertas"))).to_have_attribute(
+        "aria-selected", "true"
+    )
+    assert page.url.endswith("#alertas"), page.url
+    secao = page.locator("#conteudo-alertas")
+    expect(secao.locator("li.al-linha").first).to_be_visible(timeout=20_000)
+    return secao
+
+
+def linha_do_alerta(secao: Any, alerta: dict[str, Any]) -> Any:
+    return secao.locator(f'li.al-linha[data-id="{alerta["id"]}"]')
+
+
+def test_aba_alertas_lista_abertos_e_contador_no_menu(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    selo = page.locator("#contador-alertas")
+    expect(selo).to_be_visible(timeout=20_000)
+    expect(selo).to_have_text(re.compile(r"^\d+ abertos$"))
+    assert int(selo.inner_text().split()[0]) >= 3  # semeados abertos (a demo pode somar ou fechar)
+    secao = abrir_alertas(page)
+    a = alertas_semeados
+    aberto = linha_do_alerta(secao, a["aberto"])
+    expect(aberto.locator(".al-texto")).to_have_text(a["aberto"]["texto"])
+    # estado nunca só por cor: ícone + rótulo; envio e afetados em texto
+    expect(aberto.locator(".al-marca")).to_have_text("Aberto")
+    expect(aberto.locator(".al-marca svg")).to_be_visible()
+    expect(aberto).to_contain_text("3 afetados")
+    expect(aberto.locator(".al-envio")).to_have_text("Telegram enviado")
+    instavel = linha_do_alerta(secao, a["instavel"])
+    expect(instavel.locator(".al-marca")).to_have_text("Instável")
+    expect(instavel).to_contain_text("Reconhecido por admin")
+    expect(linha_do_alerta(secao, a["silenciado"]).locator(".al-envio")).to_have_text("Silenciado")
+    expect(linha_do_alerta(secao, a["pendente"]).locator(".al-envio")).to_have_text(
+        "Telegram pendente"
+    )
+    expect(linha_do_alerta(secao, a["falhou"]).locator(".al-envio")).to_have_text("Telegram falhou")
+    # o filtro padrão é "abertos": o alerta já resolvido não aparece
+    expect(linha_do_alerta(secao, a["fechado"])).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_alertas_filtros_e_abrir_afetados(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_alertas(page)
+    a = alertas_semeados
+    secao.get_by_role("button", name="Todos", exact=True).click()
+    fechado = linha_do_alerta(secao, a["fechado"])
+    expect(fechado).to_be_visible()
+    expect(fechado.locator(".al-marca")).to_have_text("Resolvido")
+    expect(fechado).to_contain_text("durou 2 min")
+    secao.get_by_role("button", name="Reconhecidos", exact=True).click()
+    expect(linha_do_alerta(secao, a["instavel"])).to_be_visible()
+    expect(linha_do_alerta(secao, a["aberto"])).to_have_count(0)
+    # classe e período: o alerta semeado continua na lista
+    secao.get_by_role("button", name="Todos", exact=True).click()
+    eq = api_json(page, "GET", f"/equipamentos/{a['aberto']['equipamento_id']}")["dados"]
+    secao.get_by_label("Classe").select_option(eq["classe"])
+    expect(linha_do_alerta(secao, a["aberto"])).to_be_visible()
+    secao.get_by_label("Período").select_option("24h")
+    expect(linha_do_alerta(secao, a["aberto"])).to_be_visible()
+    secao.get_by_label("Classe").select_option("")
+    # afetados: abre, lista os 3 e fecha
+    aberto = linha_do_alerta(secao, a["aberto"])
+    botao = aberto.locator(".al-acoes button").first  # o nome acessível muda ao abrir
+    expect(botao).to_have_text("Ver afetados")
+    botao.click()
+    expect(botao).to_have_text("Ocultar afetados")
+    expect(botao).to_have_attribute("aria-expanded", "true")
+    expect(aberto.locator(".al-afetados li")).to_have_count(3)
+    expect(aberto.locator(".al-afetados li").first.locator(".estado")).not_to_be_empty()
+    botao.click()
+    expect(botao).to_have_attribute("aria-expanded", "false")
+    expect(aberto.locator(".al-detalhe")).to_be_hidden()
+    assert erros == [], erros
+
+
+def test_reconhecer_atualiza_ao_vivo(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
+    erros = vigiar_console(page)
+    pelo_botao, pela_api = novo_alerta(), novo_alerta()
+    entrar(page, alvo)
+    secao = abrir_alertas(page)
+    a, b = linha_do_alerta(secao, pelo_botao), linha_do_alerta(secao, pela_api)
+    expect(a).to_be_visible()
+    a.get_by_role("button", name=re.compile("^Reconhecer")).click()
+    expect(a).to_contain_text("Reconhecido por admin")
+    expect(a.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(0)
+    # outra origem (aqui, a API direto): a linha muda sem recarregar a página
+    expect(b.get_by_role("button", name=re.compile("^Reconhecer"))).to_have_count(1)
+    r = api_json(page, "POST", f"/alertas/{pela_api['id']}/reconhecer")
+    assert r["status"] == 200, r
+    expect(b).to_contain_text("Reconhecido por admin")
+    assert erros == [], erros
+
+
+def abrir_dialogo_silencio(page: Page, secao: Any) -> Any:
+    secao.get_by_role("button", name="Silenciar ou manutenção").click()
+    dialogo = page.locator("dialog[open]")
+    expect(dialogo).to_be_visible()
+    return dialogo
+
+
+def escolher_equipamento(dialogo: Any, nome: str) -> None:
+    dialogo.get_by_label("Buscar equipamento").fill(nome[:18])
+    dialogo.get_by_role("button", name=re.compile(re.escape(nome))).click()
+    expect(dialogo.locator("#sil-alvo-nome")).to_have_text(nome)
+
+
+def test_silenciar_1h_aparece_e_encerrar(page: Page, alvo: Alvo, alertas_semeados: Any) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    nome = "Switch Torre Silêncio"
+    criado = page.evaluate(CRIAR_VIA_API, {"nome": nome, "ip": "10.99.60.231", "classe": "iot"})
+    assert criado["status"] == 201, criado
+    try:
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=15_000)
+        secao = abrir_alertas(page)
+        dialogo = abrir_dialogo_silencio(page, secao)
+        # sem alvo: erro no formulário, nada enviado
+        dialogo.get_by_role("button", name="Silenciar", exact=True).click()
+        expect(dialogo.locator("#sil-alvo-erro")).to_have_text("Escolha o equipamento.")
+        escolher_equipamento(dialogo, nome)
+        dialogo.get_by_label("Por quanto tempo").select_option("1h")
+        dialogo.get_by_label("Motivo (opcional)").fill("troca do nobreak")
+        dialogo.get_by_role("button", name="Silenciar", exact=True).click()
+        expect(dialogo).to_have_count(0)
+        item = secao.locator("li.al-silencio").filter(has_text=nome)
+        expect(item).to_be_visible(timeout=10_000)
+        expect(item.locator(".al-tipo")).to_have_text("Silêncio")
+        expect(item).to_contain_text(re.compile(r"Até \d{2}:\d{2}"))
+        expect(item).to_contain_text("troca do nobreak")
+        item.get_by_role("button", name=re.compile("^Encerrar")).click()
+        expect(item).to_have_count(0, timeout=10_000)
+        assert api_json(page, "GET", "/silencios")["dados"] == []
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, [criado["corpo"]["id"]])
+        demo_de_volta(page)
+
+
+def test_criar_manutencao_pausa_e_mostra(page: Page, alvo: Alvo, alertas_semeados: Any) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    nome = "Impressora em manutenção do bloco B"
+    criado = page.evaluate(CRIAR_VIA_API, {"nome": nome, "ip": "10.99.60.232", "classe": "iot"})
+    assert criado["status"] == 201, criado
+    eid = criado["corpo"]["id"]
+    try:
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO + 1), timeout=15_000)
+        secao = abrir_alertas(page)
+        dialogo = abrir_dialogo_silencio(page, secao)
+        dialogo.get_by_role("button", name="Manutenção", exact=True).click()
+        expect(dialogo.get_by_role("heading", name="Janela de manutenção")).to_be_visible()
+        expect(dialogo).to_contain_text("também pausa a checagem")
+        escolher_equipamento(dialogo, nome)
+        # personalizado: o fim tem de estar no futuro e em até 30 dias
+        dialogo.get_by_label("Por quanto tempo").select_option("personalizado")
+        dialogo.get_by_role("button", name="Iniciar manutenção").click()
+        expect(dialogo.locator("#sil-fim-erro")).to_have_text("Informe quando termina.")
+        dialogo.get_by_label("Termina em").fill("2099-01-01T10:00")
+        dialogo.get_by_role("button", name="Iniciar manutenção").click()
+        expect(dialogo.locator("#sil-fim-erro")).to_have_text("No máximo 30 dias.")
+        dialogo.get_by_label("Por quanto tempo").select_option("4h")
+        dialogo.get_by_role("button", name="Iniciar manutenção").click()
+        expect(dialogo).to_have_count(0)
+        item = secao.locator("li.al-silencio").filter(has_text=nome)
+        expect(item).to_be_visible(timeout=10_000)
+        expect(item.locator(".al-tipo")).to_have_text("Manutenção")
+        expect(item).to_contain_text("1 equipamento pausado")
+        assert api_json(page, "GET", f"/equipamentos/{eid}")["dados"]["estado"] == "pausado"
+        item.get_by_role("button", name=re.compile("^Encerrar")).click()
+        expect(item).to_have_count(0, timeout=10_000)
+        assert api_json(page, "GET", f"/equipamentos/{eid}")["dados"]["estado"] != "pausado"
+        assert erros == [], erros
+    finally:
+        apagar_equipamentos(page, [eid])
+        demo_de_volta(page)
+
+
+def test_visualizador_ve_alertas_sem_botoes(
+    page: Page, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    erros = vigiar_console(page)
+    entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    secao = abrir_alertas(page)
+    aberto = linha_do_alerta(secao, alertas_semeados["aberto"])
+    expect(aberto).to_be_visible()
+    expect(aberto.get_by_role("button", name="Ver afetados")).to_be_visible()
+    for nome in (
+        re.compile("^Reconhecer"),
+        re.compile("^Silenciar"),
+        re.compile("^Encerrar"),
+        re.compile("manutenção$"),
+    ):
+        expect(secao.get_by_role("button", name=nome)).to_have_count(0)
+    expect(page.get_by_role("tab", name="Configurações")).to_have_count(0)
+    assert erros == [], erros
+
+
+def test_deep_link_alertas_sem_piscar_lista(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    page.route("**/vendor/alpine-csp.min.js", lambda r: r.abort())
+    page.goto("/index.html#alertas")
+    page.reload()
+    assert page.evaluate("document.documentElement.dataset.aba") == "alertas"
+    expect(page.locator("#conteudo-lista")).to_be_hidden()
+    expect(page.locator(".aviso-sem-alpine")).to_be_visible(timeout=10_000)
+    page.unroute("**/vendor/alpine-csp.min.js")
+    erros = vigiar_console(page)
+    page.reload()
+    expect(page.locator("#conteudo-alertas")).to_be_visible(timeout=15_000)
+    expect(page.locator("#conteudo-lista")).to_be_hidden()
+    expect(page.get_by_role("tabpanel")).to_have_count(1)
+    expect(page).to_have_title("Sentinela · Alertas")
+    page.wait_for_timeout(1000)
+    assert erros == [], erros
+
+
+def test_alertas_360_sem_rolagem_horizontal(
+    browser: Browser, alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": 360, "height": 740}, ignore_https_errors=True, base_url=alvo.url
+    )
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo)
+        abrir_alertas(page)
+        largura = page.evaluate(
+            "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+        )
+        assert largura[0] <= largura[1], largura
+    finally:
+        contexto.close()
+
+
+def abrir_configuracoes(page: Page) -> Any:
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    expect(secao.locator("#cfg-telegram")).to_be_visible(timeout=15_000)
+    return secao
+
+
+def test_telegram_token_nunca_volta_ao_formulario(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_configuracoes(page)
+    cartao = secao.locator("#cfg-telegram")
+    token = cartao.get_by_label("Token do bot")
+    chats = cartao.get_by_label("Destinos (um por linha)")
+    expect(cartao.locator("#tg-situacao")).to_have_text("Token não definido")
+    # validação no formulário, sem pedido à API
+    token.fill("isto-nao-e-um-token")
+    cartao.get_by_role("button", name="Salvar").click()
+    expect(cartao.locator("#tg-token-erro")).to_contain_text("formato inválido")
+    token.fill("")
+    chats.fill("\n".join(str(1000 + i) for i in range(11)))
+    cartao.get_by_role("button", name="Salvar").click()
+    expect(cartao.locator("#tg-chats-erro")).to_have_text("No máximo 10 destinos.")
+    # salva token + destino
+    token.fill(TOKEN_FICTICIO)
+    chats.fill("-1001234567890")
+    cartao.get_by_role("button", name="Salvar").click()
+    expect(cartao.locator("#tg-aviso")).to_have_text("Configuração do Telegram salva.")
+    expect(cartao.locator("#tg-situacao")).to_have_text("Token definido")
+    try:
+        expect(token).to_have_value("")
+        page.reload()
+        secao = abrir_configuracoes(page)
+        cartao = secao.locator("#cfg-telegram")
+        expect(cartao.locator("#tg-situacao")).to_have_text("Token definido")
+        expect(cartao.get_by_label("Token do bot")).to_have_value("")
+        expect(cartao.get_by_label("Destinos (um por linha)")).to_have_value("-1001234567890")
+        assert TOKEN_FICTICIO not in page.content()
+        assert TOKEN_FICTICIO not in page.evaluate(
+            "() => [...document.querySelectorAll('input, textarea')].map((e) => e.value).join()"
+        )
+        resposta = api_json(page, "GET", "/config/telegram")
+        assert resposta["dados"]["token_definido"] is True
+        assert TOKEN_FICTICIO not in str(resposta), "o token não pode voltar da API"
+        # campo vazio não apaga: o PATCH nem menciona o token
+        cartao.get_by_label("Destinos (um por linha)").fill("-1001234567890\n@canal_do_noc")
+        with page.expect_request(
+            lambda r: r.method == "PATCH" and r.url.endswith("/config/telegram")
+        ) as pedido:
+            cartao.get_by_role("button", name="Salvar").click()
+        assert "token" not in pedido.value.post_data_json
+        expect(cartao.locator("#tg-situacao")).to_have_text("Token definido")
+        # modo demonstração: o teste responde com o texto fixo do servidor
+        cartao.get_by_role("button", name="Enviar teste").click()
+        expect(cartao.locator("#tg-teste")).to_have_text("Indisponível no modo demonstração.")
+        # o 409 esperado vira "Failed to load resource" no console: só ele é descartado
+        erros[:] = [e for e in erros if "409" not in e]
+    finally:
+        api_json(page, "PATCH", "/config/telegram", {"token": "", "chats": []})
+    page.reload()
+    secao = abrir_configuracoes(page)
+    expect(secao.locator("#tg-situacao")).to_have_text("Token não definido")
+    assert erros == [], erros
+
+
+def test_configuracoes_mostra_fuso(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_configuracoes(page)
+    expect(secao.locator("#cfg-fuso")).to_have_text("America/Sao_Paulo")
+    expect(secao.get_by_role("heading", name="Fuso horário")).to_be_visible()
+    assert erros == [], erros

@@ -1,5 +1,7 @@
 // Painel (Alpine CSP): sessão, conexão ao vivo, contadores, lista e cadastro (admin).
+import { alertasDoPainel } from "./alertas.js";
 import { api, irParaLogin } from "./api.js";
+import { telegramDoPainel } from "./config-telegram.js";
 import { configuracoesDoPainel } from "./configuracoes.js";
 import {
   aplicarEquipamento,
@@ -108,6 +110,7 @@ function painel() {
       this.admin = eu.dados.papel === "admin";
       this.liberarTeia(); // só agora a Teia monta (e o bundle é pedido) e Novos/Config carregam
       this.carregarVarredura();
+      this.carregarGeral(); // fuso dos horários de alertas e silêncios
       conexao = criarConexao({
         aoMensagem: (msg) => this.receber(msg),
         aoMudarEstado: (estado) => {
@@ -134,6 +137,7 @@ function painel() {
         this.carregado = true;
         this.teiaAoMudarStore();
         this.novosAoMensagem(msg);
+        this.alertasAoSnapshot(msg);
       } else if (msg.tipo === "estado") {
         if (aplicarEstado(store, msg)) this.teiaAoEstado(msg.id);
         else this.pedirRessincronizacao();
@@ -148,6 +152,9 @@ function painel() {
         return;
       } else if (msg.tipo === "varredura") {
         this.aplicarVarredura(msg);
+        return;
+      } else if (msg.tipo === "alerta" || msg.tipo === "silencio") {
+        this.alertasAoMensagem(msg);
         return;
       } else if (msg.tipo === "fonte") {
         this.cfgAoMensagem(msg);
@@ -176,6 +183,7 @@ function painel() {
       this.renderizarTeia();
       this.renderizarOrganograma(); // só na aba dele; no máximo 2 vezes por segundo
       if (this.aba === "configuracoes") this.renderizarFontes(); // "há N min" das coletas
+      if (this.aba === "alertas") this.renderizarAlertas(); // "há N min" e silêncios vencidos
       if (this.aba !== "lista") return; // a lista só é montada na aba dela
       const filtrada = filtrar(
         store,
@@ -525,6 +533,8 @@ function painel() {
     organogramaDoPainel(store),
     novosDoPainel(store),
     configuracoesDoPainel(),
+    alertasDoPainel(store),
+    telegramDoPainel(),
   ]) {
     Object.defineProperties(dados, Object.getOwnPropertyDescriptors(parte));
   }

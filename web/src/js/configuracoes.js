@@ -255,6 +255,7 @@ export function configuracoesDoPainel() {
   return {
     cfgFontes: [],
     cfgCarregando: false,
+    cfgPronta: false, // o conteúdo só aparece inteiro, depois da 1ª carga (sem pular de lugar)
     cfgErro: "",
     cfgAviso: "",
     cfgSubredes: [],
@@ -278,6 +279,13 @@ export function configuracoesDoPainel() {
       this.cfgCarregando = true;
       await Promise.all([this.carregarFontes(), this.carregarSubredesCfg(), this.carregarAjustes()]);
       this.cfgCarregando = false;
+      this.cfgPronta = true;
+    },
+    get cfgMostrar() {
+      return this.admin && this.cfgPronta;
+    },
+    get cfgAguardando() {
+      return this.admin && !this.cfgPronta;
     },
 
     cfgAoMensagem(msg) {
