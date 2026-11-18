@@ -1,4 +1,5 @@
 import secrets
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -34,3 +35,21 @@ def test_chave_credenciais_obrigatoria(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SENTINELA_CHAVE_CREDENCIAIS", raising=False)
     with pytest.raises(ValidationError):
         Settings(chave_sessao="x")  # type: ignore[call-arg]
+
+
+def test_fuso_padrao_sao_paulo() -> None:
+    assert Settings(chave_sessao="x", chave_credenciais=CHAVE).fuso == "America/Sao_Paulo"
+
+
+def test_fuso_invalido_recusado() -> None:
+    with pytest.raises(ValidationError, match="Fuso inválido"):
+        Settings(chave_sessao="x", chave_credenciais=CHAVE, fuso="Marte/Olympus")
+
+
+def test_ca_adicional_inexistente_recusado(tmp_path: Path) -> None:
+    assert Settings(chave_sessao="x", chave_credenciais=CHAVE).ca_adicional == ""
+    with pytest.raises(ValidationError, match="ca_adicional"):
+        Settings(chave_sessao="x", chave_credenciais=CHAVE, ca_adicional=str(tmp_path / "n.pem"))
+    pem = tmp_path / "ca.pem"
+    pem.write_text("x")
+    assert Settings(chave_sessao="x", chave_credenciais=CHAVE, ca_adicional=str(pem))

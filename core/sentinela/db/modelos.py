@@ -215,3 +215,118 @@ class Config(Base):
 
     chave: Mapped[str] = mapped_column(String(64), primary_key=True)
     valor: Mapped[Any] = mapped_column(JSON)
+
+
+class Alerta(Base):
+    """Alerta de queda/volta/instabilidade/falha de fonte, com o estado do envio ao Telegram."""
+
+    __tablename__ = "alerta"
+    __table_args__ = (
+        CheckConstraint("tipo IN ('queda', 'volta', 'instavel', 'fonte_falhou')", name="tipo"),
+        CheckConstraint("envio IN ('nao_aplica', 'pendente', 'enviado', 'falhou')", name="envio"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(16))
+    equipamento_id: Mapped[str | None] = mapped_column(
+        ForeignKey("equipamento.id", ondelete="SET NULL"), default=None
+    )
+    fonte_id: Mapped[str | None] = mapped_column(
+        ForeignKey("fonte.id", ondelete="SET NULL"), default=None
+    )
+    # ids que caíram por conta própria (principal primeiro)
+    quedas: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # todos os incluídos menos o principal: quedas agrupadas + filhos inalcançáveis
+    afetados: Mapped[list[str]] = mapped_column(JSON, default=list)
+    voltaram: Mapped[list[str]] = mapped_column(JSON, default=list)
+    aberto_em: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    fechado_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None, index=True)
+    # caiu e voltou em menos de 2 min antes do envio
+    breve: Mapped[bool] = mapped_column(Boolean, default=False)
+    # o alerta de volta aponta a queda
+    alerta_origem_id: Mapped[int | None] = mapped_column(
+        ForeignKey("alerta.id", ondelete="SET NULL"), default=None
+    )
+    reconhecido_por: Mapped[int | None] = mapped_column(
+        ForeignKey("usuario.id", ondelete="SET NULL"), default=None
+    )
+    reconhecido_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    silenciado: Mapped[bool] = mapped_column(Boolean, default=False)
+    envio: Mapped[str] = mapped_column(String(10), default="pendente", index=True)
+    envio_tentativas: Mapped[int] = mapped_column(Integer, default=0)
+    envio_proxima: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    enviado_para: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # chat_id -> message_id devolvido pelo sendMessage (edição do caiu-e-voltou)
+    telegram_msgs: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+
+
+class Silencio(Base):
+    """Silêncio (só não avisa) ou manutenção (também pausa a checagem) com fim obrigatório."""
+
+    __tablename__ = "silencio"
+    __table_args__ = (
+        CheckConstraint("tipo IN ('silencio', 'manutencao')", name="tipo"),
+        CheckConstraint("alvo_tipo IN ('equipamento', 'classe')", name="alvo_tipo"),
+        CheckConstraint(
+            "(alvo_tipo = 'equipamento' AND equipamento_id IS NOT NULL AND classe_id IS NULL)"
+            " OR (alvo_tipo = 'classe' AND classe_id IS NOT NULL AND equipamento_id IS NULL)",
+            name="alvo",
+        ),
+        CheckConstraint("fim > inicio", name="periodo"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(10))
+    alvo_tipo: Mapped[str] = mapped_column(String(12))
+    equipamento_id: Mapped[str | None] = mapped_column(
+        ForeignKey("equipamento.id", ondelete="CASCADE"), default=None
+    )
+    classe_id: Mapped[int | None] = mapped_column(
+        ForeignKey("classe.id", ondelete="CASCADE"), default=None
+    )
+    inicio: Mapped[datetime] = mapped_column(UTCDateTime)
+    fim: Mapped[datetime] = mapped_column(UTCDateTime)
+    motivo: Mapped[str | None] = mapped_column(String(200), default=None)
+    criado_por: Mapped[int | None] = mapped_column(
+        ForeignKey("usuario.id", ondelete="SET NULL"), default=None
+    )
+    encerrado_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    # ids que a manutenção pausou (para retomar só esses ao fim)
+    pausados: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class Parede(Base):
+    """Telão (TV) pareado. O token só existe como hash; `ip_vinculado` vale só no modo http."""
+
+    __tablename__ = "parede"
+    __table_args__ = (CheckConstraint("modo IN ('https', 'http')", name="modo"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nome: Mapped[str] = mapped_column(String(64))
+    token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, default=None)
+    modo: Mapped[str] = mapped_column(String(5))
+    ip_vinculado: Mapped[str | None] = mapped_column(String(45), default=None)
+    criado_em: Mapped[datetime] = mapped_column(UTCDateTime)
+    ultimo_acesso: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    ultimo_ip: Mapped[str | None] = mapped_column(String(45), default=None)
+    revogada_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+
+
+class ParedePedido(Base):
+    """Pedido de pareamento de telão: código curto (hash) mais segredo de consulta (hash)."""
+
+    __tablename__ = "parede_pedido"
+    __table_args__ = (CheckConstraint("modo IN ('https', 'http')", name="modo"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    codigo_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    segredo_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    ip: Mapped[str] = mapped_column(String(45))
+    modo: Mapped[str] = mapped_column(String(5))
+    criado_em: Mapped[datetime] = mapped_column(UTCDateTime)
+    expira_em: Mapped[datetime] = mapped_column(UTCDateTime)
+    aprovado_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    consumido_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    parede_id: Mapped[int | None] = mapped_column(
+        ForeignKey("parede.id", ondelete="SET NULL"), default=None
+    )
