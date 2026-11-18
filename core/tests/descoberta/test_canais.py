@@ -19,7 +19,6 @@ from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.descoberta.canais import (
     CAUSA_CERTIFICADO_MUDOU,
     CAUSA_CERTIFICADO_NAO_CONFIADO,
-    CAUSA_GRAVADOR_MUDO,
     CAUSA_SEM_LEITURA,
     LeitorCanais,
 )
@@ -229,30 +228,50 @@ async def test_leitor_tres_falhas_de_canal_offline(cena: Cena) -> None:
     assert len(amostras) == 3 and not any(r.ok for r in amostras)
 
 
-async def test_leitor_gravador_mudo_leva_filhos_a_desconhecido(cena: Cena) -> None:
+async def test_gravador_sem_resposta_cameras_inalcancaveis_com_causa_pai(cena: Cena) -> None:
     cena.fontes[F1] = FonteFalsa(ErroColeta("o gravador não respondeu a tempo"))
     cena.fontes[F2] = FonteFalsa({1: False})
     await cena.leitor().ciclo()
     for cam in CAMERAS_F1:
-        assert cena.estado(cam) is Estado.DESCONHECIDO
-        assert cena.barramento.estados(cam) == [("desconhecido", CAUSA_GRAVADOR_MUDO)]
-    assert CAUSA_GRAVADOR_MUDO == "gravador sem resposta"
+        assert cena.estado(cam) is Estado.INALCANCAVEL
+        # causa: o equipamento do gravador (não a fonte)
+        assert cena.barramento.estados(cam) == [("inalcancavel", "pai:nvr1")]
     # o outro gravador segue normalmente
     assert cena.estado("cam4") is Estado.SUSPEITO
     assert all(id == "cam4" for id, _ in cena.gravador.amostras)
 
 
-async def test_leitor_timeout_do_gravador_leva_filhos_a_desconhecido(cena: Cena) -> None:
+async def test_leitor_timeout_do_gravador_leva_filhos_a_inalcancavel(cena: Cena) -> None:
     cena.fontes[F1] = FonteFalsa(asyncio.Event())  # nunca responde
     await cena.leitor(timeout_s=0.05).ciclo()
-    assert {cena.estado(c) for c in CAMERAS_F1} == {Estado.DESCONHECIDO}
+    assert {cena.estado(c) for c in CAMERAS_F1} == {Estado.INALCANCAVEL}
     assert cena.estado("cam4") is Estado.ONLINE
 
 
-async def test_leitor_erro_inesperado_tambem_vira_desconhecido(cena: Cena) -> None:
+async def test_leitor_erro_inesperado_tambem_vira_inalcancavel(cena: Cena) -> None:
     cena.fontes[F1] = FonteFalsa(RuntimeError("bug"))
     await cena.leitor().ciclo()
-    assert cena.estado("cam1") is Estado.DESCONHECIDO
+    assert cena.estado("cam1") is Estado.INALCANCAVEL
+    assert cena.barramento.estados("cam1") == [("inalcancavel", "pai:nvr1")]
+
+
+async def test_leitura_volta_libera_e_aplica(cena: Cena) -> None:
+    cena.fontes[F1] = FonteFalsa(ErroColeta("sem resposta"), {1: True, 2: False, 3: True})
+    leitor = cena.leitor()
+    await leitor.ciclo()
+    assert {cena.estado(c) for c in CAMERAS_F1} == {Estado.INALCANCAVEL}
+    await leitor.ciclo()  # leitura ok: libera e aplica na mesma leitura
+    assert cena.barramento.estados("cam1") == [
+        ("inalcancavel", "pai:nvr1"),
+        ("desconhecido", None),
+        ("online", None),
+    ]
+    assert cena.barramento.estados("cam2") == [
+        ("inalcancavel", "pai:nvr1"),
+        ("desconhecido", None),
+        ("suspeito", None),
+    ]
+    assert cena.estado("cam3") is Estado.ONLINE
 
 
 async def test_leitor_nao_roda_sem_filhos_aprovados(cena: Cena) -> None:
@@ -390,7 +409,7 @@ async def test_leitor_excecao_de_um_gravador_nao_deixa_o_outro_orfao(cena: Cena)
 async def test_leitor_certificado_suspende_leitura_e_registra_erro(
     cena: Cena, erro: ErroColeta, causa: str
 ) -> None:
-    assert causa != CAUSA_GRAVADOR_MUDO
+    assert not causa.startswith("pai:")
     cena.fontes[F1] = FonteFalsa(erro, {1: True, 2: True, 3: True})
     leitor = cena.leitor()
     await leitor.ciclo()

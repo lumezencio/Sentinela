@@ -1,4 +1,5 @@
-"""Peças comuns da API de cadastro: auditoria, validação de destino e MAC, pausa/retomada."""
+"""Peças comuns da API de cadastro: auditoria, validação de destino, MAC e pai,
+pausa/retomada."""
 
 import math
 from dataclasses import dataclass, field
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinela.api.deps import agora_utc
 from sentinela.db.modelos import Auditoria, Classe, Equipamento, Evento, Usuario
-from sentinela.monitor.agendador import CAUSA_FORA, Agendador, Alvo
+from sentinela.monitor.agendador import CAUSA_FORA, PROFUNDIDADE_MAX_PAI, Agendador, Alvo
 from sentinela.monitor.checagens import GRAVADOR
 from sentinela.monitor.estados import Estado
 from sentinela.monitor.montagem import alvo_de
@@ -28,6 +29,11 @@ CAUSA_DENTRO = "dentro_das_subredes"  # retomada automática: a sub-rede voltou
 MSG_CLASSE = "Classe inexistente."
 MSG_IP_DUPLICADO = "Já existe um equipamento com este IP."
 MSG_MAC_DUPLICADO = "Já existe um equipamento com este MAC."
+MSG_PAI_INEXISTENTE = "Equipamento de referência inexistente."
+MSG_PAI_PROPRIO = "Um equipamento não pode depender de si mesmo."
+MSG_PAI_CICLO = "Dependência circular."
+MSG_PAI_PROFUNDO = f"Cadeia de dependência acima de {PROFUNDIDADE_MAX_PAI} níveis."
+MSG_PAI_GRAVADOR = "Vínculo definido pelo gravador."
 
 
 def erro(codigo: int, motivo: str) -> HTTPException:
@@ -89,7 +95,43 @@ def retrato(eq: Equipamento, classe_slug: str) -> dict[str, Any]:
         "checagem": eq.checagem,
         "porta": eq.porta,
         "pausado": eq.pausado,
+        "pai_id": eq.pai_id,
     }
+
+
+async def validar_pai(db: AsyncSession, eq_id: str | None, pai_id: str) -> None:
+    """``eq_id`` (None no cadastro) pode depender de ``pai_id``? 422 com motivo fixo se não.
+
+    Sobe a cadeia do pai (reencontrar ``eq_id`` é ciclo) e soma a maior profundidade dos
+    descendentes de ``eq_id``: a cadeia inteira que passa por ele tem no máximo
+    ``PROFUNDIDADE_MAX_PAI`` saltos. Cada laço é limitado por esse teto, então um ciclo
+    antigo (editado à mão) também termina.
+    """
+    if pai_id == eq_id:
+        raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_PAI_PROPRIO)
+    acima: str | None = await db.scalar(select(Equipamento.pai_id).where(Equipamento.id == pai_id))
+    if acima is None and await db.get(Equipamento, pai_id) is None:
+        raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_PAI_INEXISTENTE)
+    saltos = 1  # eq -> pai
+    while acima is not None:
+        if acima == eq_id:
+            raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_PAI_CICLO)
+        saltos += 1
+        if saltos > PROFUNDIDADE_MAX_PAI:
+            raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_PAI_PROFUNDO)
+        acima = await db.scalar(select(Equipamento.pai_id).where(Equipamento.id == acima))
+    if eq_id is None:
+        return
+    nivel = [eq_id]
+    while nivel:
+        consulta = select(Equipamento.id).where(
+            Equipamento.pai_id.in_(nivel), Equipamento.id != eq_id
+        )
+        nivel = list((await db.execute(consulta)).scalars())
+        if nivel:
+            saltos += 1
+            if saltos > PROFUNDIDADE_MAX_PAI:
+                raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_PAI_PROFUNDO)
 
 
 def auditar(

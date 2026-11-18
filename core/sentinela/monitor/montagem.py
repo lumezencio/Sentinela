@@ -38,7 +38,10 @@ def estado_inicial(eq: Equipamento) -> Estado:
         estado = Estado(eq.estado)
     except ValueError:
         return Estado.DESCONHECIDO
-    return Estado.DESCONHECIDO if estado is Estado.PAUSADO else estado
+    # pausado sem a flag e inalcançável (o pai é reavaliado do zero ao subir): desconhecido
+    if estado in (Estado.PAUSADO, Estado.INALCANCAVEL):
+        return Estado.DESCONHECIDO
+    return estado
 
 
 def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
@@ -55,6 +58,7 @@ def alvo_de(eq: Equipamento, classe: Classe) -> Alvo:
         intervalo_s=float(classe.intervalo_s),
         critico=classe.critica,
         estado=estado_inicial(eq),
+        pai_id=eq.pai_id,
     )
 
 

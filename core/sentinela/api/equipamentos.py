@@ -115,6 +115,8 @@ async def criar(
     classe = await comum.classe_por_chave(db, entrada.classe)
     ip = comum.validar_destino_http(_guarda(request), entrada.ip, entrada.porta, entrada.checagem)
     await checar_unicos(db, ip, entrada.mac, None)
+    if entrada.pai_id is not None:
+        await comum.validar_pai(db, None, entrada.pai_id)
     agora = agora_utc()
     eq = Equipamento(
         id=str(uuid.uuid4()),
@@ -129,6 +131,7 @@ async def criar(
         estado_desde=agora,
         pausado=False,
         criado_em=agora,
+        pai_id=entrada.pai_id,
     )
     db.add(eq)
     auditar(db, request, admin, "equipamento.criar", eq.id, depois=retrato(eq, classe.slug))
@@ -154,6 +157,12 @@ async def editar(
         # só revalida o destino se ele mudou: renomear um pausado fora das sub-redes é permitido
         ip = comum.validar_destino_http(_guarda(request), ip, porta, checagem)
     await checar_unicos(db, ip, mac, eq.id, checagem)
+    if "pai_id" in dados:
+        if eq.checagem == GRAVADOR:  # a descoberta reescreve esse vínculo
+            raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, comum.MSG_PAI_GRAVADOR)
+        if dados["pai_id"] is not None:
+            await comum.validar_pai(db, eq.id, dados["pai_id"])
+        eq.pai_id = dados["pai_id"]
     eq.ip, eq.checagem, eq.porta, eq.mac, eq.classe_id = ip, checagem, porta, mac, classe.id
     if dados.get("nome") is not None:
         eq.nome = dados["nome"]

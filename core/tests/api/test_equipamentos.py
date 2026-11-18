@@ -609,3 +609,129 @@ async def test_editar_e_retomar_camera_de_gravador_sem_guarda(
     # um equipamento comum continua sem poder usar o IP de outro
     r = await _equip(cliente_admin, nome="x", ip="10.99.0.20")
     assert r.status_code == 409
+
+
+# ---- "Depende de" (pai_id, Fase 4 §5.1) ------------------------------------------------------
+
+
+async def _n_equips(c: httpx.AsyncClient, n: int) -> list[str]:
+    ids = []
+    for i in range(n):
+        r = await _equip(c, nome=f"E{i}", ip=f"10.99.0.{30 + i}")
+        assert r.status_code == 201, r.text
+        ids.append(r.json()["id"])
+    return ids
+
+
+async def test_definir_pai_e_ler(app: FastAPI, cliente_admin: httpx.AsyncClient) -> None:
+    await _subrede(cliente_admin)
+    switch, ap = await _n_equips(cliente_admin, 2)
+    assert (await cliente_admin.get(f"{EQUIP}/{ap}")).json()["pai_id"] is None
+    r = await cliente_admin.patch(f"{EQUIP}/{ap}", json={"pai_id": switch})
+    assert r.status_code == 200, r.text
+    assert r.json()["pai_id"] == switch
+    assert (await cliente_admin.get(f"{EQUIP}/{ap}")).json()["pai_id"] == switch
+    assert _agendador(app)._registros[ap].alvo.pai_id == switch
+    aud = (await _auditorias(app))[-1]
+    assert aud.acao == "equipamento.editar"
+    assert aud.antes is not None and aud.antes["pai_id"] is None
+    assert aud.depois is not None and aud.depois["pai_id"] == switch
+    # também no cadastro
+    r = await _equip(cliente_admin, nome="Câmera", ip="10.99.0.50", pai_id=ap)
+    assert r.status_code == 201, r.text
+    assert r.json()["pai_id"] == ap
+    assert (await _auditorias(app))[-1].depois["pai_id"] == ap  # type: ignore[index]
+
+
+async def test_pai_null_apaga(app: FastAPI, cliente_admin: httpx.AsyncClient) -> None:
+    await _subrede(cliente_admin)
+    switch, ap = await _n_equips(cliente_admin, 2)
+    await cliente_admin.patch(f"{EQUIP}/{ap}", json={"pai_id": switch})
+    r = await cliente_admin.patch(f"{EQUIP}/{ap}", json={"nome": "AP"})  # ausente: mantém
+    assert r.json()["pai_id"] == switch
+    r = await cliente_admin.patch(f"{EQUIP}/{ap}", json={"pai_id": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["pai_id"] is None
+    assert _agendador(app)._registros[ap].alvo.pai_id is None
+
+
+async def test_pai_ciclo_422(cliente_admin: httpx.AsyncClient) -> None:
+    await _subrede(cliente_admin)
+    a, b, c = await _n_equips(cliente_admin, 3)
+    assert (await cliente_admin.patch(f"{EQUIP}/{b}", json={"pai_id": a})).status_code == 200
+    r = await cliente_admin.patch(f"{EQUIP}/{a}", json={"pai_id": b})
+    assert r.status_code == 422
+    assert r.json() == {"detail": "Dependência circular."}
+    # ciclo mais longo: A <- B <- C, A -> C
+    assert (await cliente_admin.patch(f"{EQUIP}/{c}", json={"pai_id": b})).status_code == 200
+    r = await cliente_admin.patch(f"{EQUIP}/{a}", json={"pai_id": c})
+    assert r.json() == {"detail": "Dependência circular."}
+    assert (await cliente_admin.get(f"{EQUIP}/{a}")).json()["pai_id"] is None
+
+
+async def test_pai_proprio_422(cliente_admin: httpx.AsyncClient) -> None:
+    await _subrede(cliente_admin)
+    (a,) = await _n_equips(cliente_admin, 1)
+    r = await cliente_admin.patch(f"{EQUIP}/{a}", json={"pai_id": a})
+    assert r.status_code == 422
+    assert r.json() == {"detail": "Um equipamento não pode depender de si mesmo."}
+
+
+async def test_pai_inexistente_422(cliente_admin: httpx.AsyncClient) -> None:
+    await _subrede(cliente_admin)
+    (a,) = await _n_equips(cliente_admin, 1)
+    for corpo in ({"pai_id": ID_INEXISTENTE}, {"pai_id": "nao-existe"}):
+        r = await cliente_admin.patch(f"{EQUIP}/{a}", json=corpo)
+        assert r.status_code == 422
+        assert r.json() == {"detail": "Equipamento de referência inexistente."}
+    r = await _equip(cliente_admin, nome="x", ip="10.99.0.90", pai_id=ID_INEXISTENTE)
+    assert r.json() == {"detail": "Equipamento de referência inexistente."}
+    r = await cliente_admin.patch(f"{EQUIP}/{a}", json={"pai_id": "x" * 80})
+    assert r.status_code == 422
+
+
+async def test_pai_profundidade_9_422(cliente_admin: httpx.AsyncClient) -> None:
+    await _subrede(cliente_admin)
+    ids = await _n_equips(cliente_admin, 11)
+    # cadeia de 8 saltos: ids[8] -> ... -> ids[0]
+    for filho, pai in zip(ids[1:9], ids[:8], strict=True):
+        r = await cliente_admin.patch(f"{EQUIP}/{filho}", json={"pai_id": pai})
+        assert r.status_code == 200, r.text
+    msg = {"detail": "Cadeia de dependência acima de 8 níveis."}
+    # 9º salto pendurado no fim da cadeia
+    r = await cliente_admin.patch(f"{EQUIP}/{ids[9]}", json={"pai_id": ids[8]})
+    assert (r.status_code, r.json()) == (422, msg)
+    r = await _equip(cliente_admin, nome="novo", ip="10.99.0.91", pai_id=ids[8])
+    assert (r.status_code, r.json()) == (422, msg)
+    # ou a cadeia toda pendurada embaixo de outro (soma os descendentes)
+    r = await cliente_admin.patch(f"{EQUIP}/{ids[0]}", json={"pai_id": ids[10]})
+    assert (r.status_code, r.json()) == (422, msg)
+    # 8 saltos ainda cabem: trocar o pai de um do meio por outro no mesmo nível
+    r = await cliente_admin.patch(f"{EQUIP}/{ids[1]}", json={"pai_id": ids[10]})
+    assert r.status_code == 200, r.text
+
+
+async def test_pai_de_camera_de_gravador_422(
+    app: FastAPI, cliente_admin: httpx.AsyncClient
+) -> None:
+    await _subrede(cliente_admin)
+    nvr, outro = await _n_equips(cliente_admin, 2)
+    cam = await _camera_de_gravador(app, nvr)
+    for corpo in ({"pai_id": outro}, {"pai_id": None}):
+        r = await cliente_admin.patch(f"{EQUIP}/{cam}", json=corpo)
+        assert r.status_code == 422
+        assert r.json() == {"detail": "Vínculo definido pelo gravador."}
+    assert (await cliente_admin.get(f"{EQUIP}/{cam}")).json()["pai_id"] == nvr
+
+
+async def test_pai_visualizador_403(app: FastAPI, cliente_visualizador: httpx.AsyncClient) -> None:
+    r = await cliente_visualizador.patch(f"{EQUIP}/{ID_INEXISTENTE}", json={"pai_id": None})
+    assert r.status_code == 403
+    r = await _equip(cliente_visualizador, pai_id=ID_INEXISTENTE)
+    assert r.status_code == 403
+
+
+async def test_filtro_estado_inalcancavel(cliente_admin: httpx.AsyncClient) -> None:
+    r = await cliente_admin.get(f"{EQUIP}?estado=inalcancavel")
+    assert r.status_code == 200
+    assert r.json() == {"itens": [], "total": 0}

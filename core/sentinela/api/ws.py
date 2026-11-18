@@ -4,7 +4,9 @@ Protocolo (servidor → cliente, JSON):
 
 - ``{"tipo": "snapshot", "classes": [...], "equipamentos": [...], "pendentes": n}`` logo
   após conectar (``pendentes``: descobertas na fila);
-- ``{"tipo": "estado", "id", "estado", "desde"}`` a cada transição;
+- ``{"tipo": "estado", "id", "estado", "desde"}`` a cada transição, com ``"causa"`` nas
+  forçadas; ``estado`` pode ser ``inalcancavel`` (caiu junto com o pai, causa
+  ``"pai:<id do pai>"``, Fase 4) e a liberação volta a ``desconhecido``;
 - ``{"tipo": "latencias", "lote": [[id, ms | null], ...]}`` em lote a cada 5 s;
 - ``{"tipo": "descoberta", "acao": "nova"|"atualizada"|"removida", "id", "classe_sugerida",
   "confianca"}``, ``{"tipo": "pendentes", "total"}`` e ``{"tipo": "varredura", "cidr",

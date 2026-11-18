@@ -19,8 +19,16 @@ cada sonda) não fica registrado: o equipamento passa a ``pausado`` com causa
 Alvo passivo (``checagem == "gravador"``: câmera atrás de um gravador) é registrado, mas
 nunca agendado nem checado: não abre socket (por isso não passa pela Guarda) e não entra no
 orçamento. O estado vem de fora, pela leitura de canais do gravador: ``aplicar_externo``
-(mesma histerese, amostra e transição que uma checagem própria) e ``forcar_desconhecido``
-(gravador sem resposta).
+(mesma histerese, amostra e transição que uma checagem própria), ``forcar_inalcancavel``
+(gravador sem resposta) e ``forcar_desconhecido`` (sem leitura, certificado).
+
+Correlação pelo pai (Fase 4 §5.1): um alvo com ``pai_id`` que iria para ``offline`` vai
+direto a ``inalcancavel`` (causa ``"pai:<pai>"``, uma só publicação) se o pai estiver
+``offline``/``inalcancavel``. Quando o pai entra nesse conjunto, os filhos que caíram para
+``offline`` há no máximo ``JANELA_CORRELACAO_S`` são reclassificados (publicados depois do
+pai). Quando o pai sai dele (volta, é pausado ou removido, por qualquer caminho), os filhos
+``inalcancavel`` vão a ``desconhecido`` e os checados são agendados em até 5 s; o mesmo vale
+para o filho cujo ``pai_id`` muda. A liberação desce a cadeia até ``PROFUNDIDADE_MAX_PAI``.
 """
 
 import asyncio
@@ -37,7 +45,13 @@ from typing import cast
 
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.monitor.checagens import GRAVADOR, Checagem, checagem_para
-from sentinela.monitor.estados import Estado, MaquinaEstados, ResultadoChecagem, Transicao
+from sentinela.monitor.estados import (
+    Estado,
+    MaquinaEstados,
+    ResultadoChecagem,
+    Transicao,
+    causa_pai,
+)
 from sentinela.monitor.gravador import GravadorAmostras, GravadorSql
 from sentinela.monitor.limitador import Limitador
 from sentinela.rede.guarda import DestinoAutorizado, DestinoProibido, Guarda, Protocolo
@@ -55,6 +69,9 @@ FOLGA_DETECCAO = 1.2  # pior caso do jitter
 ESTICAMENTO_MAX_NAO_CRITICOS = 10.0  # 60 s -> 10 min antes de esticar também os críticos
 PRIMEIRA_RAPIDA_S = 5.0  # alvo novo com o laço rodando: primeira checagem em até 5 s
 CAUSA_FORA = "fora_das_subredes"
+JANELA_CORRELACAO_S = 60.0  # filho offline há até 60 s é reclassificado quando o pai cai
+PROFUNDIDADE_MAX_PAI = 8
+CAIDOS = frozenset({Estado.OFFLINE, Estado.INALCANCAVEL})
 
 
 @dataclass
@@ -66,6 +83,7 @@ class Alvo:
     intervalo_s: float
     critico: bool
     estado: Estado
+    pai_id: str | None = None
 
 
 @dataclass
@@ -134,6 +152,9 @@ class Agendador:
         self._rodando = False
         self._sinal: asyncio.Future[None] | None = None
         self._lote: dict[str, float | None] = {}
+        self._filhos: dict[str, set[str]] = {}  # pai -> filhos registrados (índice reverso)
+        self._offline_em: dict[str, float] = {}  # id -> quando entrou em offline (monotônico)
+        self._cascata = 0  # profundidade da liberação em curso (limite: PROFUNDIDADE_MAX_PAI)
 
     # ---- cadastro ---------------------------------------------------------------------------
 
@@ -161,6 +182,7 @@ class Agendador:
             maquina = MaquinaEstados(inicial, self._latencia_instavel_ms)
             reg = _Registro(replace(alvo), destino, checagem, maquina)
             self._registros[alvo.id] = reg
+            self._indexar(alvo.id, alvo.pai_id)
             novos.append(reg)
         if novos:
             self.recalcular()  # antes de agendar: a janela inicial usa o intervalo esticado
@@ -171,9 +193,33 @@ class Agendador:
             self.atualizar_lote(conhecidos)
 
     def remover(self, id: str) -> None:
-        if self._registros.pop(id, None) is not None:
-            self._vigente.pop(id, None)
+        reg = self._registros.get(id)
+        if reg is not None:
+            self._tirar(reg)
+            # o pai sumiu: os filhos inalcançáveis (por ele ou pelo gravador) não ficam presos
+            self.liberar_inalcancavel(sorted(self._filhos.get(id, ())))
             self.recalcular()
+
+    def _indexar(self, id: str, pai_id: str | None) -> None:
+        if pai_id is not None:
+            self._filhos.setdefault(pai_id, set()).add(id)
+
+    def _desindexar(self, id: str, pai_id: str | None) -> None:
+        if pai_id is None:
+            return
+        filhos = self._filhos.get(pai_id)
+        if filhos is not None:
+            filhos.discard(id)
+            if not filhos:
+                del self._filhos[pai_id]
+
+    def _tirar(self, reg: _Registro) -> None:
+        """Tira o registro do agendador (heap, índice reverso e marca de offline)."""
+        id = reg.alvo.id
+        del self._registros[id]
+        self._vigente.pop(id, None)
+        self._desindexar(id, reg.alvo.pai_id)
+        self._offline_em.pop(id, None)
 
     def atualizar(self, alvo: Alvo) -> None:
         self.atualizar_lote((alvo,))
@@ -183,6 +229,7 @@ class Agendador:
         os que passam a ter destino proibido são removidos e pausados (ver ``_recusar``)."""
         desconhecidos: list[Alvo] = []
         alterados: list[_Registro] = []
+        trocou_pai: list[str] = []
         mudou = False
         for alvo in alvos:
             reg = self._registros.get(alvo.id)
@@ -192,11 +239,15 @@ class Agendador:
             mudou = True
             autorizado = self._autorizar(alvo, reg.maquina.estado)
             if autorizado is None:
-                del self._registros[alvo.id]
-                self._vigente.pop(alvo.id, None)
+                if self._registros.get(alvo.id) is reg:
+                    self._tirar(reg)
                 reg.versao += 1  # resultado em voo é descartado
                 continue
             reg.destino, reg.checagem = autorizado
+            if alvo.pai_id != reg.alvo.pai_id:
+                self._desindexar(alvo.id, reg.alvo.pai_id)
+                self._indexar(alvo.id, alvo.pai_id)
+                trocou_pai.append(alvo.id)
             reg.alvo = replace(alvo, estado=reg.maquina.estado)
             reg.versao += 1  # resultado em voo é do destino antigo: descartado
             alterados.append(reg)
@@ -208,6 +259,8 @@ class Agendador:
                     self._agendar_proxima(reg)  # mantém a reconfirmação em 5 s com prioridade
                 else:
                     self._agendar_inicial(reg)
+        # depois do reagendamento acima: a checagem rápida da liberação prevalece
+        self.liberar_inalcancavel(trocou_pai)
         if desconhecidos:
             self.adicionar_lote(desconhecidos)
 
@@ -260,8 +313,40 @@ class Agendador:
             return
         self._registrar(reg, r)
 
+    def pai_caido(self, id: str) -> str | None:
+        """Id do pai direto se ele está registrado e ``offline``/``inalcancavel``."""
+        reg = self._registros.get(id)
+        pai_id = None if reg is None else reg.alvo.pai_id
+        pai = None if pai_id is None else self._registros.get(pai_id)
+        if pai is None or pai.maquina.estado not in CAIDOS:
+            return None
+        return pai_id
+
+    def forcar_inalcancavel(self, ids: Iterable[str], pai_id: str) -> None:
+        """Leva os alvos a ``inalcancavel`` com causa ``"pai:<pai_id>"`` (ex.: gravador sem
+        resposta). Ids desconhecidos, pausados e já inalcançáveis não geram nada."""
+        causa = causa_pai(pai_id)
+        for id in ids:
+            reg = self._registros.get(id)
+            if reg is not None:
+                self._transicao(id, reg.maquina.marcar_inalcancavel(causa), causa=causa)
+
+    def liberar_inalcancavel(self, ids: Iterable[str]) -> None:
+        """``inalcancavel`` → ``desconhecido``; os checados são checados em até 5 s
+        (prioridade normal). Os demais estados ficam como estão."""
+        for id in ids:
+            reg = self._registros.get(id)
+            if reg is None:
+                continue
+            t = reg.maquina.liberar_inalcancavel()
+            if t is None:
+                continue
+            self._transicao(id, t)
+            if reg.checado and not reg.em_voo:
+                self._agendar_inicial(reg, rapido=True)
+
     def forcar_desconhecido(self, ids: Iterable[str], causa: str) -> None:
-        """Leva os alvos a ``desconhecido`` com ``causa`` (ex.: "gravador sem resposta").
+        """Leva os alvos a ``desconhecido`` com ``causa`` (ex.: "sem leitura do gravador").
 
         Publica e grava cada transição; ids desconhecidos, pausados e já desconhecidos não
         geram nada. Os contadores da histerese recomeçam.
@@ -497,8 +582,7 @@ class Agendador:
         except DestinoProibido as e:
             id = reg.alvo.id
             if self._registros.get(id) is reg:
-                del self._registros[id]
-                self._vigente.pop(id, None)
+                self._tirar(reg)
                 reg.versao += 1
                 self._recusar(id, e.motivo, reg.maquina.estado)
                 self.recalcular()
@@ -523,7 +607,14 @@ class Agendador:
             self._gravador.acumular_amostra(id, r, em)
         except Exception:
             log.exception("falha ao acumular amostra (equipamento %s)", id)
-        self._transicao(id, reg.maquina.aplicar(r), em)
+        t = reg.maquina.aplicar(r)
+        if t is not None and t.para is Estado.OFFLINE:
+            pai = self.pai_caido(id)
+            if pai is not None:  # caiu junto com o pai: uma só publicação, já inalcançável
+                causa = causa_pai(pai)
+                reg.maquina.marcar_inalcancavel(causa)
+                t = Transicao(t.de, Estado.INALCANCAVEL, causa)
+        self._transicao(id, t, em, None if t is None else t.causa)
 
     def _transicao(
         self,
@@ -545,6 +636,41 @@ class Agendador:
         self._transicoes.append((id, t, em, causa))
         if self._escritor is None or self._escritor.done():
             self._escritor = asyncio.get_running_loop().create_task(self._escrever())
+        self._correlacionar(id, t)
+
+    def _correlacionar(self, id: str, t: Transicao) -> None:
+        """Efeito da transição de ``id`` nos filhos (depois da publicação dele)."""
+        agora = self._relogio.agora()
+        if t.para is Estado.OFFLINE:
+            self._offline_em[id] = agora
+        else:
+            self._offline_em.pop(id, None)
+        entrou = t.para in CAIDOS and t.de not in CAIDOS
+        saiu = t.de in CAIDOS and t.para not in CAIDOS
+        filhos = sorted(self._filhos.get(id, ()))
+        if not filhos or not (entrou or saiu):
+            return
+        if entrou:
+            causa = causa_pai(id)
+            for f in filhos:
+                reg = self._registros.get(f)
+                desde = self._offline_em.get(f)
+                if (
+                    reg is not None
+                    and reg.maquina.estado is Estado.OFFLINE
+                    and desde is not None
+                    and desde >= agora - JANELA_CORRELACAO_S
+                ):
+                    self._transicao(f, reg.maquina.marcar_inalcancavel(causa), causa=causa)
+            return
+        if self._cascata >= PROFUNDIDADE_MAX_PAI:
+            log.warning("cadeia de dependência acima de %d níveis (%s)", PROFUNDIDADE_MAX_PAI, id)
+            return
+        self._cascata += 1
+        try:
+            self.liberar_inalcancavel(filhos)  # desce a cadeia pelos próprios filhos liberados
+        finally:
+            self._cascata -= 1
 
     async def _escrever(self) -> None:
         while self._transicoes:

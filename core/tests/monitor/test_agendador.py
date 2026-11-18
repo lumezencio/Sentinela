@@ -911,7 +911,7 @@ async def test_sonda_usa_destino_revalidado(rodando: Callable[[Cena], None]) -> 
 
 # ---- Fase 3: alvos passivos do gravador (§9.3, §9.7) ----------------------------------------
 
-CAUSA_GRAVADOR = "gravador sem resposta"
+CAUSA_GRAVADOR = "sem leitura do gravador"
 
 
 def _camera(n: int, estado: Estado = Estado.ONLINE, ip: str | None = None) -> Alvo:
@@ -1056,3 +1056,306 @@ async def test_retomar_gravador_nao_agenda(rodando: Callable[[Cena], None]) -> N
     await cena.relogio.avancar_ate(60)
     assert cena.checagem.execucoes == []
     assert cena.agendador.estado_de("cam1") is Estado.DESCONHECIDO
+
+
+# ---- Fase 4: inalcançável e correlação pelo pai (§5.1) ---------------------------------------
+
+
+def _filho(
+    n: int, pai: str, estado: Estado = Estado.ONLINE, intervalo: float | None = None
+) -> Alvo:
+    return replace(_alvo(n, estado=estado, intervalo=intervalo), pai_id=pai)
+
+
+def _camera_de(n: int, pai: str, estado: Estado = Estado.ONLINE) -> Alvo:
+    return replace(_camera(n, estado=estado), pai_id=pai)
+
+
+def _msgs(cena: Cena, id: str) -> list[tuple[float, str, str | None]]:
+    return [
+        (t, m.dados["estado"], m.dados.get("causa"))
+        for t, m in cena.barramento.do_tipo("estado")
+        if m.dados["id"] == id
+    ]
+
+
+def _indice(cena: Cena, id: str, estado: str) -> int:
+    for i, (_, m) in enumerate(cena.barramento.do_tipo("estado")):
+        if m.dados["id"] == id and m.dados["estado"] == estado:
+            return i
+    raise AssertionError(f"{id} nunca publicou {estado}")
+
+
+def test_alvo_pai_id_padrao_none() -> None:
+    assert _alvo(1).pai_id is None
+
+
+async def test_filho_cai_com_pai_offline_vira_inalcancavel(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    pai = _alvo(1, estado=Estado.OFFLINE)
+    filho = _filho(2, "eq1")
+    cena.checagem.roteiros[pai.ip] = [FALHA]
+    cena.checagem.roteiros[filho.ip] = [FALHA]
+    cena.agendador.adicionar_lote([pai, filho])
+    assert cena.agendador.pai_caido("eq2") == "eq1"
+    rodando(cena)
+    await cena.relogio.avancar_ate(120)
+    await cena.agendador.aguardar_gravacoes()
+    estados = [(e, c) for _, e, c in _msgs(cena, "eq2")]
+    assert estados == [("suspeito", None), ("inalcancavel", "pai:eq1")]  # nunca "offline"
+    assert cena.agendador.estado_de("eq2") is Estado.INALCANCAVEL
+    assert [t.para for id, t, _ in cena.gravador.transicoes if id == "eq2"] == [
+        Estado.SUSPEITO,
+        Estado.INALCANCAVEL,
+    ]
+    assert "pai:eq1" in cena.gravador.causas
+    # inalcançável não reconfirma a cada 5 s
+    vezes = cena.checagem.vezes(filho.ip)
+    assert all(b - a >= 12.0 - 1e-6 for a, b in zip(vezes[2:], vezes[3:], strict=False))
+
+
+async def test_pai_caido_so_para_offline_ou_inalcancavel() -> None:
+    cena = _cena()
+    cena.agendador.adicionar_lote(
+        [
+            _camera(1, estado=Estado.SUSPEITO),
+            _camera_de(2, "cam1"),
+            _camera(3, estado=Estado.INALCANCAVEL),
+            _camera_de(4, "cam3"),
+            _camera_de(5, "nao-existe"),
+            _camera(6),
+        ]
+    )
+    assert cena.agendador.pai_caido("cam2") is None
+    assert cena.agendador.pai_caido("cam4") == "cam3"
+    assert cena.agendador.pai_caido("cam5") is None
+    assert cena.agendador.pai_caido("cam6") is None
+    assert cena.agendador.pai_caido("nao-existe") is None
+
+
+async def test_cadeia_switch_ap_camera(rodando: Callable[[Cena], None]) -> None:
+    cena = _cena()
+    switch = _alvo(1, estado=Estado.OFFLINE)
+    ap = _filho(2, "eq1")
+    camera = _filho(3, "eq2")
+    for a in (switch, ap, camera):
+        cena.checagem.roteiros[a.ip] = [FALHA]
+    cena.agendador.adicionar_lote([switch, ap])
+    rodando(cena)
+    await cena.relogio.avancar_ate(60)
+    cena.agendador.adicionar(camera)  # cai depois do AP
+    await cena.relogio.avancar_ate(120)
+    assert [(e, c) for _, e, c in _msgs(cena, "eq2")] == [
+        ("suspeito", None),
+        ("inalcancavel", "pai:eq1"),
+    ]
+    assert [(e, c) for _, e, c in _msgs(cena, "eq3")] == [
+        ("suspeito", None),
+        ("inalcancavel", "pai:eq2"),  # causa = pai direto
+    ]
+
+
+async def test_pai_cai_ate_60s_depois_reclassifica_filho() -> None:
+    cena = _cena()
+    cena.agendador.adicionar_lote([_camera(1), _camera_de(2, "cam1")])
+    for _ in range(3):
+        cena.agendador.aplicar_externo("cam2", FALHA)
+    assert cena.agendador.estado_de("cam2") is Estado.OFFLINE
+    await cena.relogio.avancar_ate(50)
+    for _ in range(3):
+        cena.agendador.aplicar_externo("cam1", FALHA)
+    await cena.agendador.aguardar_gravacoes()
+    assert [(e, c) for _, e, c in _msgs(cena, "cam2")] == [
+        ("suspeito", None),
+        ("offline", None),
+        ("inalcancavel", "pai:cam1"),
+    ]
+    assert _indice(cena, "cam1", "offline") < _indice(cena, "cam2", "inalcancavel")
+    assert cena.agendador.estado_de("cam2") is Estado.INALCANCAVEL
+    ultima = [t for id, t, _ in cena.gravador.transicoes if id == "cam2"][-1]
+    assert ultima == Transicao(Estado.OFFLINE, Estado.INALCANCAVEL, causa="pai:cam1")
+    assert cena.gravador.causas[-1] == "pai:cam1"
+
+
+async def test_pai_cai_61s_depois_filho_fica_offline() -> None:
+    cena = _cena()
+    cena.agendador.adicionar_lote([_camera(1), _camera_de(2, "cam1")])
+    for _ in range(3):
+        cena.agendador.aplicar_externo("cam2", FALHA)
+    await cena.relogio.avancar_ate(61)
+    for _ in range(3):
+        cena.agendador.aplicar_externo("cam1", FALHA)
+    assert cena.agendador.estado_de("cam1") is Estado.OFFLINE
+    assert cena.agendador.estado_de("cam2") is Estado.OFFLINE
+    assert [e for _, e, _ in _msgs(cena, "cam2")] == ["suspeito", "offline"]
+
+
+async def test_reclassifica_so_filhos_offline() -> None:
+    cena = _cena()
+    cena.agendador.adicionar_lote(
+        [_camera(1), _camera_de(2, "cam1"), _camera_de(3, "cam1", estado=Estado.PAUSADO)]
+    )
+    cena.agendador.aplicar_externo("cam2", FALHA)  # suspeito: segue pela própria histerese
+    for _ in range(3):
+        cena.agendador.aplicar_externo("cam1", FALHA)
+    assert cena.agendador.estado_de("cam2") is Estado.SUSPEITO
+    assert cena.agendador.estado_de("cam3") is Estado.PAUSADO
+    cena.agendador.aplicar_externo("cam2", FALHA)
+    cena.agendador.aplicar_externo("cam2", FALHA)
+    assert cena.agendador.estado_de("cam2") is Estado.INALCANCAVEL
+
+
+async def test_pai_volta_filhos_desconhecido_e_checados_em_5s(
+    rodando: Callable[[Cena], None],
+) -> None:
+    cena = _cena()
+    pai = _alvo(1, estado=Estado.OFFLINE)
+    filho = _filho(2, "eq1", estado=Estado.INALCANCAVEL, intervalo=600.0)
+    cena.checagem.roteiros[pai.ip] = [OK]
+    cena.checagem.roteiros[filho.ip] = [OK]
+    cena.agendador.adicionar_lote([pai, filho])
+    rodando(cena)
+    await cena.relogio.avancar_ate(120)
+    volta = [t for t, e, _ in _msgs(cena, "eq1") if e == "online"]
+    assert len(volta) == 1
+    msgs = _msgs(cena, "eq2")
+    assert [(e, c) for _, e, c in msgs] == [("desconhecido", None), ("online", None)]
+    assert msgs[0][0] == pytest.approx(volta[0])
+    assert _indice(cena, "eq1", "online") < _indice(cena, "eq2", "desconhecido")
+    checagem = [t for t in cena.checagem.vezes(filho.ip) if t >= volta[0]]
+    assert checagem and checagem[0] - volta[0] <= 5.0 + 1e-6
+    assert msgs[1][0] == pytest.approx(checagem[0])  # "online" só depois da checagem
+    pedidos = cena.limitador.pedidos
+    assert all(not prioritario for _, prioritario in pedidos)  # prioridade normal
+
+
+async def _filho_preso(rodando: Callable[[Cena], None]) -> Cena:
+    """Pai (passivo) offline com filhos inalcançáveis (um checado); laço rodando."""
+    cena = _cena()
+    filho = _filho(2, "cam1", estado=Estado.INALCANCAVEL, intervalo=600.0)
+    cena.checagem.roteiros[filho.ip] = [OK]
+    cena.agendador.adicionar_lote(
+        [_camera(1, estado=Estado.OFFLINE), filho, _camera_de(3, "cam1", Estado.INALCANCAVEL)]
+    )
+    rodando(cena)
+    await cena.relogio.avancar_ate(30)
+    assert cena.agendador.estado_de("eq2") is Estado.INALCANCAVEL
+    return cena
+
+
+async def _confere_liberado(cena: Cena, inicio: float) -> None:
+    assert [e for _, e, _ in _msgs(cena, "eq2")][:1] == ["desconhecido"]
+    await cena.relogio.avancar_ate(inicio + 6)
+    vezes = [t for t in cena.checagem.vezes(_alvo(2).ip) if t >= inicio]
+    assert vezes and vezes[0] - inicio <= 5.0 + 1e-6
+    assert cena.agendador.estado_de("eq2") is Estado.ONLINE
+
+
+async def test_remover_pai_libera_filhos(rodando: Callable[[Cena], None]) -> None:
+    cena = await _filho_preso(rodando)
+    cena.agendador.remover("cam1")
+    assert cena.agendador.estado_de("cam3") is Estado.DESCONHECIDO
+    await _confere_liberado(cena, 30)
+
+
+async def test_trocar_pai_id_libera_filho(rodando: Callable[[Cena], None]) -> None:
+    cena = await _filho_preso(rodando)
+    cena.agendador.atualizar(_filho(2, "outro", estado=Estado.INALCANCAVEL, intervalo=600.0))
+    cena.agendador.atualizar(replace(_camera(3), pai_id=None))
+    assert cena.agendador.estado_de("cam3") is Estado.DESCONHECIDO
+    await _confere_liberado(cena, 30)
+
+
+async def test_atualizar_sem_trocar_pai_nao_libera(rodando: Callable[[Cena], None]) -> None:
+    cena = await _filho_preso(rodando)
+    cena.agendador.atualizar(_camera_de(3, "cam1"))
+    assert cena.agendador.estado_de("cam3") is Estado.INALCANCAVEL
+
+
+async def test_pausar_pai_libera_filhos(rodando: Callable[[Cena], None]) -> None:
+    cena = await _filho_preso(rodando)
+    cena.agendador.pausar("cam1")
+    assert cena.agendador.estado_de("cam3") is Estado.DESCONHECIDO
+    await _confere_liberado(cena, 30)
+
+
+async def test_liberacao_desce_a_cadeia() -> None:
+    cena = _cena()
+    cena.agendador.adicionar_lote(
+        [
+            _camera(1, estado=Estado.OFFLINE),
+            _camera_de(2, "cam1", Estado.INALCANCAVEL),
+            _camera_de(3, "cam2", Estado.INALCANCAVEL),
+        ]
+    )
+    cena.agendador.aplicar_externo("cam1", OK)
+    cena.agendador.aplicar_externo("cam1", OK)
+    assert cena.agendador.estado_de("cam1") is Estado.ONLINE
+    assert cena.agendador.estado_de("cam2") is Estado.DESCONHECIDO
+    assert cena.agendador.estado_de("cam3") is Estado.DESCONHECIDO
+
+
+async def test_ciclo_de_pais_nao_trava() -> None:
+    """Dado editado à mão com ciclo: a correlação termina (sem recursão infinita)."""
+    cena = _cena()
+    cena.agendador.adicionar_lote(
+        [
+            _camera_de(1, "cam2", Estado.INALCANCAVEL),
+            _camera_de(2, "cam1", Estado.INALCANCAVEL),
+        ]
+    )
+    cena.agendador.aplicar_externo("cam1", OK)
+    cena.agendador.aplicar_externo("cam1", OK)
+    assert cena.agendador.estado_de("cam1") is Estado.ONLINE
+    assert cena.agendador.estado_de("cam2") is Estado.DESCONHECIDO
+    for _ in range(3):
+        cena.agendador.aplicar_externo("cam1", FALHA)
+    assert cena.agendador.estado_de("cam1") is Estado.OFFLINE
+
+
+async def test_forcar_e_liberar_inalcancavel() -> None:
+    cena = _cena()
+    cena.agendador.adicionar_lote(
+        [_camera(1), _camera(2, estado=Estado.PAUSADO), _camera(3, estado=Estado.OFFLINE)]
+    )
+    cena.agendador.forcar_inalcancavel(["cam1", "cam2", "cam3", "nao-existe"], "nvr")
+    await cena.agendador.aguardar_gravacoes()
+    assert [(e, c) for _, e, c in _msgs(cena, "cam1")] == [("inalcancavel", "pai:nvr")]
+    assert cena.agendador.estado_de("cam2") is Estado.PAUSADO
+    assert cena.agendador.estado_de("cam3") is Estado.INALCANCAVEL
+    cena.agendador.forcar_inalcancavel(["cam1"], "nvr")  # já inalcançável: nada novo
+    assert len(_msgs(cena, "cam1")) == 1
+    cena.agendador.liberar_inalcancavel(["cam1", "cam2", "nao-existe"])
+    assert [e for _, e, _ in _msgs(cena, "cam1")] == ["inalcancavel", "desconhecido"]
+    assert cena.agendador.estado_de("cam2") is Estado.PAUSADO
+    assert cena.agendador.estado_de("cam3") is Estado.INALCANCAVEL
+
+
+def test_estado_inicial_inalcancavel_vira_desconhecido() -> None:
+    from sentinela.db.modelos import Equipamento
+    from sentinela.monitor.montagem import estado_inicial
+
+    eq = Equipamento(estado="inalcancavel", pausado=False)
+    assert estado_inicial(eq) is Estado.DESCONHECIDO
+    eq.pausado = True
+    assert estado_inicial(eq) is Estado.PAUSADO
+    assert estado_inicial(Equipamento(estado="offline", pausado=False)) is Estado.OFFLINE
+
+
+def test_alvo_de_passa_pai_id() -> None:
+    from sentinela.db.modelos import Classe, Equipamento
+    from sentinela.monitor.montagem import alvo_de
+
+    eq = Equipamento(
+        id="c1",
+        ip="10.99.0.9",
+        porta=None,
+        checagem="gravador",
+        estado="online",
+        pausado=False,
+        pai_id="nvr1",
+    )
+    classe = Classe(intervalo_s=60, critica=False)
+    assert alvo_de(eq, classe).pai_id == "nvr1"
