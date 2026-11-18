@@ -19,6 +19,8 @@ from sentinela.api import (
     auth,
     classes,
     config_descoberta,
+    config_geral,
+    config_telegram,
     descobertas,
     equipamentos,
     fontes,
@@ -328,5 +330,7 @@ def criar_app(
     app.include_router(silencios.router)
     app.include_router(alertas.router)
     app.include_router(config_descoberta.router)
+    app.include_router(config_geral.router)
+    app.include_router(config_telegram.router)
     app.include_router(ws.router)
     return app

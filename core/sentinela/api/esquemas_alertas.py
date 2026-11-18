@@ -1,9 +1,18 @@
 """Esquemas da API de alertas (silêncios e manutenção)."""
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, StringConstraints, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from sentinela.alertas.silencios import Atalho
 
@@ -74,3 +83,54 @@ class PaginaAlertas(BaseModel):
     total: int
     pagina: int
     por_pagina: int
+
+
+_TOKEN = re.compile(r"\d{5,12}:[A-Za-z0-9_-]{30,50}", re.ASCII)
+_CHAT = re.compile(r"-?\d{1,20}|@[A-Za-z0-9_]{5,32}", re.ASCII)
+
+
+class TelegramSaida(BaseModel):
+    """Nunca carrega o token: só se ele existe."""
+
+    token_definido: bool
+    chats: list[str]
+    incluir_ip: bool
+    ultimo_envio: datetime | None
+    ultimo_erro: str | None
+
+
+class TelegramEdicao(BaseModel):
+    """``token`` ausente/nulo mantém o atual; ``""`` apaga."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str | None = None
+    chats: list[str] | None = Field(default=None, max_length=10)
+    incluir_ip: bool | None = None
+
+    @field_validator("token")
+    @classmethod
+    def _token(cls, v: str | None) -> str | None:
+        if v and not _TOKEN.fullmatch(v):
+            raise ValueError("token inválido")  # sem eco do valor
+        return v
+
+    @field_validator("chats")
+    @classmethod
+    def _chats(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        if any(not _CHAT.fullmatch(c) for c in v):
+            raise ValueError("chat inválido")
+        if len(set(v)) != len(v):
+            raise ValueError("chats repetidos")
+        return v
+
+
+class TesteSaida(BaseModel):
+    ok: bool
+    erro: str | None
+
+
+class GeralSaida(BaseModel):
+    fuso: str
