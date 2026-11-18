@@ -1,0 +1,574 @@
+/* Telão /parede: sempre escuro, letras que crescem com a tela, cursor escondido, nada
+   clicável. CSS compatível com o Chromium 63 das TVs Tizen 5: sem clamp()/min()/max(),
+   sem "gap" em flex (só em grid), sem "inset". Espaçamentos em múltiplos de 4 px. */
+:root {
+  color-scheme: dark;
+  --fundo: #0e1016;
+  --superficie: #161a22;
+  --superficie-2: #1d222d;
+  --borda: #2b3140;
+  --texto: #e8ebf2;
+  --texto-suave: #a9b0c0;
+  --acento: #68c7bc;
+  --online: #4ca878;
+  --instavel: #d9a441;
+  --offline: #d97373;
+  --pausado: #7a8194;
+  --desconhecido: #8a90a0;
+  --fonte: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Inter", "Helvetica Neue",
+    Arial, sans-serif;
+  --fonte-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  --margem: 16px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  cursor: none;
+}
+
+html {
+  /* 360 px → ~14 px; 1920 px (TV) → ~21 px */
+  font-size: calc(12px + 0.48vw);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--fundo);
+  color: var(--texto);
+  font-family: var(--fonte);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+h1,
+h2,
+p,
+ul {
+  margin: 0;
+}
+
+ul {
+  padding: 0;
+  list-style: none;
+}
+
+.so-leitor {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.icone-status {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+}
+
+.st-online { color: var(--online); }
+.st-instavel { color: var(--instavel); }
+.st-offline { color: var(--offline); }
+.st-inalcancavel,
+.st-pausado { color: var(--pausado); }
+.st-desconhecido { color: var(--desconhecido); }
+
+.pr-http {
+  display: none;
+  color: var(--texto-suave);
+  font-size: 0.75rem;
+}
+
+.pr-sem-cifra .pr-http {
+  display: block;
+}
+
+.pr-marca {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pr-logo {
+  flex: none;
+  width: 1.6em;
+  height: 1.6em;
+  margin-right: 8px;
+}
+
+/* ---------- carregando ---------- */
+.pr-carregando {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--margem);
+  color: var(--texto-suave);
+  font-size: 1.25rem;
+}
+
+/* ---------- emparelhamento ---------- */
+.pr-codigo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--margem);
+}
+
+.pr-cartao {
+  display: grid;
+  grid-gap: 16px;
+  gap: 16px;
+  justify-items: center;
+  width: 100%;
+  max-width: 880px;
+  padding: 32px 24px;
+  border: 1px solid var(--borda);
+  border-radius: 16px;
+  background: var(--superficie);
+  text-align: center;
+}
+
+.pr-codigo-titulo {
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+.pr-codigo-valor {
+  min-height: 1.2em;
+  color: #ffffff;
+  font-family: var(--fonte-mono);
+  font-size: calc(28px + 4vw);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.pr-instrucao {
+  color: var(--acento);
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+
+.pr-dica {
+  max-width: 40em;
+  color: var(--texto-suave);
+  font-size: 1rem;
+}
+
+.pr-status {
+  min-height: 1.4em;
+  color: var(--texto);
+  font-size: 1rem;
+}
+
+/* ---------- telão ---------- */
+.pr-telao {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.pr-topo {
+  display: grid;
+  grid-gap: 8px 24px;
+  gap: 8px 24px;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  padding: 12px var(--margem);
+  border-bottom: 1px solid var(--borda);
+  background: var(--superficie);
+}
+
+.pr-topo .pr-marca {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* o nome da TV fica numa linha própria, abaixo de "Sentinela" (nome longo quebra inteiro) */
+.pr-nome {
+  flex-basis: 100%;
+  color: var(--texto-suave);
+  font-weight: 500;
+}
+
+.pr-hora {
+  grid-column: 2;
+  grid-row: 1;
+  text-align: right;
+}
+
+.pr-relogio {
+  font-family: var(--fonte-mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.pr-contadores {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: -4px -12px;
+}
+
+.pr-conta {
+  display: flex;
+  align-items: baseline;
+  margin: 4px 12px;
+  font-size: 1.125rem;
+  white-space: nowrap;
+}
+
+.pr-conta .icone-status {
+  align-self: center;
+  margin-right: 8px;
+}
+
+.pr-conta strong {
+  margin-right: 4px;
+  color: var(--texto);
+  font-size: 1.375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pr-conta span {
+  color: var(--texto-suave);
+}
+
+/* telas largas (TV): uma linha só; o nome quebra antes de empurrar contadores e relógio */
+@media (min-width: 1440px) {
+  .pr-topo {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .pr-contadores {
+    flex-wrap: nowrap;
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .pr-hora {
+    grid-column: 3;
+  }
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --margem: 24px;
+  }
+}
+
+.pr-palco {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pr-teia,
+.pr-org {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+/* a Teia gira sozinha; o mouse não mexe nela */
+.pr-teia {
+  pointer-events: none;
+}
+
+.pr-teia canvas {
+  display: block;
+}
+
+.teia-rotulos {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.teia-rotulo {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.teia-rotulo > span {
+  display: block;
+  padding: 2px 12px;
+  border-radius: 999px;
+  background: rgba(14, 16, 22, 0.6);
+  color: #eef0f7;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.45;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 14px)) scale(var(--escala, 1));
+  transform-origin: 50% 100%;
+}
+
+.teia-rotulo.abaixo > span {
+  transform: translate(-50%, 14px) scale(var(--escala, 1));
+  transform-origin: 50% 0;
+}
+
+.teia-rotulo.servidor > span {
+  background: transparent;
+  color: #c9cff8;
+  font-size: 0.75rem;
+  letter-spacing: 0.2em;
+  transform: translate(-50%, 30px) scale(var(--escala, 1));
+  transform-origin: 50% 0;
+}
+
+/* ---------- Organograma do telão (letras grandes, rolagem automática) ---------- */
+.pr-org {
+  overflow: hidden;
+  padding: 16px var(--margem);
+}
+
+.pr-org-classe {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--cor-classe, var(--acento));
+  border-radius: 12px;
+  background: var(--superficie);
+}
+
+.pr-org-cabeca {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: -4px -8px 8px;
+}
+
+.pr-org-titulo {
+  display: flex;
+  align-items: center;
+  margin: 4px 8px;
+  font-size: 1.25rem;
+}
+
+.pr-pino {
+  flex: none;
+  width: 0.6em;
+  height: 0.6em;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--cor-classe, var(--acento));
+}
+
+.pr-org-resumo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 4px 0;
+  font-size: 1rem;
+}
+
+.pr-org-total,
+.pr-org-conta {
+  margin: 0 8px;
+  white-space: nowrap;
+}
+
+.pr-org-total {
+  color: var(--texto-suave);
+}
+
+.pr-org-conta .icone-status {
+  margin-right: 4px;
+}
+
+.pr-org-conta span {
+  color: var(--texto);
+}
+
+.pr-org-itens {
+  display: grid;
+  grid-gap: 8px 16px;
+  gap: 8px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(13em, 1fr));
+}
+
+.pr-org-item {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  font-size: 1.0625rem;
+}
+
+.pr-org-item .icone-status {
+  margin: 0.2em 8px 0 0;
+}
+
+.pr-org-texto {
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.pr-org-nome {
+  color: var(--texto);
+}
+
+.pr-org-estado {
+  display: block;
+  color: var(--texto-suave);
+  font-size: 0.875rem;
+}
+
+.pr-org-vazio {
+  padding: 32px;
+  color: var(--texto-suave);
+  font-size: 1.25rem;
+  text-align: center;
+}
+
+/* ---------- faixa de alertas ---------- */
+.pr-faixa {
+  padding: 8px var(--margem);
+  border-top: 1px solid var(--borda);
+  background: var(--superficie);
+}
+
+.pr-alertas {
+  display: flex;
+  flex-wrap: wrap;
+  margin: -4px;
+}
+
+.pr-alerta {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  max-width: 100%;
+  margin: 4px;
+  padding: 4px 12px;
+  border: 1px solid rgba(217, 115, 115, 0.5);
+  border-radius: 8px;
+  background: rgba(217, 115, 115, 0.12);
+  font-size: 1rem;
+}
+
+.pr-al-instavel {
+  border-color: rgba(217, 164, 65, 0.5);
+  background: rgba(217, 164, 65, 0.12);
+}
+
+.pr-alerta .icone-status {
+  margin: 0.2em 8px 0 0;
+  color: var(--offline);
+}
+
+.pr-al-instavel .icone-status {
+  color: var(--instavel);
+}
+
+.pr-al-corpo {
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.pr-al-hora {
+  color: var(--texto-suave);
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.pr-al-mais {
+  border-color: var(--borda);
+  background: var(--superficie-2);
+  color: var(--texto-suave);
+}
+
+.pr-sem-alertas {
+  padding: 4px 0;
+  color: var(--texto-suave);
+  font-size: 1rem;
+}
+
+/* ---------- sem conexão: bem visível, e o resto apagado (nunca "tudo verde" congelado) ---------- */
+.pr-sem-conexao {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  width: calc(100% - 32px);
+  max-width: 880px;
+  padding: 24px;
+  border: 2px solid var(--offline);
+  border-radius: 16px;
+  background: #3a1a1f;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  font-size: 1.125rem;
+  transform: translate(-50%, -50%);
+}
+
+.pr-sem-conexao .icone-status {
+  width: 2.5em;
+  height: 2.5em;
+  margin-right: 16px;
+  color: var(--offline);
+}
+
+.pr-sem-conexao strong {
+  display: block;
+  font-size: 1.75rem;
+  line-height: 1.2;
+}
+
+.pr-sem-conexao span {
+  display: block;
+  margin-top: 4px;
+  color: #f1d5d5;
+}
+
+.pr-desconectado .pr-palco,
+.pr-desconectado .pr-contadores,
+.pr-desconectado .pr-faixa,
+.pr-desconectado .pr-codigo-valor {
+  opacity: 0.3;
+  filter: grayscale(1);
+}

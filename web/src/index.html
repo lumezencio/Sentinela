@@ -868,6 +868,59 @@
       <p class="alerta" id="tg-ultimo-erro" x-show="tg.ultimoErro"><strong>Último erro:</strong> <span x-text="tg.ultimoErro"></span></p>
     </section>
 
+    <section class="cfg-bloco" id="cfg-teloes" aria-labelledby="cfg-tel-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-tel-titulo">Telões</h2>
+          <p class="dica">Abra o endereço do Sentinela seguido de <span class="mono">/parede</span> na TV: ela mostra um código de 8 caracteres. Digite-o aqui e dê um nome à tela. O telão só recebe nome, classe e estado dos equipamentos; nunca IP, MAC ou fabricante.</p>
+        </div>
+      </div>
+      <p class="alerta alerta-ok" id="tel-aviso" role="status" x-show="telAviso" x-text="telAviso"></p>
+      <p class="alerta" id="tel-erro-geral" role="alert" x-show="telErroGeral" x-text="telErroGeral"></p>
+      <form class="cfg-tel-form" @submit.prevent="aprovarTelao" novalidate autocomplete="off">
+        <div class="campo-form">
+          <label for="tel-codigo">Código da TV</label>
+          <input id="tel-codigo" class="mono" type="text" inputmode="text" autocapitalize="characters" spellcheck="false" maxlength="16" placeholder="K7MQ-2XDP" x-model="telForm.codigo" aria-describedby="tel-codigo-erro" :aria-invalid="telInvalidoCodigo">
+          <p class="campo-erro" id="tel-codigo-erro" role="alert" x-show="telErros.codigo" x-text="telErros.codigo"></p>
+        </div>
+        <div class="campo-form">
+          <label for="tel-nome">Nome da tela</label>
+          <input id="tel-nome" type="text" spellcheck="false" maxlength="64" placeholder="TV Portaria" x-model="telForm.nome" aria-describedby="tel-nome-erro" :aria-invalid="telInvalidoNome">
+          <p class="campo-erro" id="tel-nome-erro" role="alert" x-show="telErros.nome" x-text="telErros.nome"></p>
+        </div>
+        <div class="cfg-tel-enviar">
+          <button class="botao botao-primario" type="submit" :disabled="telEnviando">Aprovar</button>
+        </div>
+      </form>
+
+      <h3 class="cfg-tel-subtitulo">Telões aprovados</h3>
+      <p class="vazio cfg-tel-vazio" x-show="telCarregando" x-cloak>Carregando…</p>
+      <p class="dica" id="tel-vazio" x-show="telSemTeloes" x-cloak>Nenhum telão aprovado ainda.</p>
+      <ul class="cfg-tel-lista" id="tel-lista">
+        <template x-for="t in telLinhas" :key="t.id">
+          <li class="cfg-tel-linha" :class="t.ativa ? '' : 'cfg-inativa'" :data-id="t.id">
+            <div class="cfg-tel-info">
+              <p class="cfg-tel-nome"><strong x-text="t.nome"></strong> <span class="selo" :class="t.http ? 'selo-alerta' : 'selo-canal'" x-text="t.modo"></span> <span class="selo" x-show="!t.ativa" x-text="t.situacao"></span></p>
+              <p class="dica"><span x-text="t.criado"></span> · <span x-text="t.acesso"></span></p>
+            </div>
+            <button class="botao botao-fantasma botao-remover" type="button" x-show="t.ativa" :disabled="telEnviando" :aria-label="t.rotuloRevogar" @click="revogarTelao(t.id)">Revogar</button>
+          </li>
+        </template>
+      </ul>
+
+      <div class="cfg-tel-http">
+        <button class="chave" id="tel-http" type="button" role="switch" :aria-checked="telHttpMarcado" :disabled="telEnviando" @click="alternarParedesHttp">
+          <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+          <span class="chave-rotulo">Permitir telão sem HTTPS</span>
+        </button>
+        <p class="dica">Desligado por padrão. Algumas TVs recusam o certificado do Sentinela; com a chave ligada, o telão também abre pela porta 80 (<span class="mono">http://</span>), sem cifra. O resto do painel continua só em HTTPS.</p>
+        <div class="alerta cfg-tel-hsts" id="tel-aviso-hsts" x-show="telHttp" x-cloak>
+          <p><strong>Conexão sem cifra.</strong> Na rede local, o que o telão mostra pode ser lido por quem estiver nela. O token da TV fica preso ao IP dela: reserve esse IP no roteador.</p>
+          <p><strong>HSTS:</strong> uma TV que já abriu o Sentinela por HTTPS fica presa ao HTTPS e não aceita a versão sem cifra até que os dados de navegação dela sejam apagados. Na TV que recusa o certificado, abra direto o endereço com <span class="mono">http://</span>.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="cfg-bloco" aria-labelledby="cfg-fuso-titulo">
       <div class="cfg-bloco-cabeca">
         <div>

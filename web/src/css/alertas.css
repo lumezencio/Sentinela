@@ -394,3 +394,77 @@ html[data-aba="configuracoes"] {
     flex: 1 1 auto;
   }
 }
+
+/* ---------- Configurações: Telões ---------- */
+.cfg-tel-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  max-width: 640px;
+}
+
+@media (min-width: 768px) {
+  .cfg-tel-form {
+    grid-template-columns: minmax(0, 200px) minmax(0, 1fr) auto;
+    align-items: start;
+  }
+  .cfg-tel-enviar {
+    padding-top: 28px; /* alinha o botão com os campos (abaixo do rótulo) */
+  }
+}
+
+.cfg-tel-subtitulo {
+  margin: 24px 0 8px;
+  font-size: 15px;
+}
+
+.cfg-tel-lista {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cfg-tel-linha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--superficie);
+}
+
+.cfg-tel-info {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cfg-tel-info p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cfg-tel-nome .selo {
+  margin-left: 4px;
+}
+
+.cfg-tel-http {
+  display: grid;
+  gap: 8px;
+  max-width: 760px;
+  margin-top: 24px;
+}
+
+.cfg-tel-hsts {
+  display: grid;
+  gap: 8px;
+}
+
+.cfg-tel-hsts p {
+  margin: 0;
+}

@@ -1,0 +1,5 @@
+# bundles gerados por build/construir-teia.sh: byte a byte (o .sha256 tem de bater), sem
+# conversão de fim de linha nem diff de texto
+*.bundle.js binary
+*.sha256 -text
+LICENSES-teia-parede.txt -text

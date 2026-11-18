@@ -13,6 +13,7 @@ URL local e ``SENTINELA_SMOKE_COMPOSE_LOCAL=1`` (senão o cenário é pulado).
 import gzip
 import hashlib
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -2028,3 +2029,355 @@ def test_texto_hostil_do_alerta_vira_texto_e_cabe_em_360(
         assert dialogos == [] and erros == [], (dialogos, erros)
     finally:
         contexto.close()
+
+
+# ---- Fase 4: telão /parede e Configurações → Telões ------------------------------------------
+
+PAREDE = Path(__file__).resolve().parents[1] / "src" / "parede"
+CODIGO_TELAO = re.compile(r"^[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}$")
+SEM_WEBGL = ["--disable-webgl", "--disable-3d-apis"]
+
+
+def abrir_teloes(page: Page) -> Any:
+    secao = abrir_configuracoes(page)
+    cartao = secao.locator("#cfg-teloes")
+    expect(cartao).to_be_visible()
+    return cartao
+
+
+def codigo_da_tv(tv: Page) -> str:
+    valor = tv.locator("#pr-codigo-valor")
+    expect(valor).to_have_text(CODIGO_TELAO, timeout=15_000)
+    return valor.inner_text().strip()
+
+
+def aprovar_pelo_painel(admin: Page, codigo: str, nome: str) -> None:
+    cartao = abrir_teloes(admin)
+    # minúsculas e espaço no lugar do hífen: a tela normaliza como o servidor
+    cartao.get_by_label("Código da TV").fill(codigo.lower().replace("-", " "))
+    cartao.get_by_label("Nome da tela").fill(nome)
+    cartao.get_by_role("button", name="Aprovar").click()
+    expect(cartao.locator("#tel-aviso")).to_contain_text(f"“{nome}” aprovado", timeout=10_000)
+    expect(cartao.locator("#tel-lista li", has_text=nome).first).to_be_visible()
+
+
+def esperar_telao(tv: Page, timeout: float = 15_000) -> None:
+    expect(tv.locator("body")).to_have_attribute("data-modo", "telao", timeout=timeout)
+    expect(tv.locator("#pr-n-online")).not_to_have_text("0", timeout=timeout)
+
+
+def parear(browser: Browser, admin: Page, alvo: Alvo, nome: str) -> Any:
+    """Novo contexto de TV emparelhado pelo painel; devolve ``(contexto, página)``."""
+    contexto = browser.new_context(
+        viewport={"width": 1920, "height": 1080}, ignore_https_errors=True, base_url=alvo.url
+    )
+    tv = contexto.new_page()
+    tv.goto("/parede/")
+    aprovar_pelo_painel(admin, codigo_da_tv(tv), nome)
+    esperar_telao(tv, timeout=10_000)  # a TV consulta a cada 5 s: entra sozinha
+    return contexto, tv
+
+
+def revogar_via_api(admin: Page, nome: str) -> None:
+    r = api_json(admin, "GET", "/paredes")
+    for p in r["dados"]:
+        if p["nome"] == nome and p["ativa"]:
+            assert api_json(admin, "DELETE", f"/paredes/{p['id']}")["status"] == 204
+
+
+@pytest.fixture(scope="module")
+def telao_pareado(browser: Browser, alvo: Alvo) -> Iterator[dict[str, Any]]:
+    """Um telão emparelhado para o módulo (o servidor limita 10 pedidos por IP por hora):
+    devolve o ``storage_state`` (com o cookie HttpOnly do token) para abrir outros contextos."""
+    admin_ctx = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    admin = admin_ctx.new_page()
+    entrar(admin, alvo)
+    contexto, _tv = parear(browser, admin, alvo, "TV Smoke")
+    estado = contexto.storage_state()
+    contexto.close()
+    try:
+        yield {"estado": estado, "nome": "TV Smoke"}
+    finally:
+        revogar_via_api(admin, "TV Smoke")
+        admin_ctx.close()
+
+
+def navegador_sem_webgl(browser_type: Any, browser_type_launch_args: dict[str, Any]) -> Any:
+    args = [*browser_type_launch_args.get("args", []), *SEM_WEBGL]
+    return browser_type.launch(**{**browser_type_launch_args, "args": args})
+
+
+def texto_e_dom(page: Page) -> str:
+    return str(page.evaluate("() => document.body.innerText + document.documentElement.outerHTML"))
+
+
+def test_bundles_do_telao_conferem_sha256() -> None:
+    # os bundles commitados são os que os .sha256 declaram (o Dockerfile confere igual)
+    for nome in ("parede.bundle.js", "teia-parede.bundle.js"):
+        esperado, arquivo = (PAREDE / f"{nome}.sha256").read_text(encoding="ascii").split()
+        assert arquivo == nome
+        assert hashlib.sha256((PAREDE / nome).read_bytes()).hexdigest() == esperado
+    assert not list(PAREDE.glob("*.map"))
+
+
+def test_parede_mostra_codigo_e_instrucao(page: Page) -> None:
+    erros = vigiar_console(page)
+    page.goto("/parede/")
+    codigo_da_tv(page)
+    expect(page.get_by_text("Aprove em Configurações → Telões")).to_be_visible()
+    expect(page.locator("body")).to_have_attribute("data-modo", "codigo")
+    expect(page.locator(".pr-http").first).to_be_hidden()  # HTTPS: sem o aviso de HTTP
+    expect(page).to_have_title("Sentinela · Emparelhar telão")
+    assert erros == [], erros
+
+
+def test_parede_emparelha_e_mostra_contadores_e_relogio(
+    page: Page, browser: Browser, alvo: Alvo
+) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    contexto, tv = parear(browser, page, alvo, "TV Portaria")
+    try:
+        erros_tv = vigiar_console(tv)
+        expect(tv.locator("#pr-nome")).to_have_text("TV Portaria")
+        expect(tv.locator("#pr-relogio")).to_have_text(re.compile(r"^\d{2}:\d{2}$"))
+        expect(tv).to_have_title("Sentinela · Telão")
+        soma = tv.evaluate(
+            "() => ['online', 'instavel', 'offline', 'inalcancavel']"
+            ".reduce((s, n) => s + Number(document.getElementById('pr-n-' + n).textContent), 0)"
+        )
+        assert 0 < soma <= TOTAL_DEMO, soma
+        # rótulo de texto em cada contador (estado nunca só por cor)
+        for grupo in ("online", "instavel", "offline", "inalcancavel"):
+            expect(tv.locator(f"#pr-r-{grupo}")).not_to_be_empty()
+        # headless tem WebGL por software: Teia reduzida, sem partículas (ou, se a cena ficar
+        # lenta demais, já o Organograma)
+        corpo = tv.locator("body")
+        expect(corpo).to_have_attribute("data-visao", re.compile("^(teia|organograma)$"))
+        if corpo.get_attribute("data-visao") == "teia":
+            expect(tv.locator("#pr-teia")).to_have_attribute(
+                "data-particulas", "nao", timeout=15_000
+            )
+        # o painel lista o telão como ativo, por HTTPS
+        linha = page.locator("#tel-lista li", has_text="TV Portaria").first
+        expect(linha).to_contain_text("HTTPS")
+        tv.wait_for_timeout(1000)
+        assert erros_tv == [], erros_tv
+    finally:
+        revogar_via_api(page, "TV Portaria")
+        contexto.close()
+    assert erros == [], erros
+
+
+def test_parede_nunca_mostra_ip_nem_mac(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    # sem WebGL o telão mostra o Organograma: os nomes de todos os equipamentos vão ao DOM
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        quadros: list[str] = []
+        tv.on("websocket", lambda ws: ws.on("framereceived", lambda q: quadros.append(str(q))))
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        expect(tv.locator("#pr-org .pr-org-item").first).to_be_visible()
+        tv.wait_for_timeout(2000)  # algumas mensagens de estado ao vivo
+        texto = texto_e_dom(tv)
+        recebido = "".join(quadros)
+        assert quadros, "nenhum quadro do WebSocket"
+        for proibido in ("10.99.", "02:00:00", '"ip"', '"mac"', "fabricante", "latencia"):
+            assert proibido not in texto, proibido
+            assert proibido not in recebido, proibido
+        assert erros == [], erros
+    finally:
+        navegador.close()
+
+
+def test_parede_revogar_volta_ao_codigo(page: Page, browser: Browser, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    contexto, tv = parear(browser, page, alvo, "TV Revogar")
+    try:
+        cartao = page.locator("#cfg-teloes")
+        linha = cartao.locator("#tel-lista li", has_text="TV Revogar").first
+        linha.get_by_role("button", name="Revogar TV Revogar").click()
+        dialogo = page.get_by_role("dialog", name="Revogar “TV Revogar”?")
+        dialogo.get_by_role("button", name="Revogar").click()
+        expect(cartao.locator("#tel-aviso")).to_have_text("“TV Revogar” revogado.")
+        expect(linha).to_contain_text("Revogado")
+        # a TV cai na hora (WS 4401) e volta a mostrar um código novo
+        expect(tv.locator("body")).to_have_attribute("data-modo", "codigo", timeout=10_000)
+        codigo_da_tv(tv)
+    finally:
+        contexto.close()
+    assert erros == [], erros
+
+
+def test_parede_sem_conexao_aviso_apos_60s(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    # sem WebGL: com o relógio falso, 60 s de Teia seriam ~3.600 quadros 3D desenhados à força
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        estado: dict[str, Any] = {"bloquear": False, "abertos": []}
+
+        def rota(ws: Any) -> None:
+            if estado["bloquear"]:
+                ws.close(code=1011)  # servidor "fora": toda tentativa nova cai
+                return
+            ws.connect_to_server()
+            estado["abertos"].append(ws)
+
+        tv.route_web_socket(re.compile(r"/ws/parede$"), rota)
+        tv.clock.install()
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        aviso = tv.locator("#pr-sem-conexao")
+        expect(aviso).to_be_hidden()
+        estado["bloquear"] = True
+        for ws in estado["abertos"]:
+            ws.close(code=1011)
+        tv.clock.run_for(55_000)
+        expect(aviso).to_be_hidden()  # 55 s sem contato: ainda não
+        tv.clock.run_for(6_000)
+        expect(aviso).to_be_visible()
+        expect(aviso).to_contain_text("Sem conexão com o servidor")
+        expect(tv.locator("body")).to_have_class(re.compile(r"\bpr-desconectado\b"))
+        # o servidor volta: a reconexão (recuo de até 30 s) traz um snapshot e o aviso some
+        estado["bloquear"] = False
+        tv.clock.run_for(31_000)
+        expect(aviso).to_be_hidden(timeout=10_000)
+    finally:
+        navegador.close()
+
+
+def test_parede_sem_webgl_usa_organograma(
+    browser_type: Any,
+    browser_type_launch_args: dict[str, Any],
+    alvo: Alvo,
+    telao_pareado: dict[str, Any],
+) -> None:
+    navegador = navegador_sem_webgl(browser_type, browser_type_launch_args)
+    try:
+        contexto = navegador.new_context(
+            ignore_https_errors=True, base_url=alvo.url, storage_state=telao_pareado["estado"]
+        )
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        pedidos: list[str] = []
+        tv.on("request", lambda r: pedidos.append(r.url))
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        expect(tv.locator("body")).to_have_attribute("data-visao", "organograma")
+        expect(tv.locator("#pr-org")).to_be_visible()
+        expect(tv.locator("#pr-teia")).to_be_hidden()
+        expect(tv.locator("#pr-org .pr-org-classe").first).to_be_visible()
+        assert not [u for u in pedidos if "teia-parede.bundle.js" in u], pedidos
+        assert erros == [], erros
+    finally:
+        navegador.close()
+
+
+def test_parede_cursor_escondido_e_nada_clicavel(
+    browser: Browser, alvo: Alvo, telao_pareado: dict[str, Any]
+) -> None:
+    contexto = browser.new_context(
+        viewport={"width": 1920, "height": 1080},
+        ignore_https_errors=True,
+        base_url=alvo.url,
+        storage_state=telao_pareado["estado"],
+    )
+    try:
+        tv = contexto.new_page()
+        erros = vigiar_console(tv)
+        tv.goto("/parede/")
+        esperar_telao(tv)
+        tv.wait_for_timeout(1500)  # Teia montada (ou Organograma)
+        cursores = tv.evaluate(
+            "() => [...document.querySelectorAll('body, body *')]"
+            ".filter((e) => e.getClientRects().length)"
+            ".map((e) => getComputedStyle(e).cursor)"
+        )
+        assert set(cursores) == {"none"}, set(cursores)
+        focaveis = tv.evaluate(
+            "() => [...document.querySelectorAll("
+            "'a[href], button, input, select, textarea, [tabindex], [contenteditable]')]"
+            ".map((e) => e.outerHTML.slice(0, 80))"
+        )
+        assert focaveis == [], focaveis
+        tv.keyboard.press("Tab")
+        tv.keyboard.press("Tab")
+        assert tv.evaluate("() => document.activeElement === document.body")
+        # clicar e arrastar no meio da tela não faz nada (nem muda de modo nem abre nada)
+        tv.mouse.click(960, 540)
+        expect(tv.locator("body")).to_have_attribute("data-modo", "telao")
+        assert erros == [], erros
+    finally:
+        contexto.close()
+
+
+def test_teloes_codigo_errado_mostra_erro_generico(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    cartao = abrir_teloes(page)
+    pedidos: list[str] = []
+    page.on("request", lambda r: pedidos.append(r.url) if "/paredes/aprovar" in r.url else None)
+    codigo = cartao.get_by_label("Código da TV")
+    # formato errado: barrado na tela, sem pedido à API
+    codigo.fill("ABC")
+    cartao.get_by_label("Nome da tela").fill("TV Teste")
+    cartao.get_by_role("button", name="Aprovar").click()
+    expect(cartao.locator("#tel-codigo-erro")).to_contain_text("8 caracteres")
+    assert pedidos == []
+    # formato certo, mas código que não existe: a mensagem genérica do servidor
+    codigo.fill("K7MQ-2XDP")
+    cartao.get_by_role("button", name="Aprovar").click()
+    expect(cartao.locator("#tel-codigo-erro")).to_have_text("Código inválido ou expirado.")
+    expect(codigo).to_have_attribute("aria-invalid", "true")
+    assert len(pedidos) == 1
+    # o 404 esperado vira "Failed to load resource" no console: só ele é descartado
+    erros[:] = [e for e in erros if "404" not in e]
+    assert erros == [], erros
+
+
+def test_permitir_http_mostra_aviso_hsts(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    cartao = abrir_teloes(page)
+    chave = cartao.locator("#tel-http")
+    aviso = cartao.locator("#tel-aviso-hsts")
+    expect(chave).to_have_attribute("aria-checked", "false")
+    expect(aviso).to_be_hidden()
+    try:
+        chave.click()
+        dialogo = page.get_by_role("dialog", name="Permitir telão sem HTTPS?")
+        dialogo.get_by_role("button", name="Permitir").click()
+        expect(chave).to_have_attribute("aria-checked", "true")
+        expect(aviso).to_be_visible()
+        expect(aviso).to_contain_text("HSTS")
+        expect(aviso).to_contain_text("sem cifra")
+        assert api_json(page, "GET", "/config/paredes")["dados"] == {"permitir_http": True}
+        page.reload()
+        cartao = abrir_teloes(page)
+        expect(cartao.locator("#tel-http")).to_have_attribute("aria-checked", "true")
+        expect(cartao.locator("#tel-aviso-hsts")).to_be_visible()
+        cartao.locator("#tel-http").click()  # desligar não pede confirmação
+        expect(cartao.locator("#tel-http")).to_have_attribute("aria-checked", "false")
+        expect(cartao.locator("#tel-aviso-hsts")).to_be_hidden()
+    finally:
+        api_json(page, "PATCH", "/config/paredes", {"permitir_http": False})
+    assert erros == [], erros

@@ -120,6 +120,7 @@ export function visoesDoPainel(store) {
         if (autenticado && nova === "configuracoes") {
           this.entrarEmConfiguracoes();
           this.entrarEmTelegram();
+          this.entrarEmParedes();
         }
         this.agendarRender();
       }

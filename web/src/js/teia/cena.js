@@ -11,7 +11,7 @@ import {
   bloomPermitido, criarMedidorFps, decidirNivel, limparAgrupadoPorFps, quedaSustentada,
 } from "./desempenho.js";
 import { calcularPosicoes, ESTILOS, RAIO_CLASSES } from "./estilos.js";
-import { enquadrar, posicaoDoRotulo, raioEnvolvente } from "./enquadramento.js";
+import { DIST_MAX_ROTULO, enquadrar, posicaoDoRotulo, raioEnvolvente } from "./enquadramento.js";
 import {
   brilhoParaComposicaoLinear, criarAcervo, criarAnelSelecao, criarEstrelas, criarObjetoClasse,
   criarObjetoEquipamento, criarObjetoGrupo, criarObjetoServidor, FUNDO, OPACIDADE_ESMAECIDA,
@@ -30,6 +30,11 @@ const LINKS_INTERNOS = { a: true, b: true, c: false, d: false, e: true };
 const TRANSICAO_MS = 900;
 const CAMERA_MS = 1200;
 const AVALIAR_BLOOM_MS = 3000;
+const RAIO_CABER = RAIO_CLASSES + 40; // classes e equipamentos em volta delas
+// meia largura / altura de um rótulo de classe já reduzido pela distância (ESCALA_ROTULO.min)
+const FOLGA_ROTULO_PX = { lado: 60, cima: 32 };
+// teto do recuo: abaixo de DIST_MAX_ROTULO, senão os rótulos das classes somem
+const RECUO_MAXIMO = DIST_MAX_ROTULO - 150;
 const LEITURAS_MS = 250;
 
 const estiloValido = (e) => (ESTILOS.includes(e) ? e : "a");
@@ -47,6 +52,10 @@ function rgba(hex, alfa) {
  * (testes e diagnóstico): data-nos-grafo (nós de equipamento entregues ao grafo),
  * data-girando e data-particulas (sim|nao), e, a cada 250 ms com a cena desenhando,
  * data-camera ("x,y,z" arredondado), data-geometrias e data-texturas (renderer.info.memory).
+ * Telão (/parede): `particulas: false` tira as partículas dos troncos (a rotação continua) e
+ * `interativo: false` desliga clique, dica e controles do usuário (a rotação lenta continua);
+ * `caberNaTela: true` recua a câmera da vista geral até a Teia (com os rótulos) caber no
+ * palco em qualquer proporção, e reenquadra quando o palco muda de tamanho.
  */
 export function montarTeia(container, opcoes = {}) {
   const aoClicarEquipamento = opcoes.aoClicarEquipamento || null;
@@ -54,6 +63,9 @@ export function montarTeia(container, opcoes = {}) {
   const margens = typeof opcoes.margens === "function" ? opcoes.margens : () => ({});
   const aoClicarClasse = opcoes.aoClicarClasse || (() => {});
   const reduzido = !!opcoes.movimentoReduzido;
+  const comParticulas = opcoes.particulas !== false;
+  const interativo = opcoes.interativo !== false;
+  const caberNaTela = !!opcoes.caberNaTela;
 
   const est = {
     estilo: estiloValido(opcoes.estilo),
@@ -153,12 +165,22 @@ export function montarTeia(container, opcoes = {}) {
   controles.dampingFactor = 0.08;
   controles.autoRotateSpeed = 0.6;
   controles.autoRotate = est.girando;
+  if (!interativo) {
+    // os controles seguem ligados (são eles que giram a câmera), mas sem mouse/toque/teclado
+    controles.enableRotate = false;
+    controles.enableZoom = false;
+    controles.enablePan = false;
+    G.enablePointerInteraction(false).onNodeClick(null).onNodeHover(null);
+  }
 
   const carga = G.d3Force("charge");
   // sem força de centro: com servidor e classes fixos ela só empurraria os equipamentos
   // soltos (estilo A) para longe das suas classes
   G.d3Force("center", null);
-  G.cameraPosition(est.estilo === "e" ? CAMERA_E : CAMERA_PADRAO, est.estilo === "e" ? ALVO_E : { x: 0, y: 0, z: 0 });
+  {
+    const base = est.estilo === "e" ? CAMERA_E : CAMERA_PADRAO;
+    G.cameraPosition(caberNaTela ? recuoParaCaber(base) : base, est.estilo === "e" ? ALVO_E : { x: 0, y: 0, z: 0 });
+  }
 
   // ---------- objetos ----------
   function esmaecidoClasse(slug) {
@@ -224,7 +246,7 @@ export function montarTeia(container, opcoes = {}) {
 
   function aplicarAcessoriosDeLink() {
     const internos = LINKS_INTERNOS[est.estilo];
-    const particulas = !reduzido && est.nivel === "completo";
+    const particulas = comParticulas && !reduzido && est.nivel === "completo";
     container.dataset.particulas = particulas ? "sim" : "nao";
     // funções novas a cada chamada: força o three-forcegraph a reaplicar
     G.linkColor((l) => corLink(l))
@@ -689,7 +711,26 @@ export function montarTeia(container, opcoes = {}) {
 
   function cameraGeral() {
     const e = est.estilo === "e";
-    G.cameraPosition(e ? CAMERA_E : CAMERA_PADRAO, e ? ALVO_E : { x: 0, y: 0, z: 0 }, reduzido ? 0 : CAMERA_MS);
+    const base = e ? CAMERA_E : CAMERA_PADRAO;
+    G.cameraPosition(caberNaTela ? recuoParaCaber(base) : base, e ? ALVO_E : { x: 0, y: 0, z: 0 }, reduzido ? 0 : CAMERA_MS);
+  }
+
+  /**
+   * Mesma direção da vista geral, afastada até a esfera das classes caber no palco com folga
+   * em pixels para os rótulos (centrados no nó, mais largos que ele): numa tela estreita a
+   * folga pesa mais e a câmera recua mais.
+   */
+  function recuoParaCaber(base) {
+    const largura = G.width(), altura = G.height();
+    if (!(largura > 0 && altura > 0)) return base;
+    const tanV = Math.tan(((G.camera().fov || 50) * Math.PI) / 360);
+    const tanH = tanV * (largura / altura);
+    const sobraH = Math.max(0.5, 1 - (2 * FOLGA_ROTULO_PX.lado) / largura);
+    const sobraV = Math.max(0.5, 1 - (2 * FOLGA_ROTULO_PX.cima) / altura);
+    const precisa = Math.max(RAIO_CABER / (tanH * sobraH), RAIO_CABER / (tanV * sobraV));
+    const atual = Math.hypot(base.x, base.y, base.z);
+    const k = Math.min(RECUO_MAXIMO, Math.max(atual, precisa)) / atual;
+    return { x: base.x * k, y: base.y * k, z: base.z * k };
   }
 
   /** Tira o foco, volta a câmera à vista geral do estilo e retoma a rotação automática. */
@@ -856,7 +897,10 @@ export function montarTeia(container, opcoes = {}) {
 
   function redimensionar() {
     const w = container.clientWidth, h = container.clientHeight;
-    if (w > 0 && h > 0 && (w !== G.width() || h !== G.height())) G.width(w).height(h);
+    if (w > 0 && h > 0 && (w !== G.width() || h !== G.height())) {
+      G.width(w).height(h);
+      if (caberNaTela && !selecionado && est.foco === null) cameraGeral();
+    }
   }
   let observador = null;
   if (typeof ResizeObserver === "function") {

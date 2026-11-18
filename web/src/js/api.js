@@ -136,6 +136,12 @@ export const api = {
   editarTelegram: (dados) => requisitar("PATCH", "/config/telegram", { json: dados }),
   testarTelegram: () => requisitar("POST", "/config/telegram/teste"),
   verGeral: () => requisitar("GET", "/config/geral"),
+  // ---- telões (Fase 4) ----
+  listarParedes: () => requisitar("GET", "/paredes"),
+  aprovarParede: (dados) => requisitar("POST", "/paredes/aprovar", { json: dados }),
+  revogarParede: (id) => requisitar("DELETE", `/paredes/${encodeURIComponent(id)}`),
+  verConfigParedes: () => requisitar("GET", "/config/paredes"),
+  editarConfigParedes: (dados) => requisitar("PATCH", "/config/paredes", { json: dados }),
   importarCsv: (arquivo) => {
     const form = new FormData();
     form.append("arquivo", arquivo);

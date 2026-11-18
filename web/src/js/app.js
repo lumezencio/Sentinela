@@ -1,6 +1,7 @@
 // Painel (Alpine CSP): sessão, conexão ao vivo, contadores, lista e cadastro (admin).
 import { alertasDoPainel } from "./alertas.js";
 import { api, irParaLogin } from "./api.js";
+import { paredesDoPainel } from "./config-paredes.js";
 import { telegramDoPainel } from "./config-telegram.js";
 import { configuracoesDoPainel } from "./configuracoes.js";
 import {
@@ -182,7 +183,10 @@ function painel() {
       this.contadores = contar(store);
       this.renderizarTeia();
       this.renderizarOrganograma(); // só na aba dele; no máximo 2 vezes por segundo
-      if (this.aba === "configuracoes") this.renderizarFontes(); // "há N min" das coletas
+      if (this.aba === "configuracoes") {
+        this.renderizarFontes(); // "há N min" das coletas
+        this.renderizarParedes(); // "último acesso há N min" dos telões
+      }
       if (this.aba === "alertas") this.renderizarAlertas(); // "há N min" e silêncios vencidos
       if (this.aba !== "lista") return; // a lista só é montada na aba dela
       const filtrada = filtrar(
@@ -535,6 +539,7 @@ function painel() {
     configuracoesDoPainel(),
     alertasDoPainel(store),
     telegramDoPainel(),
+    paredesDoPainel(),
   ]) {
     Object.defineProperties(dados, Object.getOwnPropertyDescriptors(parte));
   }
