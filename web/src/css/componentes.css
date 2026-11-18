@@ -1777,6 +1777,19 @@ html[data-aba="teia"] .campo {
   }
 }
 
+/* celular baixo (ex.: 360x640): a ficha ocupa todo o espaço livre acima da barra de estilos e
+   rola dentro de si, com a borda de baixo esmaecida (nada parece cortado por engano) */
+@media (max-width: 767px) and (max-height: 760px) {
+  .teia-painel-equip {
+    top: var(--vao);
+    max-height: none;
+    overflow-y: auto;
+    padding-bottom: 28px;
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .teia-classes,
   .teia-painel-equip {

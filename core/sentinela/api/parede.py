@@ -87,6 +87,7 @@ async def item_alerta(db: AsyncSession, a: Alerta) -> dict[str, Any]:
         "aberto_em": a.aberto_em.isoformat(),
         "equipamento_id": a.equipamento_id,
         "afetados": d.afetados,
+        "silenciado": a.silenciado,
     }
 
 

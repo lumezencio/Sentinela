@@ -40,12 +40,14 @@ export function cartoesDoPainel(store) {
     if (!e) {
       e = {
         mac: "", fabricante: "", afetados: [], totalBuscado: -1, carregando: false, erro: "",
-        expandido: false, buscouEquipamento: false, erroAcao: "",
+        expandido: false, buscouEquipamento: false, buscandoEquipamento: false, ultimaTentativa: 0, erroAcao: "",
       };
       extras.set(id, e);
     }
     return e;
   }
+
+  const noPilha = (id) => pilha.cartoes.some((c) => c.id === id);
 
   function bip() {
     try {
@@ -141,10 +143,14 @@ export function cartoesDoPainel(store) {
     },
     async buscarEquipamentoDoCartao(entrada) {
       const e = extrasDe(entrada.id);
-      if (!entrada.alerta.equipamento_id || e.buscouEquipamento) return;
-      e.buscouEquipamento = true;
+      if (!entrada.alerta.equipamento_id || e.buscouEquipamento || e.buscandoEquipamento) return;
+      if (Date.now() - e.ultimaTentativa < 10000) return; // falhou há pouco: sem rajada de pedidos
+      e.ultimaTentativa = Date.now();
+      e.buscandoEquipamento = true;
       const r = await api.verEquipamento(entrada.alerta.equipamento_id);
-      if (!r.ok || !r.dados) return;
+      e.buscandoEquipamento = false;
+      if (!r.ok || !r.dados || !noPilha(entrada.id)) return; // falhou: o próximo render tenta de novo
+      e.buscouEquipamento = true;
       e.mac = typeof r.dados.mac === "string" ? r.dados.mac : "";
       e.fabricante = typeof r.dados.fabricante === "string" ? r.dados.fabricante : "";
       this.renderizarCartoes();
@@ -157,6 +163,7 @@ export function cartoesDoPainel(store) {
       e.erro = "";
       const r = await api.verAlerta(entrada.id);
       e.carregando = false;
+      if (!noPilha(entrada.id)) return; // cartão fechado enquanto a resposta vinha: descarta
       e.totalBuscado = total; // com falha também: o próximo "atualizado" tenta de novo
       if (r.ok && r.dados && Array.isArray(r.dados.afetados)) e.afetados = r.dados.afetados;
       else e.erro = "Não foi possível carregar os afetados.";

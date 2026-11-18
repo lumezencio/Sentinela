@@ -144,6 +144,15 @@ test("pilha: aberto cria; silenciado, fechado e tipo desconhecido não abrem", (
   assert.equal(aplicarNaPilha(p, { tipo: "alerta", acao: "aberto" }, AGORA), p);
 });
 
+test("telão: alerta reduzido silenciado não abre cartão; sem o campo, abre", () => {
+  const reduzido = (id, extra) => ({
+    id, tipo: "queda", texto: "x", aberto_em: "2026-11-18T17:32:00Z", equipamento_id: "sw", afetados: 0, ...extra,
+  });
+  const p = pilhaVazia();
+  assert.equal(aplicarNaPilha(p, msg("aberto", reduzido(1, { silenciado: true })), AGORA), p);
+  assert.equal(aplicarNaPilha(p, msg("aberto", reduzido(2, { silenciado: false })), AGORA).cartoes.length, 1);
+});
+
 test("pilha: atualizado de alerta desconhecido (já aberto antes da conexão) não cria cartão", () => {
   const p = pilhaVazia();
   assert.equal(aplicarNaPilha(p, msg("atualizado", queda(9)), AGORA), p);

@@ -973,7 +973,7 @@
                 </button>
                 <div :id="c.idLista" x-show="c.expandido">
                   <p class="dica" x-show="c.carregando">Carregando…</p>
-                  <p class="alerta" role="alert" x-show="c.erro" x-text="c.erro"></p>
+                  <p class="alerta" x-show="c.erro" x-text="c.erro"></p>
                   <ul :class="c.classeLista" tabindex="0" aria-label="Equipamentos afetados">
                     <template x-for="x in c.lista" :key="x.id">
                       <li>
@@ -984,7 +984,7 @@
                   </ul>
                 </div>
               </div>
-              <p class="alerta" role="alert" x-show="c.erroAcao" x-text="c.erroAcao"></p>
+              <p class="alerta" x-show="c.erroAcao" x-text="c.erroAcao"></p>
               <div class="ca-acoes">
                 <button class="botao" type="button" x-show="c.temEquipamento" @click="verNaTeiaDoCartao(c.id)">Ver na Teia</button>
                 <button class="botao" type="button" @click="verAlertaDoCartao(c.id)">Ver alerta</button>

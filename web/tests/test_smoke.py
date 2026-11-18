@@ -2842,8 +2842,14 @@ def test_parede_cartao_de_queda_sem_ip_mac_nem_fabricante(
             "id": 987001, "tipo": "queda", "texto": f"{eq['nome']} caiu · 14 afetados",
             "aberto_em": agora_iso(), "equipamento_id": eq["id"], "afetados": 14,
         }  # fmt: skip
-        ponte.injetar({"tipo": "alerta", "acao": "aberto", "alerta": alerta})
         cartao = tv.locator("#pr-cartoes .pr-ca")
+        silenciado = {**alerta, "id": 987009, "silenciado": True}
+        ponte.injetar({"tipo": "alerta", "acao": "aberto", "alerta": silenciado})
+        tv.wait_for_timeout(600)
+        expect(cartao).to_have_count(0)  # alerta silenciado: só a faixa, sem cartão
+        ponte.injetar(
+            {"tipo": "alerta", "acao": "aberto", "alerta": {**alerta, "silenciado": False}}
+        )
         expect(cartao).to_have_count(1)
         expect(cartao.locator(".pr-ca-nome")).to_have_text(eq["nome"])
         expect(cartao).to_contain_text("14 equipamentos afetados")

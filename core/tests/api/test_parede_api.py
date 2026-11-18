@@ -113,9 +113,30 @@ async def test_snapshot_sem_ip_mac_fabricante_latencia(
          "pai_id": None}
     ]  # fmt: skip
     (alerta,) = snap["alertas"]  # só o aberto
-    assert set(alerta) == {"id", "tipo", "texto", "aberto_em", "equipamento_id", "afetados"}
+    assert set(alerta) == {
+        "id",
+        "tipo",
+        "texto",
+        "aberto_em",
+        "equipamento_id",
+        "afetados",
+        "silenciado",
+    }
     assert alerta["equipamento_id"] == eq and alerta["afetados"] == 0
     assert alerta["texto"] == "Câmera Portaria caiu"
+
+
+async def test_snapshot_marca_alerta_silenciado(
+    app: FastAPI, abrir_tv: AbrirTv, cliente_admin: httpx.AsyncClient
+) -> None:
+    eq = await criar_equipamento_completo(app)
+    await alerta_no_banco(app, eq, silenciado=True)
+    tv = abrir_tv()
+    await emparelhar(tv, cliente_admin)
+    snap = (await tv.get(SNAPSHOT)).json()
+    sem_proibidos(snap)
+    (alerta,) = snap["alertas"]
+    assert alerta["silenciado"] is True  # o telão não abre cartão para ele
 
 
 async def test_snapshot_limita_20_alertas(

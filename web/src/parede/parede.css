@@ -473,7 +473,14 @@ ul {
   max-width: calc(100% - 2 * var(--margem));
   max-height: calc(100% - 24px);
   overflow: hidden;
+  /* fundo cheio: nada do Organograma/Teia aparece entre os cartões nem atrás deles */
+  background: var(--fundo);
+  border-radius: 14px;
   pointer-events: none;
+}
+
+.pr-cartoes:empty {
+  display: none;
 }
 
 .pr-ca {

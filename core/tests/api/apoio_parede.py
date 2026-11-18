@@ -106,7 +106,9 @@ async def criar_equipamento_completo(app: FastAPI, nome: str = "Câmera Portaria
         return eq.id
 
 
-async def alerta_no_banco(app: FastAPI, eq_id: str, fechado: bool = False) -> int:
+async def alerta_no_banco(
+    app: FastAPI, eq_id: str, fechado: bool = False, silenciado: bool = False
+) -> int:
     async with sessoes(app)() as db:
         a = Alerta(
             tipo="queda",
@@ -114,6 +116,7 @@ async def alerta_no_banco(app: FastAPI, eq_id: str, fechado: bool = False) -> in
             quedas=[eq_id],
             aberto_em=DESDE,
             fechado_em=DESDE if fechado else None,
+            silenciado=silenciado,
         )
         db.add(a)
         await db.commit()
