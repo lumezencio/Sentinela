@@ -90,16 +90,19 @@ async def gravar_telegram(db: AsyncSession, a: AjustesTelegram) -> None:
 
 
 async def registrar_status(db: AsyncSession, ok: bool, erro: str | None, agora: datetime) -> None:
-    """Sucesso: ``ultimo_envio = agora`` e limpa o erro. Falha: guarda o texto fixo do erro e
-    mantém o último envio. Sem commit."""
+    """``ok``: houve ao menos um envio (``ultimo_envio = agora``). ``erro``: texto fixo da
+    última falha. Os dois podem vir juntos (um chat recebeu, outro falhou); ``ok`` sem erro
+    limpa o erro; falha sem texto vira um genérico. Sem commit."""
     atual = await ler_status(db)
     ultimo_envio = agora if ok else atual["ultimo_envio"]
+    if erro is None and not ok:
+        erro = "Falha no envio ao Telegram."
     await _gravar(
         db,
         TELEGRAM_STATUS,
         {
             "ultimo_envio": ultimo_envio.isoformat() if ultimo_envio else None,
-            "ultimo_erro": None if ok else (erro or "Falha no envio ao Telegram.")[:MAX_ERRO],
+            "ultimo_erro": erro[:MAX_ERRO] if erro is not None else None,
         },
     )
 

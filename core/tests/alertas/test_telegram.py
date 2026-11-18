@@ -4,6 +4,7 @@ O destino continua ``api.telegram.org:443``; só a conexão TCP da porta 443 em 
 desviada para a porta do servidor de teste (monkeypatch no backend do httpcore).
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
@@ -153,6 +154,7 @@ async def test_falha_na_resolucao_e_generica() -> None:
         await _cliente(resolver=falhar).enviar(TOKEN, CHAT, "x")
     assert str(e.value) == "Não foi possível resolver o endereço do Telegram."
     assert TOKEN not in repr(e.value)
+    assert e.value.__context__ is None
 
 
 async def test_429_temporario_com_retry_after(
@@ -240,7 +242,8 @@ async def test_erro_nunca_contem_token(
     segredo = TOKEN.split(":", 1)[1]
     for texto in (str(e.value), repr(e.value), caplog.text):
         assert segredo not in texto
-    assert e.value.__cause__ is None and e.value.__suppress_context__
+    # nem encadeada: o ``__context__`` guardaria a exceção do httpx (com a URL e o token)
+    assert e.value.__cause__ is None and e.value.__context__ is None
 
 
 async def test_status_http_vai_ao_log_sem_token(
@@ -252,3 +255,28 @@ async def test_status_http_vai_ao_log_sem_token(
         await _cliente(str(certificados.ca_pem)).enviar(TOKEN, CHAT, "x")
     assert "403" in caplog.text
     assert TOKEN.split(":", 1)[1] not in caplog.text
+
+
+async def test_resolver_lento_cortado_pelo_prazo() -> None:
+    async def lento(_host: str) -> list[str]:
+        await asyncio.sleep(30)
+        return ["127.0.0.1"]
+
+    cliente = _cliente(resolver=lento, timeout_s=0.05)
+    with pytest.raises(ErroTelegram) as e:
+        async with asyncio.timeout(5):  # o próprio cliente corta bem antes
+            await cliente.enviar(TOKEN, CHAT, "x")
+    assert str(e.value) == "O Telegram não respondeu a tempo."
+    assert e.value.temporario and e.value.__context__ is None
+
+
+async def test_ca_adicional_invalida_nao_derruba_e_vira_erro_generico(tmp_path: Path) -> None:
+    ruim = tmp_path / "ca-ruim.pem"
+    ruim.write_text("isto nao e um certificado", encoding="utf-8")
+    resolver = resolver_fixo("127.0.0.1")
+    cliente = _cliente(str(ruim), resolver=resolver)  # construir não falha
+    with pytest.raises(ErroTelegram) as e:
+        await cliente.enviar(TOKEN, CHAT, "x")
+    assert str(e.value) == "CA adicional inválida."
+    assert not e.value.temporario
+    assert resolver.chamadas == []

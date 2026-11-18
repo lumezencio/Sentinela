@@ -225,13 +225,14 @@ async def test_sem_configuracao_nada_sai(ctx: Ctx) -> None:
     assert (await _ler(ctx, a)).envio == "pendente"
 
 
-async def test_token_ilegivel_nada_sai(ctx: Ctx) -> None:
+async def test_token_ilegivel_nada_sai_e_registra_status(ctx: Ctx) -> None:
     await _alerta(ctx, "volta")
     async with ctx.sessoes() as s:
         await gravar_telegram(s, AjustesTelegram("bm9wZQ==", [CHAT_A], False))
         await s.commit()
     await ctx.despachante.ciclo()
     assert ctx.cliente.tentativas == 0
+    assert await _status(ctx) == {"ultimo_envio": None, "ultimo_erro": "Token ilegível."}
 
 
 # ---- quando sai ---------------------------------------------------------------------------
@@ -357,6 +358,7 @@ async def test_respeita_retry_after_maior(ctx: Ctx) -> None:
     lido = await _ler(ctx, a)
     assert lido.envio_proxima == T0 + timedelta(seconds=95)
     ctx.cliente.erro = ErroTelegram("Limite.", temporario=True, espera_s=5)  # menor: ignora
+    await ctx.relogio.avancar(95)  # o chat também ficou bloqueado pelos 95 s pedidos
     ctx.em(95)
     await ctx.despachante.ciclo()
     assert (await _ler(ctx, a)).envio_proxima == T0 + timedelta(seconds=95 + 60)
@@ -601,3 +603,125 @@ async def test_edicao_so_nos_chats_ainda_configurados(ctx: Ctx) -> None:
     assert [e[0] for e in ctx.cliente.editados] == [CHAT_B]
     assert len(ctx.cliente.enviados) == 2
     assert (await _ler(ctx, a)).envio == "enviado"
+
+
+# ---- correções da revisão --------------------------------------------------------------------
+
+
+async def test_retry_after_bloqueia_o_chat(ctx: Ctx) -> None:
+    await _configurar(ctx, chats=[CHAT_A, CHAT_B])
+    ids = [await _alerta(ctx, "volta", seg=i) for i in range(3)]
+    ctx.cliente.erro = ErroTelegram("Limite.", temporario=True, espera_s=40)
+    ctx.cliente.falhar_chats = {CHAT_A}
+    ctx.em(5)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.tentativas == 4  # 1 em A (429), 3 em B; A bloqueado no resto do ciclo
+    assert [c for c, _ in ctx.cliente.enviados] == [CHAT_B] * 3
+    ctx.cliente.erro = None
+    await ctx.relogio.avancar(10)
+    ctx.em(15)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.tentativas == 4  # ainda bloqueado em ciclos seguintes
+    await ctx.relogio.avancar(30)
+    ctx.em(45)
+    await ctx.despachante.ciclo()
+    assert [c for c, _ in ctx.cliente.enviados[3:]] == [CHAT_A] * 3
+    assert [(await _ler(ctx, i)).envio for i in ids] == ["enviado"] * 3
+
+
+async def test_token_recusado_para_o_ciclo(ctx: Ctx) -> None:
+    await _configurar(ctx, chats=[CHAT_A, CHAT_B])
+    for i in range(3):
+        await _alerta(ctx, "volta", seg=i)
+    ctx.cliente.erro = ErroTelegram("Token do bot recusado pelo Telegram.", temporario=False)
+    ctx.em(5)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.tentativas == 1
+    assert (await _status(ctx))["ultimo_erro"] == "Token do bot recusado pelo Telegram."
+
+
+async def test_envio_parcial_e_caiu_e_voltou_manda_texto_breve_aos_que_faltam(ctx: Ctx) -> None:
+    await _configurar(ctx, chats=[CHAT_A, CHAT_B])
+    a = await _alerta(ctx, "queda", nome="NVR Garagem")
+    ctx.cliente.erro = ErroTelegram("Telegram indisponível no momento.", temporario=True)
+    ctx.cliente.falhar_chats = {CHAT_B}
+    ctx.em(CONFIRMAR_QUEDA_S)
+    await ctx.despachante.ciclo()
+    assert (await _ler(ctx, a)).telegram_msgs == {CHAT_A: 1}
+    ctx.cliente.erro = None
+    await _alterar(ctx, a, breve=True, fechado_em=T0 + timedelta(seconds=100))
+    ctx.em(100)
+    await ctx.despachante.ciclo()
+    texto = "🟡 NVR Garagem caiu e voltou (1 min 40 s)"
+    assert ctx.cliente.editados == [(CHAT_A, 1, texto)]
+    assert ctx.cliente.enviados[-1] == (CHAT_B, texto)  # primeira mensagem de B
+    lido = await _ler(ctx, a)
+    assert lido.envio == "enviado"
+    assert lido.telegram_msgs == {CHAT_A: 1, CHAT_B: 2}
+    assert sorted(lido.enviado_para) == [CHAT_A, CHAT_B]
+
+
+async def test_sucesso_e_erro_no_mesmo_ciclo_registram_os_dois(ctx: Ctx) -> None:
+    await _configurar(ctx, chats=[CHAT_A, CHAT_B])
+    await _alerta(ctx, "volta")
+    ctx.cliente.erro = ErroTelegram("Telegram indisponível no momento.", temporario=True)
+    ctx.cliente.falhar_chats = {CHAT_B}
+    ctx.em(5)
+    await ctx.despachante.ciclo()
+    assert await _status(ctx) == {
+        "ultimo_envio": T0 + timedelta(seconds=5),
+        "ultimo_erro": "Telegram indisponível no momento.",
+    }
+
+
+async def test_resumo_so_aos_chats_que_faltam(ctx: Ctx) -> None:
+    await _configurar(ctx, chats=[CHAT_A, CHAT_B])
+    for i in range(19):
+        await _alerta(ctx, "volta", seg=i)
+    ja_em_a = [await _alerta(ctx, "volta", seg=100 + i, enviado_para=[CHAT_A]) for i in range(6)]
+    ctx.em(200)
+    await ctx.despachante.ciclo()
+    em_a = [t for c, t in ctx.cliente.enviados if c == CHAT_A]
+    em_b = [t for c, t in ctx.cliente.enviados if c == CHAT_B]
+    assert len(em_a) == 19 and not any(t.startswith("…") for t in em_a)
+    assert len(em_b) == 20 and em_b[-1] == "… e mais 6 alertas, veja no painel"
+    for i in ja_em_a:
+        lido = await _ler(ctx, i)
+        assert lido.envio == "enviado" and sorted(lido.enviado_para) == [CHAT_A, CHAT_B]
+
+
+async def test_ca_adicional_invalida_vira_status(ctx: Ctx, tmp_path: Path) -> None:
+    ruim = tmp_path / "ca-ruim.pem"
+    ruim.write_text("lixo", encoding="utf-8")
+    resolver = resolver_fixo("149.154.167.220")
+    real = ClienteTelegram(Guarda([]), ca_adicional=str(ruim), resolver=resolver)
+    despachante = Despachante(ctx.sessoes, real, ctx.cofre, ctx.relogio, ctx.parede, SP)
+    await _configurar(ctx)
+    for _ in range(2):
+        await _alerta(ctx, "volta")
+    await despachante.ciclo()
+    assert resolver.chamadas == []
+    assert (await _status(ctx))["ultimo_erro"] == "CA adicional inválida."
+
+
+async def test_ca_adicional_invalida_nao_impede_o_core_de_subir(
+    settings: Settings, tmp_path: Path
+) -> None:
+    ruim = tmp_path / "ca-ruim.pem"
+    ruim.write_text("lixo", encoding="utf-8")
+    com_ca = settings.model_copy(update={"ca_adicional": str(ruim)})
+    app: FastAPI = criar_app(com_ca, relogio=RelogioFalso())
+    await criar_esquema(com_ca.banco_url)
+    async with app.router.lifespan_context(app):
+        nomes = [t.get_name() for t in app.state.tarefas_monitor]
+        assert "sentinela-telegram" in nomes and "sentinela-agendador" in nomes
+        await asyncio.sleep(0)
+        assert not any(t.done() for t in app.state.tarefas_monitor)
+
+
+async def test_token_recusado_na_edicao_nao_vira_falhou(ctx: Ctx) -> None:
+    a = await _queda_enviada_e_voltou(ctx, [CHAT_A])
+    ctx.cliente.erro_edicao = ErroTelegram("Token do bot recusado pelo Telegram.", temporario=False)
+    await ctx.despachante.ciclo()
+    lido = await _ler(ctx, a)
+    assert lido.envio == "pendente" and lido.envio_tentativas == 1

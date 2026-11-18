@@ -11,9 +11,10 @@ estático garante).
 - **Limites**: sem seguir redirecionamento, ``Accept-Encoding: identity``, corpo ≤ 64 KB, prazo
   total de ``timeout_s`` por pedido.
 - **Segredo**: o token vai no caminho da URL (exigência da API do Telegram), então nenhuma
-  exceção da pilha HTTP escapa: tudo vira ``ErroTelegram`` com texto fixo, sem encadear
-  (``from None``), e o log leva só o código HTTP. O cliente do httpx não é usado (o transporte
-  é chamado direto): o log "HTTP Request: POST <url>" dele nunca é emitido.
+  exceção da pilha HTTP escapa: tudo vira ``ErroTelegram`` com texto fixo, levantado fora do
+  ``except`` (sem ``__cause__`` nem ``__context__``), e o log leva só o código HTTP. O cliente
+  do httpx não é usado (o transporte é chamado direto): o log "HTTP Request: POST <url>" dele
+  nunca é emitido.
 """
 
 import asyncio
@@ -56,6 +57,9 @@ MSG_CHAT = "Chat recusado pelo Telegram (bot sem acesso ou chat inexistente)."
 MSG_LIMITE = "Limite de envio do Telegram atingido."
 MSG_INDISPONIVEL = "Telegram indisponível no momento."
 MSG_RESPOSTA = "Resposta inesperada do Telegram."
+MSG_CA = "CA adicional inválida."
+# erros que valem para qualquer chat: o despachante para o ciclo em vez de insistir
+ERROS_GLOBAIS = frozenset({MSG_TOKEN_INVALIDO, MSG_TOKEN, MSG_CA})
 
 
 class ErroTelegram(Exception):
@@ -205,7 +209,11 @@ class ClienteTelegram:
         timeout_s: float = 10.0,
     ) -> None:
         self._guarda = guarda
-        self._contexto = _contexto_tls(ca_adicional)
+        try:
+            self._contexto: ssl.SSLContext | None = _contexto_tls(ca_adicional)
+        except (OSError, ValueError):  # ssl.SSLError é OSError: CA ilegível não derruba o core
+            log.error("telegram: CA adicional inválida; envio desativado")
+            self._contexto = None
         self._resolver = resolver or resolver_padrao
         self._transporte = transporte  # testes; ``None``: um transporte travado por pedido
         self._timeout = timeout_s
@@ -226,10 +234,13 @@ class ClienteTelegram:
         await self._chamar(token, "editMessageText", corpo)
 
     async def _destino(self) -> DestinoExterno:
+        falhou = False
         try:
             ips = await self._resolver(HOST_TELEGRAM)
         except Exception:  # noqa: BLE001 - gaierror, OSError...: texto fixo
-            raise ErroTelegram(MSG_RESOLVER, temporario=True) from None
+            falhou = True
+        if falhou:  # fora do ``except``: sem ``__context__`` com o texto original
+            raise ErroTelegram(MSG_RESOLVER, temporario=True)
         for ip in ips:
             try:
                 return self._guarda.validar_externo("telegram", ip)
@@ -243,21 +254,28 @@ class ClienteTelegram:
         chat = corpo.get("chat_id")
         if not isinstance(chat, str) or not _CHAT.fullmatch(chat):
             raise ErroTelegram(MSG_CHAT_INVALIDO, temporario=False)
-        destino = await self._destino()
+        if self._contexto is None:
+            raise ErroTelegram(MSG_CA, temporario=False)
+        erro: ErroTelegram | None = None
         try:
+            # um prazo só para a resolução do nome e o pedido
             async with asyncio.timeout(self._timeout):
+                destino = await self._destino()
                 status, cabecalhos, bruto = await self._pedido(destino, token, metodo, corpo)
-        except ErroTelegram:
-            raise
+        except ErroTelegram as e:
+            erro = ErroTelegram(e.mensagem, e.temporario, e.espera_s)
         except (TimeoutError, httpx.TimeoutException, httpcore.TimeoutException):
             log.warning("telegram: sem resposta a tempo")
-            raise ErroTelegram(MSG_TEMPO, temporario=True) from None
+            erro = ErroTelegram(MSG_TEMPO, temporario=True)
         except Exception as e:  # noqa: BLE001 - nada da pilha HTTP (com a URL e o token) escapa
             if _erro_tls(e):
                 log.warning("telegram: certificado recusado")
-                raise ErroTelegram(MSG_CERTIFICADO, temporario=True) from None
-            log.warning("telegram: falha de conexão")
-            raise ErroTelegram(MSG_CONEXAO, temporario=True) from None
+                erro = ErroTelegram(MSG_CERTIFICADO, temporario=True)
+            else:
+                log.warning("telegram: falha de conexão")
+                erro = ErroTelegram(MSG_CONEXAO, temporario=True)
+        if erro is not None:  # levantado fora do ``except``: sem ``__context__``
+            raise erro
         return self._interpretar(status, cabecalhos, bruto)
 
     async def _pedido(
@@ -284,6 +302,8 @@ class ClienteTelegram:
             },
         )
         proprio = self._transporte is None
+        if self._contexto is None:  # conferido em ``_chamar``; aqui só para o tipo
+            raise ErroTelegram(MSG_CA, temporario=False)
         transporte = self._transporte or _Transporte(destino, self._contexto)
         try:
             resposta = await transporte.handle_async_request(pedido)

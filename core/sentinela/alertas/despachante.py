@@ -1,20 +1,27 @@
 """Despachante: fila persistente (o próprio ``alerta.envio``) → Telegram.
 
-A cada 5 s lê os ajustes; sem token legível ou sem chats, não faz nada (nem resolve nome).
-Com Telegram configurado, para cada alerta ``pendente`` e não silenciado, em ordem de abertura:
+A cada 5 s lê os ajustes; sem token legível ou sem chats, não faz nada (nem resolve nome; token
+cifrado que não decifra vira o status fixo "Token ilegível."). Com Telegram configurado, para
+cada alerta ``pendente`` e não silenciado, em ordem de abertura:
 
 - queda espera ``CONFIRMAR_QUEDA_S`` depois de aberta (tempo para agrupar e para o
   caiu-e-voltou); volta, instável, fonte e queda já fechada como caiu-e-voltou saem na hora;
-- ``pendente`` + ``breve`` + ``telegram_msgs`` é a edição da mensagem já enviada
-  (``editMessageText`` em cada chat guardado que segue configurado, nunca mensagem nova; falha
-  temporária tenta a edição de novo com a mesma espera, recusa definitiva vira ``falhou``);
+- ``pendente`` + ``breve`` + ``telegram_msgs`` é o caiu-e-voltou de uma queda já enviada:
+  ``editMessageText`` em cada chat guardado que segue configurado, e ``sendMessage`` do texto do
+  caiu-e-voltou só aos chats configurados que nunca receberam a queda (nem em
+  ``telegram_msgs`` nem em ``enviado_para``). Falha temporária tenta de novo com a mesma espera
+  (editar de novo com o mesmo texto é inofensivo); recusa definitiva vira ``falhou``;
 - uma mensagem por alerta e por chat; ``enviado_para`` guarda quem já recebeu, então uma nova
   tentativa só vai aos chats que faltam;
 - falha: espera ``min(30·2^(n−1), 1800)`` s, ou o ``retry_after`` do Telegram se maior;
-  ``DESISTIR`` depois da abertura, vira ``falhou``;
+  ``DESISTIR`` depois da abertura, vira ``falhou``. Um ``retry_after`` também bloqueia aquele
+  chat (para todos os alertas, neste e nos próximos ciclos) até o prazo pedido. Erro que vale
+  para qualquer chat (token recusado, CA adicional inválida) encerra o ciclo na hora;
 - limite de ``POR_CHAT_MIN`` mensagens por minuto por chat; se os prontos do ciclo passam do
-  que resta no chat mais apertado, sai o que cabe menos um e o resto vira uma mensagem só
-  ("… e mais N alertas, veja no painel"), com esses alertas marcados ``enviado``.
+  que resta no chat mais apertado (entre os não bloqueados), sai o que cabe menos um e o resto
+  vira um resumo ("… e mais N alertas, veja no painel"): cada chat recebe o resumo com N = os
+  resumidos que ainda faltavam a ele, e um resumido vira ``enviado`` quando todos os chats que
+  lhe faltavam receberam o resumo.
 
 Concorrência com o agrupador (contrato no ``Alerta``): toda escrita aqui é um UPDATE só das
 colunas de envio, guardado por ``envio='pendente'`` (e, ao concluir um envio, pelo ``breve``
@@ -27,17 +34,18 @@ de ``ErroTelegram`` (ou o nome do tipo da exceção inesperada).
 
 import logging
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.alertas.ajustes import decifrar_token, ler_telegram, registrar_status
-from sentinela.alertas.telegram import ErroTelegram
+from sentinela.alertas.ajustes import decifrar_token, ler_status, ler_telegram, registrar_status
+from sentinela.alertas.telegram import ERROS_GLOBAIS, ErroTelegram
 from sentinela.alertas.textos import dados_do_alerta, texto_resumo, texto_telegram
 from sentinela.db.modelos import Alerta
 from sentinela.relogio import Relogio
@@ -52,6 +60,7 @@ ESPERA_MAX_S = 1800
 DESISTIR = timedelta(hours=24)
 POR_CHAT_MIN = 20
 JANELA_S = 60.0
+MSG_TOKEN_ILEGIVEL = "Token ilegível."  # noqa: S105 - texto de status, não segredo
 
 
 class Cliente(Protocol):
@@ -70,13 +79,15 @@ class _Item:
     tentativas: int
     enviado_para: list[str]
     msgs: dict[str, int]
-    faltam: list[str] = field(default_factory=list)
+    faltam: list[str] = field(default_factory=list)  # envio: chats sem a mensagem
+    editar: list[str] = field(default_factory=list)  # caiu-e-voltou: chats a editar
 
 
 @dataclass
 class _Resultado:
     sucesso: bool = False
     erro: str | None = None
+    parar: bool = False  # erro que vale para qualquer chat: encerra o ciclo
 
 
 def espera_s(tentativas: int, pedido_s: float | None = None) -> float:
@@ -103,6 +114,8 @@ class Despachante:
         self._fuso = fuso
         # chat -> instantes (relógio monotônico) das mensagens do último minuto
         self._janelas: dict[str, deque[float]] = {}
+        # chat -> até quando (relógio monotônico) o Telegram pediu para esperar (429)
+        self._bloqueios: dict[str, float] = {}
 
     async def executar(self) -> None:
         while True:
@@ -119,6 +132,11 @@ class Despachante:
         async with self._sessoes() as db:
             ajustes = await ler_telegram(db)
             token = decifrar_token(self._cofre, ajustes.token_cifrado)
+            if ajustes.token_cifrado and token is None:
+                if (await ler_status(db))["ultimo_erro"] != MSG_TOKEN_ILEGIVEL:
+                    await registrar_status(db, False, MSG_TOKEN_ILEGIVEL, agora)
+                    await db.commit()
+                return
             if not token or not ajustes.chats:
                 return
             chats = list(ajustes.chats)
@@ -127,11 +145,14 @@ class Despachante:
             await self._escrever(id_, envio="falhou", envio_proxima=None)
         r = _Resultado()
         for item in edicoes:
-            await self._editar(token, item, agora, r)
-        await self._enviar_todos(token, chats, envios, agora, r)
+            if r.parar:
+                break
+            await self._caiu_e_voltou(token, item, agora, r)
+        if not r.parar:
+            await self._enviar_todos(token, chats, envios, agora, r)
         if r.erro is not None or r.sucesso:
             async with self._sessoes() as db:
-                await registrar_status(db, r.erro is None, r.erro, agora)
+                await registrar_status(db, r.sucesso, r.erro, agora)
                 await db.commit()
 
     async def _prontos(
@@ -154,7 +175,6 @@ class Despachante:
                 continue
             if a.envio_proxima is not None and a.envio_proxima > agora:
                 continue
-            editar = a.breve and bool(a.telegram_msgs)
             if a.tipo == "queda" and not a.breve and agora - a.aberto_em < confirmar:
                 continue
             dados = await dados_do_alerta(db, a)
@@ -166,41 +186,64 @@ class Despachante:
                 enviado_para=list(a.enviado_para),
                 msgs=dict(a.telegram_msgs),
             )
-            if editar:
+            if a.breve and a.telegram_msgs:
                 # só os chats ainda configurados (chat removido não recebe mais nada)
-                item.faltam = [c for c in item.msgs if c in chats]
+                item.editar = [c for c in item.msgs if c in chats]
+                item.faltam = [
+                    c for c in chats if c not in item.msgs and c not in item.enviado_para
+                ]
                 edicoes.append(item)
             else:
                 item.faltam = [c for c in chats if c not in item.enviado_para]
                 envios.append(item)
         return vencidos, edicoes, envios
 
-    # ---- edição do caiu-e-voltou ---------------------------------------------------------
+    # ---- caiu-e-voltou depois do envio ---------------------------------------------------
 
-    async def _editar(self, token: str, item: _Item, agora: datetime, r: _Resultado) -> None:
-        if any(self._restante(chat) <= 0 for chat in item.faltam):
-            return  # sem folga no minuto: tenta no próximo ciclo
+    async def _caiu_e_voltou(self, token: str, item: _Item, agora: datetime, r: _Resultado) -> None:
+        if any(self._restante(c) <= 0 for c in (*item.editar, *item.faltam)):
+            return  # sem folga (ou bloqueado) em algum chat: o item inteiro fica para depois
+        enviado_para = list(item.enviado_para)
+        msgs = dict(item.msgs)
         falha: ErroTelegram | None = None
-        for chat in item.faltam:
-            self._marcar(chat)
-            try:
-                await self._cliente.editar(token, chat, item.msgs[chat], item.texto)
-            except ErroTelegram as e:
-                falha = e
-        if falha is None:
-            r.sucesso = r.sucesso or bool(item.faltam)
-            await self._escrever(item.id, envio="enviado", envio_proxima=None)
-            return
-        r.erro = falha.mensagem
-        if not falha.temporario:
-            await self._escrever(item.id, envio="falhou", envio_proxima=None)
-            return
-        n = item.tentativas + 1
-        await self._escrever(
-            item.id,
-            envio_tentativas=n,
-            envio_proxima=agora + timedelta(seconds=espera_s(n, falha.espera_s)),
-        )
+        for chat in item.editar:
+            if r.parar:
+                break
+            mid = msgs[chat]
+            ok, _, erro = await self._mandar(
+                r, chat, partial(self._cliente.editar, token, chat, mid, item.texto)
+            )
+            falha = erro or falha
+        for chat in item.faltam:  # nunca receberam a queda: a primeira mensagem já é esta
+            if r.parar:
+                break
+            ok, novo, erro = await self._mandar(
+                r, chat, partial(self._cliente.enviar, token, chat, item.texto)
+            )
+            falha = erro or falha
+            if ok:
+                enviado_para.append(chat)
+                if novo is not None:
+                    msgs[chat] = novo
+        if falha is None and not r.parar:
+            await self._escrever(
+                item.id,
+                envio="enviado",
+                enviado_para=enviado_para,
+                telegram_msgs=msgs,
+                envio_proxima=None,
+            )
+        elif falha is not None and not falha.temporario and falha.mensagem not in ERROS_GLOBAIS:
+            # recusa do chat (não do token/CA, que se corrigem na configuração)
+            await self._escrever(
+                item.id,
+                envio="falhou",
+                enviado_para=enviado_para,
+                telegram_msgs=msgs,
+                envio_proxima=None,
+            )
+        else:
+            await self._adiar(item, falha, agora, enviado_para=enviado_para, telegram_msgs=msgs)
 
     # ---- envio ---------------------------------------------------------------------------
 
@@ -210,10 +253,12 @@ class Despachante:
         completos = [i for i in envios if not i.faltam]  # chats já atendidos (config mudou)
         for item in completos:
             await self._concluir(item, item.enviado_para, item.msgs)
-        fila = [i for i in envios if i.faltam]
-        if not fila:
+        livres = [c for c in chats if not self._bloqueado(c)]
+        # alerta que só falta em chat bloqueado (429) espera o bloqueio passar
+        fila = [i for i in envios if any(c in livres for c in i.faltam)]
+        if not fila or not livres:
             return
-        orcamento = min(self._restante(c) for c in chats)
+        orcamento = min(self._restante(c) for c in livres)
         if len(fila) <= orcamento:
             individuais, resumidos = fila, []
         elif orcamento >= 1:
@@ -221,8 +266,10 @@ class Despachante:
         else:
             return  # minuto cheio no chat mais apertado: espera
         for item in individuais:
+            if r.parar:
+                return
             await self._enviar(token, item, agora, r)
-        if resumidos:
+        if resumidos and not r.parar:
             await self._resumir(token, chats, resumidos, agora, r)
 
     async def _enviar(self, token: str, item: _Item, agora: datetime, r: _Resultado) -> None:
@@ -230,28 +277,20 @@ class Despachante:
         msgs = dict(item.msgs)
         falha: ErroTelegram | None = None
         for chat in item.faltam:
+            if r.parar:
+                break
             if self._restante(chat) <= 0:
-                continue  # este chat está cheio no minuto; fica para o próximo ciclo
-            self._marcar(chat)
-            try:
-                mid = await self._cliente.enviar(token, chat, item.texto)
-            except ErroTelegram as e:
-                falha = e
-                continue
-            r.sucesso = True
-            enviado_para.append(chat)
-            if mid is not None:
-                msgs[chat] = mid
-        if falha is not None:
-            r.erro = falha.mensagem
-            n = item.tentativas + 1
-            await self._escrever(
-                item.id,
-                enviado_para=enviado_para,
-                telegram_msgs=msgs,
-                envio_tentativas=n,
-                envio_proxima=agora + timedelta(seconds=espera_s(n, falha.espera_s)),
+                continue  # chat cheio no minuto ou bloqueado: fica para o próximo ciclo
+            ok, mid, erro = await self._mandar(
+                r, chat, partial(self._cliente.enviar, token, chat, item.texto)
             )
+            falha = erro or falha
+            if ok:
+                enviado_para.append(chat)
+                if mid is not None:
+                    msgs[chat] = mid
+        if falha is not None:
+            await self._adiar(item, falha, agora, enviado_para=enviado_para, telegram_msgs=msgs)
         elif all(c in enviado_para for c in item.faltam):
             await self._concluir(item, enviado_para, msgs)
         else:
@@ -275,39 +314,67 @@ class Despachante:
     async def _resumir(
         self, token: str, chats: list[str], resumidos: list[_Item], agora: datetime, r: _Resultado
     ) -> None:
-        texto = texto_resumo(len(resumidos))
+        """Um resumo por chat, contando só os resumidos que ainda faltavam àquele chat."""
         entregues: list[str] = []
         falha: ErroTelegram | None = None
         for chat in chats:
-            if self._restante(chat) <= 0:
+            if r.parar:
+                break
+            n = sum(1 for i in resumidos if chat in i.faltam)
+            if n == 0 or self._restante(chat) <= 0:
                 continue
-            self._marcar(chat)
-            try:
-                await self._cliente.enviar(token, chat, texto)
-            except ErroTelegram as e:
-                falha = e
-                continue
-            entregues.append(chat)
-        if falha is not None:
-            r.erro = falha.mensagem
-        if entregues:
-            r.sucesso = True
-            for item in resumidos:
-                para = list(dict.fromkeys([*item.enviado_para, *entregues]))
+            ok, _, erro = await self._mandar(
+                r, chat, partial(self._cliente.enviar, token, chat, texto_resumo(n))
+            )
+            falha = erro or falha
+            if ok:
+                entregues.append(chat)
+        for item in resumidos:
+            para = list(
+                dict.fromkeys([*item.enviado_para, *(c for c in item.faltam if c in entregues)])
+            )
+            if all(c in para for c in item.faltam):
                 await self._escrever(
                     item.id, envio="enviado", enviado_para=para, envio_proxima=None
                 )
-            return
-        if falha is not None:
-            for item in resumidos:
-                n = item.tentativas + 1
-                await self._escrever(
-                    item.id,
-                    envio_tentativas=n,
-                    envio_proxima=agora + timedelta(seconds=espera_s(n, falha.espera_s)),
-                )
+            elif falha is not None:
+                await self._adiar(item, falha, agora, enviado_para=para)
+            elif para != item.enviado_para:
+                await self._escrever(item.id, enviado_para=para)
 
     # ---- apoio ---------------------------------------------------------------------------
+
+    async def _mandar(
+        self, r: _Resultado, chat: str, chamada: Callable[[], Awaitable[int | None]]
+    ) -> tuple[bool, int | None, ErroTelegram | None]:
+        """Uma mensagem (envio ou edição) num chat: conta no minuto, aplica o bloqueio pedido
+        pelo Telegram e marca o fim do ciclo em erro global."""
+        self._marcar(chat)
+        try:
+            mid = await chamada()
+        except ErroTelegram as e:
+            r.erro = e.mensagem
+            if e.espera_s:
+                self._bloqueios[chat] = self._relogio.agora() + e.espera_s
+            if e.mensagem in ERROS_GLOBAIS:
+                r.parar = True
+            return False, None, e
+        r.sucesso = True
+        return True, mid, None
+
+    async def _adiar(
+        self, item: _Item, falha: ErroTelegram | None, agora: datetime, **valores: Any
+    ) -> None:
+        if falha is None:  # parou no meio (erro global noutro alerta): só guarda o progresso
+            await self._escrever(item.id, **valores)
+            return
+        n = item.tentativas + 1
+        await self._escrever(
+            item.id,
+            envio_tentativas=n,
+            envio_proxima=agora + timedelta(seconds=espera_s(n, falha.espera_s)),
+            **valores,
+        )
 
     async def _escrever(self, id_: int, breve: bool | None = None, **valores: Any) -> bool:
         """UPDATE só das colunas de envio, só se o alerta segue ``pendente`` (e com o ``breve``
@@ -320,7 +387,19 @@ class Despachante:
             await db.commit()
         return bool(resultado.rowcount == 1)  # type: ignore[attr-defined]
 
+    def _bloqueado(self, chat: str) -> bool:
+        ate = self._bloqueios.get(chat)
+        if ate is None:
+            return False
+        if self._relogio.agora() >= ate:
+            del self._bloqueios[chat]
+            return False
+        return True
+
     def _restante(self, chat: str) -> int:
+        """Mensagens que ainda cabem no minuto deste chat (0 se o Telegram pediu espera)."""
+        if self._bloqueado(chat):
+            return 0
         janela = self._janelas.setdefault(chat, deque())
         limite = self._relogio.agora() - JANELA_S
         while janela and janela[0] <= limite:
