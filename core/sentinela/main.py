@@ -41,6 +41,9 @@ from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.demo.simulador import (
     ChecagemSimulada,
     banco_e_demo,
+    gerar_rede,
+    hierarquia_demo,
+    semear_alertas_demo,
     semear_demo,
     semear_fontes_demo,
     tem_equipamentos,
@@ -108,7 +111,12 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
         log.warning("modo demonstração: as checagens são simuladas, nenhum pacote é enviado")
         await semear_demo(app.state.sessoes)
         await semear_fontes_demo(app.state.sessoes)
-        simulada = ChecagemSimulada(relogio=app.state.relogio)  # uma por app, para todo tipo
+        await semear_alertas_demo(app.state.sessoes, agora_utc())
+        pai, filhos = hierarquia_demo(gerar_rede())
+        simulada = ChecagemSimulada(  # uma por app, para todo tipo
+            relogio=app.state.relogio,
+            queda_correlacionada=(pai.ip, [f.ip for f in filhos]),
+        )
         monitor = await montar_monitor(
             app.state.sessoes, settings, lambda _tipo: simulada, app.state.relogio
         )
