@@ -90,17 +90,17 @@ async def m(tmp_path: Path) -> AsyncIterator[Montagem]:
 
 async def test_executar_cria_um_diario_por_dia_e_semanal_no_domingo(m: Montagem) -> None:
     # sábado 21/11 às 00:00 UTC; já existe um backup recente (nada de recuperação)
-    criar_backup(m.banco, m.destino, "manual", m.inicio - timedelta(hours=1), "0.4.0")
+    previo = criar_backup(m.banco, m.destino, "diario", m.inicio - timedelta(hours=1), "0.4.0")
     tarefa = asyncio.create_task(m.servico.executar())
     try:
         await m.acalmar()
         await m.avancar_ate(datetime(2026, 11, 21, 6, 0, tzinfo=UTC))  # sáb 03:00 em SP
-        assert [i.tipo for i in listar(m.destino) if i.tipo != "manual"] == ["diario"]
+        assert [i.tipo for i in listar(m.destino) if i.nome != previo.name] == ["diario"]
         await m.avancar_ate(datetime(2026, 11, 22, 6, 0, tzinfo=UTC))  # dom 03:00 em SP
-        tipos = sorted(i.tipo for i in listar(m.destino) if i.tipo != "manual")
+        tipos = sorted(i.tipo for i in listar(m.destino) if i.nome != previo.name)
         assert tipos == ["diario", "diario", "semanal"]
         await m.avancar_ate(datetime(2026, 11, 23, 6, 0, tzinfo=UTC))  # seg: só diário
-        tipos = sorted(i.tipo for i in listar(m.destino) if i.tipo != "manual")
+        tipos = sorted(i.tipo for i in listar(m.destino) if i.nome != previo.name)
         assert tipos == ["diario", "diario", "diario", "semanal"]
     finally:
         tarefa.cancel()
@@ -108,7 +108,7 @@ async def test_executar_cria_um_diario_por_dia_e_semanal_no_domingo(m: Montagem)
     async with m.sessoes() as db:
         estado = await m.servico.status(db)
     assert estado["ultimo_erro"] is None and estado["ultimo_tamanho"] > 0
-    assert len(estado["copias"]) == 5
+    assert len(estado["copias"]) == 5  # o prévio + 3 diários + 1 semanal
 
 
 async def test_recupera_backup_perdido_ao_subir(m: Montagem) -> None:
@@ -203,3 +203,16 @@ async def test_erro_conhecido_mantem_o_texto_fixo_dele(
         await m.servico.criar("diario")
     async with m.sessoes() as db:
         assert (await m.servico.status(db))["ultimo_erro"] == "Sem espaço em disco para o backup."
+
+
+async def test_backup_manual_recente_nao_impede_a_recuperacao(m: Montagem) -> None:
+    criar_backup(m.banco, m.destino, "manual", m.inicio - timedelta(hours=1), "0.4.0")
+    tarefa = asyncio.create_task(m.servico.executar())
+    try:
+        await m.acalmar()
+        await m.relogio.avancar(60)
+        await m.acalmar()
+        assert sorted(i.tipo for i in listar(m.destino)) == ["diario", "manual"]
+    finally:
+        tarefa.cancel()
+        await asyncio.gather(tarefa, return_exceptions=True)

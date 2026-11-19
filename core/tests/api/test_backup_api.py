@@ -90,6 +90,9 @@ async def test_post_backup_erro_generico_sem_detalhe(
     r = await cliente_admin.post(BACKUP)
     assert r.status_code == 500
     assert r.json() == {"detail": "Não foi possível fazer o backup."}
+    a = (await auditorias(app))[-1]
+    assert (a.acao, a.depois) == ("backup.falhou", {"tipo": "manual"})
+    assert "interno" not in str(a.depois)
 
 
 async def test_banco_restaurado_com_outra_chave_de_credenciais_sobe_e_marca_credencial_ilegivel(

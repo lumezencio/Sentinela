@@ -5,6 +5,7 @@ import sqlite3
 import stat
 import tarfile
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -313,3 +314,146 @@ def test_backup_nunca_inclui_env(banco: Path, destino: Path, tmp_path: Path) -> 
         manifesto = tar.extractfile("manifesto.json")
         assert manifesto is not None
         assert "segredo-fake" not in json.dumps(json.loads(manifesto.read()))
+
+
+# ---- rodada de correções ------------------------------------------------------------------
+
+
+def test_revisoes_do_codigo_com_cwd_diferente_e_layout_copiado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A imagem não é editável: o ``alembic.ini`` fica no diretório de trabalho (``/app``)."""
+    raiz = Path(arq.__file__).resolve().parents[2]
+    app = tmp_path / "app"
+    app.mkdir()
+    shutil.copy(raiz / "alembic.ini", app / "alembic.ini")
+    shutil.copytree(raiz / "alembic", app / "alembic", ignore=shutil.ignore_patterns("__pycache__"))
+    monkeypatch.delenv("SENTINELA_ALEMBIC_INI", raising=False)
+    monkeypatch.chdir(app)
+    assert {"0001", "0005"} <= arq.revisoes_do_codigo()
+    # variável de ambiente tem prioridade, de qualquer diretório
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SENTINELA_ALEMBIC_INI", str(app / "alembic.ini"))
+    assert {"0001", "0005"} <= arq.revisoes_do_codigo()
+
+
+def test_revisoes_do_codigo_falha_vira_erro_backup_fixo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SENTINELA_ALEMBIC_INI", str(tmp_path / "segredo-inexistente.ini"))
+    with pytest.raises(ErroBackup) as e:
+        arq.revisoes_do_codigo()
+    assert "segredo" not in str(e.value)
+    ruim = tmp_path / "ruim.ini"
+    ruim.write_text("[alembic]\nscript_location = %(here)s/nada\n")
+    monkeypatch.setenv("SENTINELA_ALEMBIC_INI", str(ruim))
+    with pytest.raises(ErroBackup):
+        arq.revisoes_do_codigo()
+
+
+def test_settings_aceita_a_variavel_do_alembic(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sentinela.config import Settings
+
+    monkeypatch.setenv("SENTINELA_ALEMBIC_INI", "/app/alembic.ini")
+    Settings(chave_sessao="x", chave_credenciais="a" * 64)
+
+
+def test_restaurar_sem_espaco_move_banco_wal_e_shm_juntos(
+    tmp_path: Path, banco: Path, destino: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    copia = criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    vivo = criar_banco(tmp_path / "vivo.db", linhas=3)
+    vivo.with_name("vivo.db-wal").write_bytes(b"wal pendente")
+    vivo.with_name("vivo.db-shm").write_bytes(b"shm")
+    tamanho = vivo.stat().st_size
+    pouco = shutil._ntuple_diskusage(10 * tamanho, 9 * tamanho, tamanho)
+    # o pre-restore não cabe: o banco (com o que ainda não foi para ele) vai para o lado
+    monkeypatch.setattr(arq.shutil, "disk_usage", lambda _p: pouco)
+    monkeypatch.setattr(arq, "_exigir_banco_livre", lambda _b: None)
+    pre = restaurar_backup(copia, vivo, AGORA + timedelta(minutes=1), "0.4.0")
+    assert pre is not None and ".antes-restore-" in pre.name
+    assert pre.with_name(pre.name + "-wal").read_bytes() == b"wal pendente"
+    assert pre.with_name(pre.name + "-shm").read_bytes() == b"shm"
+    assert not vivo.with_name("vivo.db-wal").exists()
+    assert contar(vivo) == 50 and contar(pre) == 3
+
+
+def test_restaurar_recusa_banco_travado_por_outro(
+    tmp_path: Path, banco: Path, destino: Path
+) -> None:
+    copia = criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    vivo = criar_banco(tmp_path / "vivo.db", linhas=3)
+    outro = sqlite3.connect(vivo, isolation_level=None)
+    outro.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(ErroBackup, match="em uso"):
+            restaurar_backup(copia, vivo, AGORA + timedelta(minutes=1), "0.4.0")
+    finally:
+        outro.execute("ROLLBACK")
+        outro.close()
+    assert contar(vivo) == 3
+    assert not (tmp_path / "vivo.db.novo").exists()
+    assert not list((tmp_path / "backups").glob("*pre-restore*"))
+
+
+def test_temporarios_velhos_sao_varridos_e_recentes_ficam(banco: Path, destino: Path) -> None:
+    destino.mkdir()
+    velho = destino / ".tmp-velho"
+    novo = destino / ".tmp-novo"
+    for d in (velho, novo):
+        d.mkdir()
+        (d / "sentinela.db").write_bytes(b"x")
+    sete_horas = 7 * 3600
+    antigo = os.stat(velho).st_mtime - sete_horas
+    os.utime(velho, (antigo, antigo))
+    criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    assert not velho.exists() and novo.exists()
+
+
+def test_mesmo_segundo_e_tipo_nao_sobrescreve(banco: Path, destino: Path) -> None:
+    a = criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    b = criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    assert a != b and a.exists() and b.exists()
+    verificar_backup(a, CONHECIDAS)
+    verificar_backup(b, CONHECIDAS)
+
+
+def test_trava_entre_processos_impede_backup_simultaneo(
+    banco: Path, destino: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(arq, "ESPERA_TRAVA_S", 0.5)
+    destino.mkdir()
+    with arq._trava_arquivo(destino):  # noqa: SLF001
+        with pytest.raises(ErroBackup, match="em andamento"):
+            criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    criar_backup(banco, destino, "manual", AGORA, "0.4.0")  # liberada: funciona
+
+
+def test_backup_de_banco_maior_com_escritor_termina_e_e_integro(
+    tmp_path: Path, destino: Path
+) -> None:
+    grande = criar_banco(tmp_path / "grande.db", linhas=10)
+    con = sqlite3.connect(grande)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.executemany("INSERT INTO dado (texto) VALUES (?)", [("x" * 800,)] * 25000)
+    con.commit()
+    con.close()
+    parar = threading.Event()
+
+    def escrever() -> None:
+        c = sqlite3.connect(grande, timeout=30)
+        while not parar.is_set():
+            c.execute("INSERT INTO dado (texto) VALUES ('novo')")
+            c.commit()
+        c.close()
+
+    t = threading.Thread(target=escrever)
+    t.start()
+    try:
+        inicio = time.monotonic()
+        caminho = criar_backup(grande, destino, "manual", AGORA, "0.4.0")
+        assert time.monotonic() - inicio < 60
+    finally:
+        parar.set()
+        t.join()
+    verificar_backup(caminho, CONHECIDAS)

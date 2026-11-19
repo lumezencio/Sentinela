@@ -17,15 +17,24 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import tarfile
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +60,12 @@ MSG_SEM_ESPACO = "Sem espaço em disco para o backup."
 MSG_INVALIDO = "Backup inválido ou corrompido."
 MSG_MAIS_NOVO = "Backup de uma versão mais nova do Sentinela."
 ESQUEMA_DESCONHECIDO = "desconhecido"
+MSG_SEM_ALEMBIC = "Não foi possível conferir a versão do esquema do banco."
+MSG_EM_USO = "O banco está em uso; pare o Sentinela antes de restaurar."
+MSG_OCUPADO = "Outro backup está em andamento."
+VARIAVEL_ALEMBIC_INI = "SENTINELA_ALEMBIC_INI"
+TEMP_VELHO = timedelta(hours=6)
+ESPERA_TRAVA_S = 120.0
 
 
 class ErroBackup(Exception):
@@ -165,11 +180,93 @@ def _preparar_destino(destino: Path) -> None:
     destino.chmod(0o700)
 
 
+def _caminho_alembic_ini() -> Path:
+    """``SENTINELA_ALEMBIC_INI`` se definida; senão ``alembic.ini`` no diretório atual (a
+    imagem roda em ``/app``, onde ele fica); senão o da árvore de código-fonte (desenvolvimento)."""
+    da_variavel = os.environ.get(VARIAVEL_ALEMBIC_INI)
+    if da_variavel:
+        return Path(da_variavel)
+    do_cwd = Path.cwd() / "alembic.ini"
+    if do_cwd.is_file():
+        return do_cwd
+    return Path(__file__).resolve().parents[2] / "alembic.ini"
+
+
 def revisoes_do_codigo() -> frozenset[str]:
-    """Todas as revisões Alembic conhecidas pelo código instalado (``alembic.ini`` da imagem)."""
-    ini = Path(__file__).resolve().parents[2] / "alembic.ini"
-    script = ScriptDirectory.from_config(Config(str(ini)))
-    return frozenset(r.revision for r in script.walk_revisions())
+    """Todas as revisões Alembic conhecidas pelo código instalado. Qualquer falha ao achar ou
+    ler o ``alembic.ini`` vira ``ErroBackup`` (mensagem fixa), nunca um traceback."""
+    try:
+        ini = _caminho_alembic_ini()
+        if not ini.is_file():
+            raise ErroBackup(MSG_SEM_ALEMBIC)
+        script = ScriptDirectory.from_config(Config(str(ini)))
+        revisoes = frozenset(r.revision for r in script.walk_revisions())
+    except ErroBackup:
+        raise
+    except Exception:
+        raise ErroBackup(MSG_SEM_ALEMBIC) from None
+    if not revisoes:
+        raise ErroBackup(MSG_SEM_ALEMBIC)
+    return revisoes
+
+
+@contextmanager
+def _trava_arquivo(destino: Path) -> Iterator[None]:
+    """Trava entre processos (CLI e API) por ``destino/.lock``: um backup por vez."""
+    fd = os.open(destino / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    limite = time.monotonic() + ESPERA_TRAVA_S
+    try:
+        while True:
+            try:
+                if sys.platform == "win32":
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() > limite:
+                    raise ErroBackup(MSG_OCUPADO) from None
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _limpar_temporarios(destino: Path) -> None:
+    """Apaga ``.tmp-*`` com mais de 6 h (sobras de um processo que morreu no meio)."""
+    limite = time.time() - TEMP_VELHO.total_seconds()
+    try:
+        itens = list(destino.iterdir())
+    except OSError:
+        return
+    for p in itens:
+        try:
+            if p.name.startswith(".tmp-") and not p.is_symlink() and p.stat().st_mtime < limite:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _momento_livre(destino: Path, tipo: TipoBackup, agora: datetime) -> datetime:
+    """``agora``, ou o segundo seguinte ao backup mais novo do mesmo tipo se ele não for
+    anterior: o nome nunca sobrescreve outro e o novo é sempre o mais recente do tipo (a rotação
+    nunca o apaga em vez de um antigo). O nome segue o padrão."""
+    mais_novo = max((i.criado_em for i in listar(destino) if i.tipo == tipo), default=None)
+    momento = agora
+    if mais_novo is not None and momento.astimezone(UTC).replace(microsecond=0) <= mais_novo:
+        momento = mais_novo + timedelta(seconds=1)
+    for i in range(3600):
+        candidato = momento + timedelta(seconds=i)
+        if not os.path.lexists(destino / _nome(candidato, tipo)):
+            return candidato
+    raise ErroBackup(MSG_GENERICA)
 
 
 # ---- criar --------------------------------------------------------------------------------
@@ -182,14 +279,17 @@ def criar_backup(
     só roda depois do arquivo novo estar no lugar."""
     try:
         _preparar_destino(destino)
-        if shutil.disk_usage(destino).free < 2 * banco.stat().st_size:
-            raise ErroBackup(MSG_SEM_ESPACO)
-        tmp = Path(tempfile.mkdtemp(prefix=".tmp-", dir=destino))
-        try:
-            final = _montar(banco, destino, tmp, tipo, agora, versao)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-        rotacionar(destino)
+        with _trava_arquivo(destino):
+            _limpar_temporarios(destino)
+            if shutil.disk_usage(destino).free < 2 * banco.stat().st_size:
+                raise ErroBackup(MSG_SEM_ESPACO)
+            momento = _momento_livre(destino, tipo, agora)
+            tmp = Path(tempfile.mkdtemp(prefix=".tmp-", dir=destino))
+            try:
+                final = _montar(banco, destino, tmp, tipo, momento, versao)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            rotacionar(destino)
         return final
     except ErroBackup:
         raise
@@ -206,7 +306,9 @@ def _montar(
     try:
         alvo = sqlite3.connect(copia)
         try:
-            origem.backup(alvo, pages=256, sleep=0.01)
+            origem.backup(
+                alvo, pages=-1
+            )  # um passo só: escritas concorrentes não reiniciam a cópia
         finally:
             alvo.close()
     finally:
@@ -378,6 +480,27 @@ def verificar_backup(
 # ---- restaurar ----------------------------------------------------------------------------
 
 
+def _exigir_banco_livre(banco: Path) -> None:
+    """Recusa se alguém mais está com o banco (``BEGIN EXCLUSIVE`` não consegue a trava em
+    1 s). Banco corrompido não é motivo de recusa: é justamente o caso de restaurar."""
+    if not banco.exists():
+        return
+    con: sqlite3.Connection | None = None
+    try:
+        con = sqlite3.connect(banco, timeout=1.0, isolation_level=None)
+        con.execute("BEGIN EXCLUSIVE")
+        con.execute("ROLLBACK")
+    except sqlite3.OperationalError as e:
+        texto = str(e).lower()
+        if "locked" in texto or "busy" in texto:
+            raise ErroBackup(MSG_EM_USO) from None
+    except sqlite3.DatabaseError:
+        pass
+    finally:
+        if con is not None:
+            con.close()
+
+
 def restaurar_backup(arquivo: Path, banco: Path, agora: datetime, versao: str) -> Path | None:
     """Restaura ``arquivo`` sobre ``banco`` (o core deve estar parado).
 
@@ -390,6 +513,7 @@ def restaurar_backup(arquivo: Path, banco: Path, agora: datetime, versao: str) -
     novo = banco.with_name(banco.name + ".novo")
     _extrair_verificando(arquivo, revisoes_do_codigo(), novo)
     try:
+        _exigir_banco_livre(banco)
         guardado: Path | None = None
         if banco.exists():
             try:
@@ -399,6 +523,10 @@ def restaurar_backup(arquivo: Path, banco: Path, agora: datetime, versao: str) -
             except ErroBackup:
                 guardado = banco.with_name(f"{banco.name}.antes-restore-{_carimbo(agora)}")
                 os.replace(banco, guardado)
+                for sufixo in ("-wal", "-shm"):  # o que ainda não foi para o banco vai junto
+                    lateral = banco.with_name(banco.name + sufixo)
+                    if lateral.exists():
+                        os.replace(lateral, guardado.with_name(guardado.name + sufixo))
         for sufixo in ("-wal", "-shm"):
             banco.with_name(banco.name + sufixo).unlink(missing_ok=True)
         os.replace(novo, banco)

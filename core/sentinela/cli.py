@@ -68,7 +68,6 @@ from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 VARIAVEL_SENHA = "SENTINELA_ADMIN_SENHA"
 PORTA_CORE = 8000  # a porta do core dentro do contêiner (a mesma do uvicorn na imagem)
 MSG_CORE_NO_AR = "o core está no ar; pare-o antes de restaurar (nada foi alterado)"
-MSG_BACKUP_INVALIDO = "backup inválido, corrompido ou de uma versão mais nova do Sentinela"
 
 
 class ErroCli(Exception):
@@ -232,8 +231,8 @@ def _backup_verificar(settings: Settings, arquivo: str) -> None:
             Path(arquivo), revisoes_do_codigo(), _caminho_banco(settings).parent
         )
     except ErroBackup as e:
-        # só as duas mensagens fixas: versão mais nova ou inválido
-        raise ErroCli(str(e) if "mais nova" in str(e) else MSG_BACKUP_INVALIDO, 1) from None
+        # ErroBackup só carrega textos fixos (inválido, versão mais nova, sem espaço...)
+        raise ErroCli(str(e), 1) from None
     print(f"backup válido: esquema {manifesto.esquema}, Sentinela {manifesto.sentinela}")
 
 
@@ -244,7 +243,7 @@ async def _restaurar(settings: Settings, arquivo: str) -> None:
     try:
         guardado = restaurar_backup(Path(arquivo), banco, datetime.now(UTC), __version__)
     except ErroBackup as e:
-        raise ErroCli(str(e) if "mais nova" in str(e) else MSG_BACKUP_INVALIDO, 1) from None
+        raise ErroCli(str(e), 1) from None
     except OSError:
         raise ErroCli("não foi possível restaurar (nada foi apagado)", 1) from None
     if guardado is not None:

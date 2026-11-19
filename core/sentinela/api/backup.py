@@ -66,6 +66,9 @@ async def criar(request: Request, db: SessaoDB, admin: Admin) -> CopiaSaida:
     try:
         info = await _servico(request).criar("manual")
     except ErroBackup:
+        # a tentativa que falhou também fica no registro (texto fixo, sem detalhe)
+        auditar(db, request, admin, "backup.falhou", None, None, {"tipo": "manual"})
+        await db.commit()
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=MSG_FALHA) from None
     auditar(db, request, admin, "backup.criar", info.nome, None, {"tipo": info.tipo})
     await db.commit()

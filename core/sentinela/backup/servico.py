@@ -139,9 +139,12 @@ class ServicoBackup:
         return base
 
     async def _recuperar(self) -> None:
-        """Ao subir: último backup com mais de 26 h (ou nenhum) → um backup após 60 s."""
+        """Ao subir: último agendado (diário/semanal) com +26 h, ou nenhum: backup em 60 s."""
         copias = await asyncio.to_thread(listar, self.destino)
-        if copias and self._agora() - copias[0].criado_em <= timedelta(hours=RECUPERAR_APOS_H):
+        agendadas = [c for c in copias if c.tipo in ("diario", "semanal")]  # manual não vale
+        if agendadas and self._agora() - agendadas[0].criado_em <= timedelta(
+            hours=RECUPERAR_APOS_H
+        ):
             return
         await self._relogio.dormir(ESPERA_RECUPERACAO_S)
         await self._tentar("diario")

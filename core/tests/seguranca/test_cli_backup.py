@@ -69,7 +69,7 @@ async def test_cli_backup_verificar_arquivo_corrompido_sai_1(
     ruim.write_bytes(b"lixo /dados/segredo")
     assert await cli.executar(["backup-verificar", str(ruim)], settings) == 1
     erro = capsys.readouterr().err
-    assert "backup inválido" in erro and "segredo" not in erro and "Traceback" not in erro
+    assert "backup inválido" in erro.lower() and "segredo" not in erro and "Traceback" not in erro
     hostil = montar_tar(tmp_path / "h.tar.gz", [("../x", b"x", None)])
     assert await cli.executar(["backup-verificar", str(hostil)], settings) == 1
 
@@ -126,3 +126,21 @@ async def test_cli_restaurar_arquivo_hostil_nao_toca_no_banco(
     assert await cli.executar(["restaurar", str(hostil)], settings) == 1
     assert contar(banco) == 50
     assert not [p for p in os.listdir(tmp_path) if p.endswith(".novo")]
+
+
+async def test_cli_sem_alembic_ini_sai_1_sem_traceback(
+    settings: Settings,
+    banco: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await cli.executar(["backup-criar"], settings)
+    nome = capsys.readouterr().out.strip()
+    monkeypatch.setenv("SENTINELA_ALEMBIC_INI", str(tmp_path / "nao-existe.ini"))
+    assert (
+        await cli.executar(["backup-verificar", str(banco.parent / "backups" / nome)], settings)
+        == 1
+    )
+    erro = capsys.readouterr().err
+    assert "versão do esquema" in erro and "Traceback" not in erro and "nao-existe" not in erro
