@@ -78,7 +78,7 @@ git tag v0.0.2-op
 git checkout -q -B teste-op v0.0.1-op # o ramo volta à instalação anterior; a candidata fica só na tag
 
 passo "instalando v0.0.1-op (imagens locais)"
-bash install.sh >/dev/null
+bash install.sh --build >/dev/null
 dc exec -T core python -m sentinela.cli sub-rede adicionar 10.99.0.0/24 >/dev/null
 [[ "$(dc exec -T core python -m sentinela.cli sub-rede listar | tr -d '\r')" == "10.99.0.0/24" ]] ||
   falha "a sub-rede de teste não foi cadastrada"
