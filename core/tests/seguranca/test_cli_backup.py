@@ -144,3 +144,33 @@ async def test_cli_sem_alembic_ini_sai_1_sem_traceback(
     )
     erro = capsys.readouterr().err
     assert "versão do esquema" in erro and "Traceback" not in erro and "nao-existe" not in erro
+
+
+async def test_cli_restaurar_recusa_quando_o_core_responde_pelo_nome_do_servico(
+    settings: Settings,
+    banco: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``compose run``: o loopback do contêiner avulso não é o do core; vale o nome ``core``."""
+    await cli.executar(["backup-criar"], settings)
+    nome = capsys.readouterr().out.strip()
+    with socket.socket() as ouvinte:
+        ouvinte.bind(("127.0.0.1", 0))
+        ouvinte.listen()
+        monkeypatch.setattr(cli, "PORTA_CORE", ouvinte.getsockname()[1])
+        # só o nome do serviço (aqui "localhost") chega ao core; o 127.0.0.1 fica de fora
+        monkeypatch.setattr(cli, "HOSTS_CORE", ("host-que-nao-existe.invalid", "localhost"))
+        codigo = await cli.executar(["restaurar", str(banco.parent / "backups" / nome)], settings)
+    assert codigo == 1
+    assert "core está no ar" in capsys.readouterr().err
+    assert contar(banco) == 50
+    assert not list((banco.parent / "backups").glob("*pre-restore*"))
+
+
+def test_cli_hosts_do_core_sao_loopback_e_o_servico_do_compose() -> None:
+    assert cli.HOSTS_CORE == ("127.0.0.1", "core")
+    compose = (Path(__file__).resolve().parents[3] / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "\n  core:\n" in compose  # o nome sondado é mesmo o do serviço

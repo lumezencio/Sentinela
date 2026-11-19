@@ -20,7 +20,7 @@ CHECAGENS = "monitor/checagens/"  # prefixo: qualquer módulo de checagem
 MIKROTIK = "descoberta/fontes/mikrotik_api.py"
 SONDAGEM = "descoberta/classificador/sondagem.py"
 GRAVADOR = "descoberta/fontes/gravador_http.py"
-PORTA_LOCAL = "backup/porta.py"  # só 127.0.0.1: o ``restaurar`` confere se o core está no ar
+PORTA_LOCAL = "backup/porta.py"  # só loopback e rede privada: ``restaurar`` vê se o core está no ar
 TELEGRAM = "alertas/telegram.py"  # única saída para a internet (DestinoExterno da Guarda)
 
 # biblioteca -> arquivos (relativos a ``sentinela/``) ou prefixos terminados em "/"

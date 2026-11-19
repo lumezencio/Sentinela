@@ -15,8 +15,10 @@ A senha é lida com ``getpass`` (duas vezes, para confirmar). Fora de produção
 ``backup-criar`` imprime só o nome do arquivo gerado em ``<pasta do banco>/backups`` (funciona
 com o core no ar). ``backup-verificar`` sai com 1 e mensagem genérica se o arquivo for inválido.
 ``restaurar`` verifica, guarda o banco atual como ``pre-restore``, restaura e imprime o nome do
-``pre-restore``; recusa rodar se o core responder em 127.0.0.1:8000. O ``.env`` nunca entra no
-backup: os comandos repetem o aviso em texto fixo.
+``pre-restore``. Recusa rodar se o core responder na porta 8000 em 127.0.0.1 (``compose exec``) ou
+pelo nome de serviço ``core`` na rede do compose (``compose run``); fora do compose a sonda não vê
+o core, e a trava final é o banco ter escritor ativo. O caminho seguro é o ``restore.sh``, que
+para o core antes. O ``.env`` nunca entra no backup: os comandos repetem o aviso em texto fixo.
 
 ``sub-rede`` usa a mesma validação da API, grava a auditoria com ``usuario_id`` nulo e ação
 ``cli:subrede.*`` e pausa/retoma os equipamentos como a API faz. Ela escreve só no banco: com
@@ -54,7 +56,7 @@ from sentinela.backup.arquivo import (
     revisoes_do_codigo,
     verificar_backup,
 )
-from sentinela.backup.porta import porta_responde
+from sentinela.backup.porta import HOSTS_DO_CORE, porta_responde
 from sentinela.config import Settings, obter_settings
 from sentinela.db.modelos import Auditoria, SubRede, Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
@@ -67,6 +69,7 @@ from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 
 VARIAVEL_SENHA = "SENTINELA_ADMIN_SENHA"
 PORTA_CORE = 8000  # a porta do core dentro do contêiner (a mesma do uvicorn na imagem)
+HOSTS_CORE: tuple[str, ...] = HOSTS_DO_CORE  # 127.0.0.1 (exec) e o serviço "core" (run)
 MSG_CORE_NO_AR = "o core está no ar; pare-o antes de restaurar (nada foi alterado)"
 
 
@@ -237,7 +240,7 @@ def _backup_verificar(settings: Settings, arquivo: str) -> None:
 
 
 async def _restaurar(settings: Settings, arquivo: str) -> None:
-    if await porta_responde(PORTA_CORE):
+    if await porta_responde(PORTA_CORE, hosts=HOSTS_CORE):
         raise ErroCli(MSG_CORE_NO_AR, 1)
     banco = _caminho_banco(settings)
     try:
