@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Docker falso para testar os scripts de operação sem tocar em contêiner nenhum.
+# Registra cada chamada (uma linha) em $SHIM_LOG e responde por caso.
+#
+#   SHIM_FALHAR="padrão1|padrão2"  chamadas cuja linha casa com o padrão (glob) saem com 1;
+#                                  prefixo "1x:" faz falhar só na primeira vez
+#   SHIM_IMAGENS="repo:tag ..."    saída de "docker image ls" (uma por linha)
+#   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
+set -uo pipefail
+
+: "${SHIM_LOG:?SHIM_LOG não definido}"
+SHIM_DIR="${SHIM_DIR:-$(dirname "$SHIM_LOG")}"
+linha="$*"
+printf 'docker %s\n' "$linha" >>"$SHIM_LOG"
+
+falha_pedida() {
+  local padrao uma marca
+  local IFS='|'
+  for padrao in ${SHIM_FALHAR:-}; do
+    [[ -n "$padrao" ]] || continue
+    uma=0
+    if [[ "$padrao" == 1x:* ]]; then
+      uma=1
+      padrao="${padrao#1x:}"
+    fi
+    # shellcheck disable=SC2053
+    if [[ "$linha" == $padrao ]]; then
+      if ((uma)); then
+        marca="$SHIM_DIR/.falhou-$(printf '%s' "$padrao" | cksum | cut -d' ' -f1)"
+        [[ -e "$marca" ]] && continue
+        : >"$marca"
+      fi
+      return 0
+    fi
+  done
+  return 1
+}
+
+if falha_pedida; then
+  echo "shim: falha simulada para: $linha" >&2
+  exit 1
+fi
+
+case "$1" in
+  version | info | tag | rmi | inspect | pull | build) exit 0 ;;
+  image)
+    if [[ "${2:-}" == "ls" ]]; then
+      for img in ${SHIM_IMAGENS:-}; do echo "$img"; done
+    fi
+    exit 0
+    ;;
+  buildx) exit 0 ;;
+  compose)
+    shift
+    case "$linha" in
+      "compose version"*) exit 0 ;;
+      *" backup-criar"*) echo "manual-20261118T030000Z.tar.gz" ;;
+      *" backup-verificar"*) echo "backup válido: esquema 0005, Sentinela 0.4.0" ;;
+      *" restaurar "*) echo "pre-restore-20261118T030100Z.tar.gz" ;;
+      *" cp "*)
+        destino="${*: -1}"
+        mkdir -p "$destino"
+        echo "conteudo-ficticio" >"$destino/manual-20261118T030000Z.tar.gz"
+        chmod 644 "$destino/manual-20261118T030000Z.tar.gz"
+        ;;
+    esac
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
