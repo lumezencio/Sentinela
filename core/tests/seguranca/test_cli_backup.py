@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from sentinela import cli
+from sentinela.backup import porta
 from sentinela.config import Settings
 from tests.backup.apoio import contar, criar_banco, montar_tar
 
@@ -159,7 +160,9 @@ async def test_cli_restaurar_recusa_quando_o_core_responde_pelo_nome_do_servico(
         ouvinte.bind(("127.0.0.1", 0))
         ouvinte.listen()
         monkeypatch.setattr(cli, "PORTA_CORE", ouvinte.getsockname()[1])
-        # só o nome do serviço (aqui "localhost") chega ao core; o 127.0.0.1 fica de fora
+        # só o nome do serviço (aqui "localhost") chega ao core; o 127.0.0.1 fica de fora.
+        # Nomes só são resolvidos dentro de um contêiner (fora dele seria LLMNR/mDNS).
+        monkeypatch.setattr(porta, "em_conteiner", lambda: True)
         monkeypatch.setattr(cli, "HOSTS_CORE", ("host-que-nao-existe.invalid", "localhost"))
         codigo = await cli.executar(["restaurar", str(banco.parent / "backups" / nome)], settings)
     assert codigo == 1

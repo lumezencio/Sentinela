@@ -12,24 +12,52 @@ Dois lugares são sondados, porque a CLI roda de dois jeitos:
 
 Ainda assim é uma checagem de melhor esforço: fora do compose (core num servidor remoto) ela não vê
 o core. A trava definitiva é o banco: ``restaurar_backup`` recusa um banco com escritor ativo.
+
+Nomes só são resolvidos dentro de um contêiner (``/.dockerenv``), onde quem responde é o DNS
+embutido do Docker. Fora dele, um nome de um rótulo só como ``core`` cairia em LLMNR/mDNS
+(multicast na LAN), o que o Sentinela nunca faz; ali só os IPs literais são sondados.
 """
 
 import asyncio
 import ipaddress
+import os
 import socket
 
 LOOPBACK = "127.0.0.1"
 NOME_DO_SERVICO = "core"  # nome do serviço no docker-compose.yml (DNS da rede interna)
 HOSTS_DO_CORE = (LOOPBACK, NOME_DO_SERVICO)
+ESPERA_DNS_S = 2.0
+MARCA_DE_CONTEINER = "/.dockerenv"
+
+
+def em_conteiner() -> bool:
+    """``True`` dentro de um contêiner Docker (resolver nomes ali não sai em multicast)."""
+    return os.path.exists(MARCA_DE_CONTEINER)
+
+
+def _e_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 async def _enderecos_locais(host: str) -> list[str]:
-    """IPs de ``host`` que são loopback ou privados (os públicos e os ilegíveis ficam de fora)."""
+    """IPs de ``host`` que são loopback ou privados (os públicos e os ilegíveis ficam de fora).
+
+    Um nome (não IP) só é resolvido dentro de um contêiner; fora dele a resposta é vazia.
+    """
+    if not _e_ip_literal(host) and not em_conteiner():
+        return []
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(
-            host, None, family=socket.AF_INET, type=socket.SOCK_STREAM
+        infos = await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(
+                host, None, family=socket.AF_INET, type=socket.SOCK_STREAM
+            ),
+            timeout=ESPERA_DNS_S,
         )
-    except OSError:
+    except (OSError, TimeoutError):
         return []
     achados: list[str] = []
     for info in infos:
