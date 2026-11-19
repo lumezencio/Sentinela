@@ -73,6 +73,9 @@ IMAGENS_ANTERIOR=""
 TAG_COMPOSE_ANTERIOR="latest"
 ID_CORE_ANTES=""
 ID_WEB_ANTES=""
+ID_CORE_ALVO=""
+VOLUME_DADOS=""
+ARQUIVOS_REVERTIDOS=0
 TAG_ALVO=""
 VERSAO_ALVO=""
 MODO="locais"
@@ -94,22 +97,30 @@ estado_servicos() {
   recuar <<<"$s"
 }
 
-# comandos_de_volta: a volta manual, exata, com os nomes desta execução
+# comandos_de_volta: a volta manual a partir do ESTADO REAL (o que já foi feito não é repetido).
+# Com "preso", o restore é preso a uma imagem específica (a candidata, por ID) e ao volume real.
 comandos_de_volta() {
   local p="docker compose" f
   [[ -z "${SENTINELA_PROJETO:-}" ]] || p="$p -p $SENTINELA_PROJETO"
   for f in ${SENTINELA_COMPOSE_ARQUIVOS:-}; do p="$p -f $f"; done
-  echo "Volta manual (execute na pasta do projeto, nesta ordem):"
+  echo "Volta manual (execute na pasta do projeto, nesta ordem; os contêineres continuam parados):"
   echo "  $p stop core"
-  echo "  ./restore.sh --do-volume $BACKUP --sim --sem-subir"
-  if [[ -n "$RAMO_ANTERIOR" ]]; then
-    echo "  git checkout $RAMO_ANTERIOR"
+  if [[ "${1:-}" == preso ]]; then
+    # a restauração automática já falhou: preso à imagem candidata (ID) e ao volume real
+    echo "  docker run --rm --env-file .env -v ${VOLUME_DADOS:-<volume de dados>}:/dados ${ID_CORE_ALVO:-$IMG_REPO_CORE:$VERSAO_ALVO} python -m sentinela.cli restaurar /dados/backups/$BACKUP"
   else
-    echo "  git checkout --detach $SHA_ANTERIOR"
+    echo "  ./restore.sh --do-volume $BACKUP --sim --sem-subir"
   fi
-  echo "  cp $ENV_PRE .env && chmod 600 .env"
-  echo "  docker tag $IMG_REPO_CORE:$TS_PRE $IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR"
-  echo "  docker tag $IMG_REPO_WEB:$TS_PRE $IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR"
+  if [[ $ARQUIVOS_REVERTIDOS -eq 0 ]]; then
+    if [[ -n "$RAMO_ANTERIOR" ]]; then
+      echo "  git checkout $RAMO_ANTERIOR"
+    else
+      echo "  git checkout --detach $SHA_ANTERIOR"
+    fi
+    echo "  cp $ENV_PRE .env && chmod 600 .env"
+    echo "  docker tag $IMG_REPO_CORE:$TS_PRE $IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR"
+    echo "  docker tag $IMG_REPO_WEB:$TS_PRE $IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR"
+  fi
   echo "  $p up -d --no-deps --no-build --pull never --wait core web"
 }
 
@@ -130,6 +141,7 @@ reverter_arquivos() {
   docker tag "$IMG_REPO_CORE:$TS_PRE" "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR" || ok=1
   docker tag "$IMG_REPO_WEB:$TS_PRE" "$IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR" || ok=1
   if [[ "$(git rev-parse HEAD 2>/dev/null)" != "$SHA_ANTERIOR" ]]; then ok=1; fi
+  [[ "$ok" -ne 0 ]] || ARQUIVOS_REVERTIDOS=1
   if [[ $TAGS_ALVO_BAIXADAS -eq 1 && $ALVO_VERIFICADO -eq 0 ]]; then
     docker rmi "$IMG_REPO_CORE:$VERSAO_ALVO" "$IMG_REPO_WEB:$VERSAO_ALVO" >/dev/null 2>&1 || true
   fi
@@ -144,23 +156,52 @@ id_em_execucao() {
   docker inspect --format '{{.Image}}' "$cid" 2>/dev/null | tr -d '\r' || true
 }
 
+# cli_tem_restaurar: 0 se a imagem que o compose usa agora tem o comando "restaurar"
+cli_tem_restaurar() {
+  local ajuda
+  ajuda="$(compose run --rm --no-deps -T core python -m sentinela.cli --help 2>&1 || true)"
+  [[ "$ajuda" == *restaurar* ]]
+}
+
+# restaurar_backup: restore.sh só restaura (core fica parado); usa a imagem que o compose usa agora
+restaurar_backup() {
+  SENTINELA_TRAVA_PAI="$$" bash "$RAIZ/restore.sh" --do-volume "$BACKUP" --sim --sem-subir >&2
+}
+
 # voltar: falha depois da proteção. Cada passo é relatado pelo que foi de fato conferido.
+# Com contêiner trocado: para o core, restaura o backup com a CLI da imagem candidata (a antiga pode
+# nem ter "restaurar"); se ela falhar, devolve os arquivos e tenta UMA vez com a imagem antiga, se
+# ela tiver o comando. Sem banco restaurado, os contêineres ficam parados.
 voltar() {
   set +e
   trap '' INT TERM HUP
-  local restaurou=1 arquivos=1 subiu=1
+  local restaurou=1 arquivos=1
   {
     echo
     echo "FALHA na fase: $FASE. Voltando ao estado anterior. NÃO INTERROMPA: voltando."
   } >&2
   if [[ $TOCOU -eq 1 ]]; then
     echo "Restaurando o backup $BACKUP (dados gravados depois dele serão descartados)..." >&2
-    compose stop core >&2 &&
-      SENTINELA_TRAVA_PAI="$$" bash "$RAIZ/restore.sh" --do-volume "$BACKUP" --sim --sem-subir >&2
+    compose stop core >&2 && restaurar_backup
     restaurou=$?
+    if [[ $restaurou -ne 0 ]]; then
+      echo "A restauração com a imagem nova falhou; devolvendo os arquivos e tentando com a imagem anterior..." >&2
+      reverter_arquivos
+      arquivos=$?
+      if cli_tem_restaurar; then
+        restaurar_backup
+        restaurou=$?
+      else
+        echo "A imagem anterior não tem o comando 'restaurar'; não há como tentar de novo automaticamente." >&2
+      fi
+    fi
   fi
-  reverter_arquivos
-  arquivos=$?
+  if [[ $ARQUIVOS_REVERTIDOS -eq 0 ]]; then
+    reverter_arquivos
+    arquivos=$?
+  else
+    arquivos=0
+  fi
   if [[ $arquivos -eq 0 ]]; then
     echo "Checkout anterior, .env e marcações das imagens restaurados." >&2
   else
@@ -168,9 +209,7 @@ voltar() {
   fi
   if [[ $TOCOU -eq 1 ]]; then
     if [[ $restaurou -eq 0 && $arquivos -eq 0 ]]; then
-      compose up -d --no-deps --no-build --pull never --wait core web >&2
-      subiu=$?
-      if [[ $subiu -eq 0 ]] && saude_ok &&
+      if compose up -d --no-deps --no-build --pull never --wait core web >&2 && saude_ok &&
         [[ -z "$ID_CORE_ANTES" || "$(id_em_execucao core)" == "$ID_CORE_ANTES" ]] &&
         [[ -z "$ID_WEB_ANTES" || "$(id_em_execucao web)" == "$ID_WEB_ANTES" ]]; then
         echo "Volta concluída: banco do backup restaurado, imagens anteriores de volta (IDs conferidos) e core saudável." >&2
@@ -178,8 +217,8 @@ voltar() {
         echo "A volta subiu os contêineres, mas NÃO consegui confirmar a saúde do core e os IDs das imagens anteriores." >&2
       fi
     else
-      echo "ERRO: a volta automática não terminou; os contêineres não foram religados." >&2
-      comandos_de_volta >&2
+      echo "ERRO: a volta automática não terminou; os contêineres foram deixados parados." >&2
+      comandos_de_volta preso >&2
     fi
   else
     echo "Nenhum contêiner tinha sido trocado; o banco não foi mexido." >&2
@@ -261,29 +300,65 @@ versao_menor() {
   return 1
 }
 
-# detectar_arquivos_compose: os arquivos -f do core em execução (label do compose), exportados
-# para todas as chamadas (inclusive as do restore.sh); recusa se não der para saber
+# caminho_unix CAMINHO: caminho do rótulo do compose no formato do shell (Windows: C:\\x vira /c/x)
+caminho_unix() {
+  local c="$1"
+  if command -v cygpath >/dev/null 2>&1 && [[ "$c" == *\\* || "$c" =~ ^[A-Za-z]:/ ]]; then
+    cygpath -u "$c" 2>/dev/null && return 0
+  fi
+  c="${c//\\//}"
+  if [[ "$c" =~ ^([A-Za-z]):/(.*)$ ]]; then
+    local d rest="${BASH_REMATCH[2]}"
+    d="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+    c="/$d/$rest"
+  fi
+  printf '%s\n' "$c"
+}
+
+# detectar_arquivos_compose: os arquivos -f do core em execução (label do compose), sempre
+# repassados (inclusive ao restore.sh); recusa se não der para saber
 detectar_arquivos_compose() {
   local cid rotulo f dir nomes=""
+  # nada herdado do ambiente: só o que for detectado aqui vale
+  SENTINELA_COMPOSE_ARQUIVOS=""
+  export SENTINELA_COMPOSE_ARQUIVOS
   cid="$(compose ps -q core 2>/dev/null | head -n 1 | tr -d '\r')"
   [[ -n "$cid" ]] || falhar "não encontrei o contêiner do core em execução; suba o Sentinela antes de atualizar (nada foi alterado)"
+  VOLUME_DADOS="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/dados"}}{{.Name}}{{end}}{{end}}' "$cid" 2>/dev/null | tr -d '\r' || true)"
   rotulo="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null | tr -d '\r' || true)"
   [[ -n "$rotulo" ]] ||
     falhar "não consegui descobrir com quais arquivos compose o core foi criado (instalação --demo ou personalizada?); atualize manualmente ou recrie o core com docker compose up. Nada foi alterado"
   local IFS=,
   for f in $rotulo; do
+    f="$(caminho_unix "$f")"
     dir="$(cd "$(dirname "$f")" 2>/dev/null && pwd)" || dir=""
     f="$(basename "$f")"
     [[ "$dir" == "$RAIZ" && "$f" =~ ^docker-compose[A-Za-z0-9._-]*\.ya?ml$ && -f "$RAIZ/$f" ]] ||
-      falhar "o core em execução usa um arquivo compose fora desta pasta ou com nome inesperado ($f); atualize manualmente. Nada foi alterado"
+      falhar "o core em execução foi criado com um arquivo compose que não está nesta pasta ou tem nome inesperado ($f). No Windows, rode o update.sh pelo Git Bash ou WSL, dentro da pasta do projeto; senão atualize manualmente. Nada foi alterado"
     nomes="$nomes $f"
   done
-  nomes="${nomes# }"
-  # só o arquivo padrão: o compose já o usa sozinho (nada a repassar)
-  if [[ "$nomes" != "docker-compose.yml" ]]; then
-    SENTINELA_COMPOSE_ARQUIVOS="$nomes"
-    export SENTINELA_COMPOSE_ARQUIVOS
+  SENTINELA_COMPOSE_ARQUIVOS="${nomes# }"
+  export SENTINELA_COMPOSE_ARQUIVOS
+}
+
+# versao_em_execucao: a versão que RODA (VERSAO do .env nas imagens publicadas; senão a do pacote
+# no core em execução). Vazia se não der para saber (a checagem de downgrade então não vale).
+versao_em_execucao() {
+  if [[ "$IMAGENS_ANTERIOR" == publicadas && -n "$VERSAO_ANTERIOR" ]]; then
+    printf '%s\n' "$VERSAO_ANTERIOR"
+    return 0
   fi
+  compose exec -T core python -c "import sentinela; print(sentinela.__version__)" 2>/dev/null | tr -d '\r' | tail -n 1 || true
+}
+
+# versao_do_alvo: versão do alvo (publicadas: a da tag; locais: version do core/pyproject.toml na tag,
+# ou o número da tag se o arquivo não existir lá)
+versao_do_alvo() {
+  local v=""
+  if [[ "$MODO" != publicadas ]]; then
+    v="$(git show "refs/tags/$TAG_ALVO:core/pyproject.toml" 2>/dev/null | grep -m 1 -E '^version *= *"' | cut -d'"' -f2 || true)"
+  fi
+  printf '%s\n' "${v:-$VERSAO_ALVO}"
 }
 
 # resolver_alvo ARG: define TAG_ALVO (tag de lançamento existente no repositório)
@@ -376,7 +451,7 @@ limpar() {
 }
 
 main() {
-  local versao_arg="" flag_publicadas=0 permitir_voltar=0 arg espaco atual
+  local versao_arg="" flag_publicadas=0 permitir_voltar=0 arg espaco rodando alvo_pkg
   for arg in "$@"; do
     case "$arg" in
       --imagens-publicadas) flag_publicadas=1 ;;
@@ -422,9 +497,10 @@ main() {
   SHA_ANTERIOR="$(git rev-parse HEAD)"
   VERSAO_ANTERIOR="$(valor_env VERSAO "")"
   IMAGENS_ANTERIOR="$(valor_env IMAGENS "")"
-  atual="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
-  if [[ -n "$atual" && $permitir_voltar -eq 0 ]] && versao_menor "${VERSAO_ALVO}" "${atual#v}"; then
-    falhar "$TAG_ALVO é anterior à versão instalada ($atual); voltar de versão pode falhar com o banco atual. Para forçar: ./update.sh $TAG_ALVO --permitir-voltar-versao (nada foi alterado)"
+  rodando="$(versao_em_execucao)"
+  alvo_pkg="$(versao_do_alvo)"
+  if [[ -n "$rodando" && -n "$alvo_pkg" && $permitir_voltar -eq 0 ]] && versao_menor "$alvo_pkg" "$rodando"; then
+    falhar "$TAG_ALVO (versão $alvo_pkg) é anterior à que está rodando ($rodando); voltar de versão pode falhar com o banco atual. Para forçar: ./update.sh $TAG_ALVO --permitir-voltar-versao (nada foi alterado)"
   fi
   if [[ "$MODO" == publicadas ]]; then
     # já está na versão? (a versão que RODA, não o checkout: VERSAO e IDs das imagens em execução)
@@ -473,9 +549,11 @@ main() {
     verificar_imagem core "$IMG_REPO_CORE"
     verificar_imagem web "$IMG_REPO_WEB"
     ALVO_VERIFICADO=1
+    ID_CORE_ALVO="$(id_da_tag "$IMG_REPO_CORE:$VERSAO_ALVO")"
   else
     FASE="construindo as imagens locais"
     compose build core web
+    ID_CORE_ALVO="$(id_da_tag "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR")"
     # imagens idênticas às que rodam: nada a trocar (a versão que RODA, não o checkout)
     if [[ -n "$ID_CORE_ANTES" && "$(id_da_tag "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR")" == "$ID_CORE_ANTES" &&
       "$(id_da_tag "$IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR")" == "$ID_WEB_ANTES" ]]; then

@@ -24,7 +24,7 @@ rodar_em_diretorio_temporario() {
   export SHIM_LOG="$TMP_OP/shim-estado/docker.log"
   export SHIM_DIR="$TMP_OP/shim-estado"
   : >"$SHIM_LOG"
-  unset SHIM_FALHAR SHIM_IMAGENS SHIM_LISTA SHIM_DORMIR SENTINELA_PROJETO SHIM_DIGEST_CORE SHIM_DIGEST_WEB SHIM_DIGESTS_TXT SHIM_FALHAR_COSIGN SHIM_CONFIG_FILES SHIM_IGUAL SHIM_ID_CORE_POS SHIM_SEM_BACKUP_CLI
+  unset SHIM_FALHAR SHIM_IMAGENS SHIM_LISTA SHIM_DORMIR SENTINELA_PROJETO SHIM_DIGEST_CORE SHIM_DIGEST_WEB SHIM_DIGESTS_TXT SHIM_FALHAR_COSIGN SHIM_CONFIG_FILES SHIM_IGUAL SHIM_ID_CORE_POS SHIM_SEM_BACKUP_CLI SHIM_VERSAO_RODANDO
   PATH="$LIB_DIR/shims:$PATH"
   export PATH
   # o teste roda em subshell: o EXIT limpa mesmo quando uma asserção encerra o teste
@@ -108,7 +108,7 @@ afirmar_igual() {
 # executar_testes: roda toda função test_* do arquivo chamador, cada uma em subshell isolado
 executar_testes() {
   local t
-  for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
+  for t in $(declare -F | awk '{print $3}' | grep "^test_.*${SOMENTE:-}"); do
     TESTES=$((TESTES + 1))
     if (
       set -e

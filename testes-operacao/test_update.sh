@@ -221,8 +221,8 @@ test_demo_usa_os_mesmos_arquivos_em_todas_as_chamadas() {
   export SHIM_CONFIG_FILES="$TMP_OP/docker-compose.yml,$TMP_OP/docker-compose.demo.yml"
   export SHIM_FALHAR="*--wait-timeout 120 web"
   if atualizar v0.5.0; then _falhou "deveria falhar"; fi
-  # inclui as chamadas do restore.sh feito pela volta
-  afirmar_log_contem "sentinela.cli restaurar"
+  # inclui as chamadas do restore.sh feito pela volta (log cru, com todos os -f)
+  grep -qF "sentinela.cli restaurar" "$SHIM_DIR/docker.raw.log" || _falhou "faltou o restore"
   local l
   while IFS= read -r l; do
     case "$l" in
@@ -232,7 +232,90 @@ test_demo_usa_os_mesmos_arquivos_em_todas_as_chamadas() {
           "$l" == "docker compose ps -q core" ]] || _falhou "compose sem os arquivos do core: $l"
         ;;
     esac
-  done <"$SHIM_LOG"
+  done <"$SHIM_DIR/docker.raw.log"
+}
+
+test_caso_simples_tambem_passa_o_arquivo_explicitamente_e_ignora_o_ambiente() {
+  ambiente
+  export SENTINELA_COMPOSE_ARQUIVOS="docker-compose.malicioso.yml"
+  atualizar v0.5.0 || _falhou "deveria atualizar: $(cat "$TMP_OP/saida-update")"
+  grep -qF "docker compose -f docker-compose.yml up -d --no-deps --no-build --pull never --wait --wait-timeout 120 core" "$SHIM_DIR/docker.raw.log" ||
+    _falhou "deveria passar -f docker-compose.yml explicitamente"
+  if grep -qF "malicioso" "$SHIM_DIR/docker.raw.log"; then _falhou "usou arquivo herdado do ambiente"; fi
+}
+
+test_rotulo_com_caminho_windows_da_pasta_e_normalizado() {
+  ambiente
+  command -v cygpath >/dev/null 2>&1 || return 0
+  SHIM_CONFIG_FILES="$(cygpath -w "$TMP_OP")\\docker-compose.yml"
+  export SHIM_CONFIG_FILES
+  atualizar v0.5.0 || _falhou "deveria aceitar o caminho no formato Windows: $(cat "$TMP_OP/saida-update")"
+  afirmar_log_contem "$COMPOSE_CORE_UP"
+}
+
+test_rotulo_com_caminho_windows_de_outra_pasta_recusa_citando_git_bash() {
+  ambiente
+  export SHIM_CONFIG_FILES='C:\\Outra\\pasta\\docker-compose.yml'
+  if atualizar v0.5.0; then _falhou "deveria recusar"; fi
+  grep -qF "Git Bash" "$TMP_OP/saida-update" || _falhou "deveria citar o Git Bash/WSL"
+  afirmar_log_nao_contem "backup-criar"
+  afirmar_log_nao_contem "docker tag"
+}
+
+test_versao_anterior_a_instalada_e_recusada_sem_a_opcao() {
+  ambiente
+  # o core em execução é 0.5.0 (a versão que RODA, não o checkout)
+  export SHIM_VERSAO_RODANDO="0.5.0"
+  if atualizar v0.4.0; then _falhou "deveria recusar o downgrade"; fi
+  grep -qF "permitir-voltar-versao" "$TMP_OP/saida-update" || _falhou "deveria citar a opção"
+  afirmar_log_nao_contem "backup-criar"
+  afirmar_log_nao_contem "docker tag"
+  atualizar v0.4.0 --permitir-voltar-versao || _falhou "deveria aceitar com a opção: $(cat "$TMP_OP/saida-update")"
+  afirmar_log_contem "$COMPOSE_CORE_UP"
+}
+
+test_downgrade_publicadas_compara_com_a_versao_do_env() {
+  ambiente
+  com_cosign
+  printf 'IMAGENS=publicadas\nVERSAO=0.5.0\n' >>"$TMP_OP/.env"
+  if atualizar v0.4.0; then _falhou "deveria recusar"; fi
+  afirmar_log_nao_contem "compose pull"
+}
+
+test_restore_da_imagem_nova_falha_na_volta_tenta_uma_vez_na_imagem_antiga() {
+  ambiente
+  # a subida do core falha; a 1a restauração (CLI candidata) falha; a 2a (imagem antiga) funciona
+  export SHIM_FALHAR="*--wait-timeout 120 core|1x:*sentinela.cli restaurar*"
+  if atualizar v0.5.0; then _falhou "deveria falhar"; fi
+  [[ "$(linhas_de 'sentinela.cli restaurar')" -eq 2 ]] || _falhou "esperava 2 tentativas de restaurar"
+  # 1a tentativa, devolve os arquivos, confere a CLI antiga, 2a tentativa, sobe
+  afirmar_ordem "sentinela.cli restaurar" "git checkout -q main" "compose run --rm --no-deps -T core python -m sentinela.cli --help" "$VOLTA_UP"
+  grep -qF "Volta concluída" "$TMP_OP/saida-update" || _falhou "deveria concluir a volta"
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+}
+
+test_restore_falha_nas_duas_imagens_mantem_conteineres_parados_e_comandos_do_estado_real() {
+  ambiente
+  export SHIM_FALHAR="*--wait-timeout 120 core|*sentinela.cli restaurar*"
+  if atualizar v0.5.0; then _falhou "deveria falhar"; fi
+  afirmar_log_nao_contem "$VOLTA_UP"
+  grep -qF "foram deixados parados" "$TMP_OP/saida-update" || _falhou "deveria dizer que ficaram parados"
+  local out="$TMP_OP/saida-update"
+  # restore preso à imagem candidata (ID) e ao volume real
+  grep -qE "docker run --rm --env-file .env -v sentinela_dados_teste:/dados sha256:novo-core python -m sentinela.cli restaurar /dados/backups/sentinela-20261118T030000Z-atualizacao.tar.gz" "$out" ||
+    _falhou "faltou o restore preso à imagem e ao volume: $(cat "$out")"
+  # os arquivos já foram devolvidos: os passos de arquivo não são repetidos
+  if sed -n '/Volta manual/,$p' "$out" | grep -qE "git checkout|cp .env.pre|docker tag"; then _falhou "repetiu passos de arquivo já feitos"; fi
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+}
+
+test_imagem_antiga_sem_restaurar_nao_tenta_de_novo() {
+  ambiente
+  export SHIM_SEM_BACKUP_CLI=1
+  export SHIM_FALHAR="*--wait-timeout 120 core|*sentinela.cli restaurar*"
+  if atualizar v0.5.0; then _falhou "deveria falhar"; fi
+  [[ "$(linhas_de 'sentinela.cli restaurar')" -eq 1 ]] || _falhou "não deveria tentar na imagem sem o comando"
+  grep -qF "não tem o comando 'restaurar'" "$TMP_OP/saida-update" || _falhou "deveria explicar"
 }
 
 test_sem_rotulo_dos_arquivos_compose_recusa_sem_alterar() {
@@ -243,18 +326,6 @@ test_sem_rotulo_dos_arquivos_compose_recusa_sem_alterar() {
   afirmar_log_nao_contem "backup-criar"
   afirmar_log_nao_contem "docker tag"
   afirmar_log_nao_contem "git checkout"
-}
-
-test_versao_anterior_a_instalada_e_recusada_sem_a_opcao() {
-  ambiente
-  git_real fetch -q --tags origin
-  git_real checkout -q --detach v0.5.0
-  if atualizar v0.4.0; then _falhou "deveria recusar o downgrade"; fi
-  grep -qF "permitir-voltar-versao" "$TMP_OP/saida-update" || _falhou "deveria citar a opção"
-  afirmar_log_nao_contem "backup-criar"
-  afirmar_log_nao_contem "docker tag"
-  atualizar v0.4.0 --permitir-voltar-versao || _falhou "deveria aceitar com a opção: $(cat "$TMP_OP/saida-update")"
-  afirmar_log_contem "$COMPOSE_CORE_UP"
 }
 
 test_padrao_e_a_ultima_tag_de_versao() {
@@ -432,6 +503,12 @@ log_depois_de() {
 
 test_sigint_no_meio_so_relata_fatos_sem_agir() {
   ambiente
+  # se este teste roda num shell em segundo plano, o SIGINT já vem ignorado e não pode ser tratado:
+  # nada a provar aqui (o CI e o terminal rodam em primeiro plano)
+  if [[ "$(bash -c 'kill -INT $$; echo vivo' 2>/dev/null)" == "vivo" ]]; then
+    echo "    (SIGINT ignorado neste shell: teste dispensado)"
+    return 0
+  fi
   sinal_durante "*--wait-timeout 120 core" INT "$COMPOSE_CORE_UP"
   local s="$TMP_OP/saida-update"
   afirmar_igual "$RC_SINAL" "130"

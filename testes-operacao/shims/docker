@@ -9,6 +9,7 @@
 #   SHIM_CONFIG_FILES              rótulo com.docker.compose.project.config_files (NENHUM = vazio)
 #   SHIM_IGUAL=1                   "image inspect" devolve o mesmo ID da imagem em execução
 #   SHIM_ID_CORE_POS               ID do core em execução depois da volta (up ... core web)
+#   SHIM_VERSAO_RODANDO            versão do pacote no core em execução (padrão 0.4.0)
 #   SHIM_SEM_BACKUP_CLI=1          "sentinela.cli --help" não lista backup-criar (core antigo)
 #   SHIM_IMAGENS="repo:tag ..."    saída de "docker image ls" (uma por linha)
 #   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
@@ -19,6 +20,10 @@ set -uo pipefail
 : "${SHIM_LOG:?SHIM_LOG não definido}"
 SHIM_DIR="${SHIM_DIR:-$(dirname "$SHIM_LOG")}"
 linha="$*"
+# log cru (com todos os -f) à parte; no log principal some o "-f docker-compose.yml" padrão, para os
+# testes lerem "compose up ..." (os testes dos arquivos compose conferem o log cru)
+printf 'docker %s\n' "$linha" >>"$SHIM_DIR/docker.raw.log"
+linha="${linha//-f docker-compose.yml /}"
 printf 'docker %s\n' "$linha" >>"$SHIM_LOG"
 
 falha_pedida() {
@@ -83,6 +88,7 @@ case "$1" in
   inspect)
     cid="${*: -1}"
     case "$linha" in
+      *Mounts*) echo "sentinela_dados_teste" ;;
       *config_files*)
         # arquivos compose com que o core foi criado (NENHUM = rótulo ausente)
         if [[ "${SHIM_CONFIG_FILES:-}" == "NENHUM" ]]; then
@@ -145,6 +151,7 @@ case "$1" in
           printf '%s\n' "sentinela-20261118T030000Z-manual.tar.gz" "sentinela-20261117T030000Z-diario.tar.gz"
         fi
         ;;
+      *"sentinela.__version__"*) echo "${SHIM_VERSAO_RODANDO:-0.4.0}" ;;
       *"sentinela.cli --help"*)
         if [[ "${SHIM_SEM_BACKUP_CLI:-}" == "1" ]]; then echo "usage: cli [-h] {criar-admin,sub-rede}"; else echo "usage: cli [-h] {criar-admin,backup-criar,restaurar}"; fi
         ;;
