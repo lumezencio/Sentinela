@@ -108,3 +108,57 @@ test("fazerBackupAgora: sucesso recarrega e avisa; falha mostra o texto fixo do 
   assert.equal(c.bkErro, "Não foi possível fazer o backup.");
   assert.equal(c.bkCriando, false);
 });
+
+function adiado() {
+  let resolver;
+  const promessa = new Promise((r) => (resolver = r));
+  return { promessa, resolver };
+}
+
+test("backup: 'Nenhuma cópia' só depois de uma leitura sem cópias, nunca no meio de duas leituras", async () => {
+  // regressão do smoke: a leitura inicial (cartão visível) e a releitura do "Fazer backup agora"
+  // corriam juntas; o aviso de lista vazia ia e voltava no mesmo quadro (o x-show do Alpine
+  // perde um "esconder" assim) e a resposta antiga podia sobrescrever a nova
+  const c = backupDoPainel();
+  c.fuso = "UTC";
+  const vistos = [];
+  const espiar = () => vistos.push(c.bkSemCopias);
+  espiar();
+  const antiga = adiado();
+  const nova = adiado();
+  const pedidos = [antiga, nova];
+  const linha = (nome) => ({ nome, tipo: "manual", criado_em: "2026-11-18T03:00:00Z", tamanho: 1 });
+  const dados = (copias) => ({ ultimo_em: null, ultimo_tamanho: null, ultimo_erro: null, copias, diretorio: "/x" });
+  await com(
+    {
+      verBackup: () => pedidos.shift().promessa,
+      criarBackup: async () => ok({}),
+    },
+    async () => {
+      const inicial = c.carregarBackup(true);
+      espiar();
+      const agora = c.fazerBackupAgora();
+      await new Promise((r) => setTimeout(r, 0));
+      espiar(); // releitura saiu e a inicial ainda não voltou
+      nova.resolver(ok(dados([linha("nova"), linha("antiga")])));
+      await agora;
+      espiar();
+      antiga.resolver(ok(dados([]))); // a resposta da leitura inicial chega por último
+      await inicial;
+      espiar();
+    },
+  );
+  assert.deepEqual(vistos, [false, false, false, false, false]);
+  assert.deepEqual(c.bkCopias.map((x) => x.nome), ["nova", "antiga"]);
+  assert.equal(c.bkCarregando, false);
+});
+
+test("backup: leitura sem cópias mostra o aviso de lista vazia", async () => {
+  const c = backupDoPainel();
+  c.fuso = "UTC";
+  await com(
+    { verBackup: async () => ok({ ultimo_em: null, ultimo_tamanho: null, ultimo_erro: null, copias: [], diretorio: "/x" }) },
+    () => c.carregarBackup(true),
+  );
+  assert.equal(c.bkSemCopias, true);
+});

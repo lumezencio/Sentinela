@@ -911,16 +911,19 @@ def abrir_organograma(page: Page) -> Any:
     return secao
 
 
-def esperar_estados_variados(page: Page) -> None:
-    """Demonstração rodando há algum tempo: já há equipamento fora do online."""
-    for _ in range(60):
-        ruins = sum(
-            int(page.locator(f"#contador-{n}").inner_text()) for n in ("offline", "instavel")
-        )
-        if ruins:
+# duas câmeras (checagem a cada 15 s), fora dos equipamentos usados pelos alertas semeados
+CAMERAS_DERRUBADAS = ["10.99.10.120", "10.99.10.121"]
+
+
+def esperar_estados_variados(page: Page, queda_forcada: Any) -> None:
+    """Há equipamento offline: no core local o teste derruba duas câmeras (a demonstração do
+    smoke não cai sozinha); contra o compose espera a própria demonstração derrubar algum."""
+    forcada = queda_forcada(CAMERAS_DERRUBADAS)
+    for _ in range(120):
+        if int(page.locator("#contador-offline").inner_text()) >= (2 if forcada else 1):
             return
         page.wait_for_timeout(500)
-    pytest.fail("a demonstração não produziu nenhum equipamento offline/instável em 30 s")
+    pytest.fail("nenhum equipamento ficou offline em 60 s")
 
 
 def pesos_por_cartao(secao: Any) -> list[list[int]]:
@@ -955,7 +958,9 @@ def test_organograma_mostra_o_ip_inteiro_em_cada_no(page: Page, alvo: Alvo) -> N
     assert erros == [], erros
 
 
-def test_organograma_360_pior_estado_primeiro_sem_rolagem(browser: Browser, alvo: Alvo) -> None:
+def test_organograma_360_pior_estado_primeiro_sem_rolagem(
+    browser: Browser, alvo: Alvo, queda_forcada: Any
+) -> None:
     contexto = browser.new_context(
         viewport={"width": 360, "height": 740}, ignore_https_errors=True, base_url=alvo.url
     )
@@ -963,7 +968,7 @@ def test_organograma_360_pior_estado_primeiro_sem_rolagem(browser: Browser, alvo
         page = contexto.new_page()
         erros = vigiar_console(page)
         entrar(page, alvo)
-        esperar_estados_variados(page)
+        esperar_estados_variados(page, queda_forcada)
         secao = abrir_organograma(page)
         secao.get_by_role("combobox", name="Estado").select_option(label="Todos")
         assert page.evaluate(SEM_ROLAGEM_HORIZONTAL) <= 360
@@ -1303,6 +1308,11 @@ def test_configuracoes_cria_fonte_testa_e_coleta(page: Page, alvo: Alvo) -> None
     dialogo.get_by_label("Endereço IP").fill("10.99.40.21")
     dialogo.get_by_label("Usuário").fill("api-smoke")
     dialogo.get_by_label("Senha", exact=True).fill(SENHA_SMOKE)
+    # desativada: o orquestrador coleta uma fonte ativa nova no tick seguinte (5 s) e o
+    # "Coletar agora" que viesse depois disso levaria 429 (no máximo 1 coleta a cada 30 s).
+    # Assim a única coleta é a pedida pelo botão.
+    expect(dialogo.get_by_label("Fonte ativa")).to_be_checked()  # padrão de fonte nova
+    dialogo.get_by_label("Fonte ativa").uncheck()
     dialogo.get_by_role("button", name="Criar fonte").click()
     expect(dialogo).to_be_hidden()
     cartao = secao.locator(".cfg-fonte").filter(has_text="Roteador Smoke")
@@ -1310,6 +1320,7 @@ def test_configuracoes_cria_fonte_testa_e_coleta(page: Page, alvo: Alvo) -> None
     try:
         expect(cartao.locator(".cfg-ficha").first).to_contain_text("10.99.40.21:8729")
         expect(cartao).to_contain_text("TLS")
+        expect(cartao).to_contain_text("Desativada")
         expect(cartao).to_contain_text("nunca")
         cartao.get_by_role("button", name="Testar Roteador Smoke").click()
         teste = cartao.locator(".cfg-teste")
@@ -2763,6 +2774,18 @@ def test_cartao_pilha_de_3_mais_n_e_transicoes(page: Page, alvo: Alvo, novo_aler
     expect(voltou.locator(".ca-marca")).to_have_text("Voltou")
     expect(voltou).to_contain_text("voltou após")
     expect(voltou).to_have_count(0, timeout=15_000)
+    # sobram 3 (ids[2], ids[1], ids[0]): todos à vista e o "e mais" some
+    expect(cartoes(page)).to_have_count(3)
+    expect(page.locator("#cartoes-alerta .ca-mais")).to_be_hidden()
+    # um sexto alerta empurra o mais antigo para fora e o "e mais" volta; o clique leva à aba
+    sexto = novo_alerta()["id"]
+    injetar(page, ponte, "aberto", sexto)
+    expect(page.locator("#cartoes-alerta .ca-mais")).to_have_text("e mais 1 alerta")
+    assert [c.get_attribute("data-id") for c in cartoes(page).all()] == [
+        str(sexto),
+        str(ids[2]),
+        str(ids[1]),
+    ]
     page.locator("#cartoes-alerta .ca-mais").click()
     assert page.url.endswith("#alertas"), page.url
     assert erros == [], erros

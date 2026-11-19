@@ -782,6 +782,7 @@ export function backupDoPainel() {
   let carregado = false;
   let carregando = false;
   let formatar = null; // módulo config-backup.js, depois do 1º carregamento
+  let leitura = 0; // número da leitura mais recente de GET /backup
 
   return {
     bkUltimoErro: "",
@@ -806,9 +807,17 @@ export function backupDoPainel() {
     },
 
     async carregarBackup(comAviso = true) {
+      // a leitura inicial (cartão visível) e a releitura do "Fazer backup agora" podem correr
+      // juntas: só a mais recente mexe no cartão, senão a resposta antiga sobrescreve a nova e o
+      // aviso de lista vazia vai e volta no mesmo quadro (o x-show do Alpine perde um "esconder"
+      // nessa sequência e o aviso fica preso por cima da lista)
+      const minha = ++leitura;
       this.bkCarregando = comAviso;
       const r = await api.verBackup();
-      if (!r.ok || !r.dados) {
+      const deu = Boolean(r.ok && r.dados);
+      if (deu) formatar = formatar || (await carregarFormatadores.backup());
+      if (minha !== leitura) return deu;
+      if (!deu) {
         this.bkCarregando = false;
         this.bkErro = r.erro || MSG_FALHA;
         return false;
@@ -842,8 +851,9 @@ export function backupDoPainel() {
       }));
     },
 
+    // só depois de uma leitura: antes dela não se sabe se há cópias
     get bkSemCopias() {
-      return !this.bkCarregando && this.bkCopias.length === 0;
+      return this.bkStatusBruto !== null && !this.bkCarregando && this.bkCopias.length === 0;
     },
     get bkTextoAgenda() {
       return `Cópia automática todos os dias às 03:00, no fuso ${this.fuso}. Ficam 7 diárias e 4 semanais.`;
