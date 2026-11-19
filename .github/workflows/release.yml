@@ -1,0 +1,303 @@
+name: Release
+
+# Só roda numa tag vX.Y.Z (ou à mão, para refazer apenas o smoke arm64 de uma versão já publicada).
+# Fluxo: CI -> confere versão -> constrói a candidata rc-<run_id> (amd64+arm64) -> trivy nas duas
+# arquiteturas -> promove a X.Y.Z e latest (mesmo digest do índice) -> assina (cosign sem chave) e
+# anexa o SBOM -> smoke arm64 com o install.sh real -> release com digests.txt e SBOM.
+# As candidatas rc-* ficam no GHCR; a limpeza é manual (ver README).
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      versao:
+        description: "Versão X.Y.Z já publicada, para rodar só o smoke arm64"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  ci:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  meta:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      versao: ${{ steps.v.outputs.versao }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.versao) || github.ref }}
+          persist-credentials: false
+      - name: a tag tem de ser igual à versão do core/pyproject.toml
+        id: v
+        env:
+          EVENTO: ${{ github.event_name }}
+          NOME_REF: ${{ github.ref_name }}
+          ENTRADA: ${{ inputs.versao }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENTO" = workflow_dispatch ]; then versao="$ENTRADA"; else versao="${NOME_REF#v}"; fi
+          [[ "$versao" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::versão fora do padrão X.Y.Z"; exit 1; }
+          atual="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' core/pyproject.toml | head -n 1 | tr -d '\r')"
+          if [ "$atual" != "$versao" ]; then
+            echo "::error::a tag v$versao difere da versão $atual do core/pyproject.toml; nada foi publicado"
+            exit 1
+          fi
+          echo "versao=$versao" >> "$GITHUB_OUTPUT"
+
+  construir:
+    # candidata rc-<run_id> + trivy nas duas arquiteturas; nada é promovido nem assinado aqui
+    if: github.event_name == 'push'
+    needs: [ci, meta]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        servico: [core, web]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build e push da candidata
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.servico }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/lumezencio/sentinela-${{ matrix.servico }}:rc-${{ github.run_id }}
+          provenance: mode=max
+      - name: digest do índice multi-arquitetura
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::digest inesperado"; exit 1; }
+          printf '%s\n' "$DIGEST" > digest.txt
+      - name: trivy (amd64)
+        # SHA da tag v0.36.0: o mesmo do ci.yml
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/amd64
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: v0.76.2
+          image-ref: ghcr.io/lumezencio/sentinela-${{ matrix.servico }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: trivy (arm64)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: v0.76.2
+          image-ref: ghcr.io/lumezencio/sentinela-${{ matrix.servico }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: guarda o digest aprovado
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: candidata-${{ matrix.servico }}
+          path: digest.txt
+          retention-days: 7
+
+  promover:
+    # só chega aqui com o trivy verde nas duas arquiteturas: promove, assina e anexa o SBOM
+    needs: [meta, construir]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # assinatura keyless (OIDC do GitHub); só este job
+    strategy:
+      fail-fast: true
+      matrix:
+        servico: [core, web]
+    env:
+      IMG: ghcr.io/lumezencio/sentinela-${{ matrix.servico }}
+      VERSAO: ${{ needs.meta.outputs.versao }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: candidata-${{ matrix.servico }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.3
+      - name: promove a candidata (o digest do índice não muda)
+        run: |
+          set -euo pipefail
+          digest="$(tr -d '[:space:]' < digest.txt)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::digest inválido"; exit 1; }
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+          docker buildx imagetools create -t "$IMG:$VERSAO" -t "$IMG:latest" "$IMG@$digest"
+          for tag in "$VERSAO" latest; do
+            publicado="$(docker buildx imagetools inspect "$IMG:$tag" --format '{{.Manifest.Digest}}')"
+            [ "$publicado" = "$digest" ] || { echo "::error::a tag $tag ficou com digest diferente do aprovado"; exit 1; }
+          done
+      - name: assina o digest do índice (cosign sem chave)
+        run: cosign sign --yes "$IMG@$DIGEST"
+      - name: a assinatura confere com a identidade que update.sh e install.sh exigem
+        env:
+          IDENTIDADE: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          cosign verify --certificate-identity "$IDENTIDADE" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com "$IMG@$DIGEST" > /dev/null
+      - name: SBOM SPDX (amd64)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/amd64
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: v0.76.2
+          image-ref: ghcr.io/lumezencio/sentinela-${{ matrix.servico }}@${{ env.DIGEST }}
+          format: spdx-json
+          output: sbom-${{ matrix.servico }}-amd64.spdx.json
+      - name: SBOM SPDX (arm64)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: v0.76.2
+          image-ref: ghcr.io/lumezencio/sentinela-${{ matrix.servico }}@${{ env.DIGEST }}
+          format: spdx-json
+          output: sbom-${{ matrix.servico }}-arm64.spdx.json
+      - name: anexa o SBOM à imagem (atestação cosign)
+        env:
+          SERVICO: ${{ matrix.servico }}
+        run: |
+          for arq in amd64 arm64; do
+            cosign attest --yes --type spdxjson --predicate "sbom-$SERVICO-$arq.spdx.json" "$IMG@$DIGEST"
+          done
+      - name: guarda digest e SBOM para o release
+        env:
+          SERVICO: ${{ matrix.servico }}
+        run: printf '%s %s\n' "$SERVICO" "$DIGEST" > "digest-$SERVICO.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lancamento-${{ matrix.servico }}
+          path: |
+            digest-${{ matrix.servico }}.txt
+            sbom-${{ matrix.servico }}-*.spdx.json
+          retention-days: 7
+
+  smoke-arm64:
+    # instala pelo install.sh real, com as imagens publicadas (assinatura verificada) e arm64 emulado.
+    # Prova que sobe e responde; não mede desempenho (QEMU é lento).
+    if: ${{ !cancelled() && needs.meta.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.promover.result == 'success') }}
+    needs: [meta, promover]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DOCKER_DEFAULT_PLATFORM: linux/arm64
+      SENTINELA_PORTA_HTTPS: "8443"
+      SENTINELA_PORTA_HTTP: "8080"
+      VERSAO: ${{ needs.meta.outputs.versao }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/v${{ needs.meta.outputs.versao }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.3
+      - name: install.sh com as imagens publicadas (arm64)
+        run: ./install.sh
+      - name: as imagens são mesmo arm64
+        run: |
+          for s in core web; do
+            arq="$(docker image inspect --format '{{.Architecture}}' "ghcr.io/lumezencio/sentinela-$s:$VERSAO")"
+            [ "$arq" = arm64 ] || { echo "::error::sentinela-$s é $arq, esperado arm64"; exit 1; }
+          done
+      - name: saúde, página de login e login (204)
+        run: |
+          set -euo pipefail
+          url=https://localhost:8443
+          curl -k -fsS --retry 12 --retry-delay 5 --retry-connrefused -o /dev/null "$url/api/v1/saude"
+          [ "$(curl -k -s -o /dev/null -w '%{http_code}' "$url/api/v1/saude")" = 200 ]
+          [ "$(curl -k -s -o /dev/null -w '%{http_code}' "$url/login.html")" = 200 ]
+          senha="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 20)"
+          echo "::add-mask::$senha"
+          SENTINELA_ADMIN_SENHA="$senha" docker compose run --rm --no-deps -T \
+            -e SENTINELA_AMBIENTE=desenvolvimento -e SENTINELA_ADMIN_SENHA \
+            core python -m sentinela.cli criar-admin --login ci-smoke
+          codigo="$(printf '{"login":"ci-smoke","senha":"%s"}' "$senha" |
+            curl -k -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+              --data-binary @- "$url/api/v1/auth/login")"
+          [ "$codigo" = 204 ] || { echo "::error::login devolveu $codigo, esperado 204"; exit 1; }
+      - name: logs dos contêineres (só se falhar)
+        if: failure()
+        run: docker compose logs --no-color --tail 80
+
+  lancamento:
+    if: github.event_name == 'push'
+    needs: [meta, promover, smoke-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: lancamento-*
+          merge-multiple: true
+      - name: digests.txt (core e web, digest do índice multi-arquitetura)
+        run: |
+          set -euo pipefail
+          cat digest-core.txt digest-web.txt > digests.txt
+          test "$(grep -cE '^(core|web) sha256:[0-9a-f]{64}$' digests.txt)" = 2 || { echo "::error::digests.txt malformado"; exit 1; }
+      - name: cria o release
+        run: |
+          gh release create "$TAG" --verify-tag --title "Sentinela ${TAG#v}" --generate-notes \
+            digests.txt sbom-*.spdx.json

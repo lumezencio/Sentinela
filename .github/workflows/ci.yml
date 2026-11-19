@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -131,5 +132,7 @@ jobs:
         run: |
           bash testes-operacao/test_restore_backup.sh
           bash testes-operacao/test_update.sh
+          bash testes-operacao/test_install.sh
+          bash testes-operacao/test_release_yml.sh
       - name: volta automática com docker de verdade
         run: bash testes-operacao/rodar.sh
