@@ -1,6 +1,6 @@
 # Front estático do Sentinela atrás do nginx sem privilégios (uid 101), TLS e cabeçalhos do §13.
 
-FROM node:22.23.5-alpine3.24 AS minificar
+FROM node:26.13.1-alpine3.24 AS minificar
 RUN npm install --global --no-fund --no-audit esbuild@0.28.2
 WORKDIR /w
 COPY src/ ./src/
