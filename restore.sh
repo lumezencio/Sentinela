@@ -69,6 +69,9 @@ RESTAURADO=0
 ENTRADA=""
 PRE=""
 INICIOU=0
+ROLLBACK=0
+ESPERANDO=0
+PRE_ORIGINAL=""
 ANTES=""
 
 # lista_pre_restore: nomes de pre-restore no volume (padrão fixo, sem entrada do usuário)
@@ -105,7 +108,12 @@ interrompido() {
     echo "Subindo o core de novo..." >&2
     compose up -d --no-deps core >/dev/null 2>&1 || echo "erro: suba o core com: docker compose up -d core" >&2
   fi
-  if [[ $RESTAURADO -eq 1 ]]; then
+  if [[ $ROLLBACK -eq 1 ]]; then
+    # nunca cita o pre-restore criado pela própria volta: ele guarda o banco com problema
+    echo "A interrupção ocorreu durante a devolução do banco anterior. O banco original continua guardado em ${PRE_ORIGINAL:-(não havia)}; verifique a saúde do core e, se precisar, restaure esse arquivo." >&2
+  elif [[ $ESPERANDO -eq 1 ]]; then
+    echo "A espera pela saúde do core foi interrompida (saúde não confirmada). A restauração foi aplicada; o banco anterior ficou guardado como: ${PRE:-(não havia)}. Verifique a saúde do core e, se ela falhar, restaure esse arquivo." >&2
+  elif [[ $RESTAURADO -eq 1 ]]; then
     echo "A restauração já tinha sido concluída antes da interrupção; o banco anterior ficou guardado como: ${PRE:-(não havia)}. Confira a saúde do core." >&2
   elif [[ $INICIOU -eq 1 ]]; then
     # o sinal pegou a própria chamada de restauração: o banco pode já ter sido trocado
@@ -168,10 +176,13 @@ if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ENTRADA")"; then
   exit 1
 fi
 PRE="$(printf '%s\n' "$PRE" | head -n 1)"
+PRE_ORIGINAL="$PRE"
 RESTAURADO=1
 
 echo "Subindo o core e esperando a saúde..."
+ESPERANDO=1
 if compose up -d --no-deps --wait --wait-timeout 120 core; then
+  ESPERANDO=0
   CORE_PARADO=0
   echo "Restauração concluída; o core está saudável."
   [[ -z "$PRE" ]] || echo "O banco anterior ficou guardado como: $PRE (em /dados/backups)"
@@ -179,11 +190,13 @@ if compose up -d --no-deps --wait --wait-timeout 120 core; then
   exit 0
 fi
 
+ESPERANDO=0
 echo "erro: o core não ficou saudável com o banco restaurado." >&2
 if [[ -z "$PRE" ]]; then
   falhar "não havia banco anterior para devolver; verifique 'docker compose logs core'"
 fi
 RESTAURADO=0
+ROLLBACK=1
 echo "Devolvendo o banco anterior ($PRE)..." >&2
 compose stop core || true
 if cli_avulsa core python -m sentinela.cli restaurar "/dados/backups/$PRE" >/dev/null &&

@@ -147,8 +147,8 @@ test_restore_sinal_depois_de_restaurar_informa_o_pre_restore() {
   fixture_backup
   sinal_durante "*compose up -d --no-deps --wait*" TERM "compose up -d --no-deps --wait"
   [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro (saúde não confirmada)"
-  grep -q "já tinha sido concluída.*sentinela-20261118T030100Z-pre-restore" "$TMP_OP/saida-restore" ||
-    _falhou "deveria informar a restauração concluída e o pre-restore"
+  grep -q "espera pela saúde do core foi interrompida.*sentinela-20261118T030100Z-pre-restore" "$TMP_OP/saida-restore" ||
+    _falhou "mensagem própria da espera de saúde com o pre-restore"
   afirmar_log_contem "rm -f /dados/backups/.entrada-"
 }
 
@@ -167,6 +167,27 @@ test_restore_sinal_durante_o_restaurar_informa_o_pre_restore_novo() {
     afirmar_ordem "ls -1 -- sentinela-*-pre-restore.tar.gz" "sentinela.cli restaurar" "compose up -d --no-deps core"
     [[ "$(grep -c 'ls -1 -- sentinela-\*-pre-restore' "$SHIM_LOG")" -eq 2 ]] || _falhou "esperava listar antes e depois"
   done
+}
+
+test_restore_sinal_durante_a_volta_cita_so_o_pre_restore_original() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  # saúde falha na 1ª subida; o 2º restaurar (a volta) dorme e recebe o sinal
+  export SHIM_FALHAR="1x:compose up*"
+  export SHIM_DORMIR="*sentinela.cli restaurar /dados/backups/sentinela-20261118T030100Z-pre-restore.tar.gz*"
+  bash restore.sh backup.tar.gz --sim >"$TMP_OP/saida-restore" 2>&1 &
+  local pid=$! i
+  for ((i = 0; i < 100; i++)); do
+    grep -q "restaurar /dados/backups/sentinela-20261118T030100Z" "$SHIM_LOG" && break
+    sleep 0.1
+  done
+  kill -TERM "$pid"
+  RC_SINAL=0
+  wait "$pid" || RC_SINAL=$?
+  [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro"
+  grep -q "durante a devolução.*original continua guardado em sentinela-20261118T030100Z-pre-restore.tar.gz.*restaure esse arquivo" "$TMP_OP/saida-restore" ||
+    _falhou "deveria citar o pre-restore original"
+  if grep -q "030200Z" "$TMP_OP/saida-restore"; then _falhou "citou o pre-restore criado pela volta"; fi
 }
 
 test_restore_falha_no_stop_tenta_subir_o_core() {

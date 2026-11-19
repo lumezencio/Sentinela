@@ -44,6 +44,7 @@ fi
 
 # restaurar criou o pre-restore (marca antes de qualquer espera, como o banco trocado)
 if [[ "$linha" == *"sentinela.cli restaurar "* ]]; then
+  [[ -e "$SHIM_DIR/.restaurou" ]] && : >"$SHIM_DIR/.restaurou2"
   : >"$SHIM_DIR/.restaurou"
 fi
 
@@ -74,6 +75,7 @@ case "$1" in
       *"ls -1 -- sentinela-*-pre-restore.tar.gz"*)
         echo "sentinela-20260101T000000Z-pre-restore.tar.gz"
         [[ -e "$SHIM_DIR/.restaurou" ]] && echo "sentinela-20261118T030100Z-pre-restore.tar.gz"
+        [[ -e "$SHIM_DIR/.restaurou2" ]] && echo "sentinela-20261118T030200Z-pre-restore.tar.gz"
         ;;
       *"ls -1 -- sentinela-*.tar.gz"*)
         if [[ -n "${SHIM_LISTA:-}" ]]; then
