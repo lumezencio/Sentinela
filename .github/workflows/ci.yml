@@ -38,6 +38,8 @@ jobs:
           node-version: "22"
       - run: npm ci
       - run: npm test
+      # dependências de produção do front: nada HIGH/CRITICAL
+      - run: npm audit --omit=dev --audit-level=high
       # os bundles commitados (Teia do painel e telão) têm de ser exatamente o que o script gera
       - run: bash build/construir-teia.sh
       - run: git diff --exit-code src/vendor/ src/parede/
@@ -119,7 +121,7 @@ jobs:
     # scripts de operação: testes com docker falso (todos os ramos) e a volta automática do
     # update.sh com docker de verdade, forçando uma migração que quebra a saúde do core
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
@@ -130,9 +132,26 @@ jobs:
             testes-operacao/shims-cosign/cosign
       - name: testes com docker falso
         run: |
-          bash testes-operacao/test_restore_backup.sh
-          bash testes-operacao/test_update.sh
-          bash testes-operacao/test_install.sh
-          bash testes-operacao/test_release_yml.sh
+          for t in testes-operacao/test_*.sh; do bash "$t"; done
       - name: volta automática com docker de verdade
+        env:
+          CI: "true"
         run: bash testes-operacao/rodar.sh
+
+  actionlint:
+    # valida os workflows e o dependabot.yml contra o schema oficial e o actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: instala as ferramentas (versões exatas)
+        run: pip install actionlint-py==1.7.12.25 check-jsonschema==0.39.0
+      - name: actionlint
+        run: actionlint
+      - name: schema dos workflows e do dependabot
+        run: |
+          check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml
+          check-jsonschema --builtin-schema vendor.dependabot .github/dependabot.yml
