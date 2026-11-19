@@ -270,6 +270,7 @@ select:focus-visible {
   background: var(--superficie-2);
   color: var(--texto);
   font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .alerta-ok {
@@ -296,7 +297,7 @@ select:focus-visible {
   border: 1px solid var(--borda);
   border-radius: 20px;
   box-shadow: var(--sombra);
-  animation: surgir 0.5s ease-out both;
+  animation: surgir-cartao 0.5s ease-out both;
 }
 
 .cartao-login .logo {
@@ -332,11 +333,53 @@ select:focus-visible {
   margin-top: 4px;
 }
 
+/* segunda etapa do login (código do segundo fator) */
+.etapa-texto {
+  display: grid;
+  gap: 8px;
+}
+
+.etapa-texto h2 {
+  font-size: 18px;
+}
+
+.etapa-texto p {
+  margin: 0;
+  color: var(--texto-suave);
+  font-size: 14px;
+}
+
+.campo-codigo {
+  font-family: var(--fonte-mono);
+  font-size: 20px;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.etapa-acoes {
+  display: grid;
+  gap: 4px;
+}
+
+.etapa-acoes .botao {
+  height: auto;
+  padding-block: 8px;
+  text-align: center;
+}
+
 .rodape-login {
   margin-top: 20px;
   color: var(--texto-suave);
   font-size: 12px;
   text-align: center;
+}
+
+/* só transform: com opacity 0 no início a animação roda no compositor e o Chrome não registra o
+   First Contentful Paint da tela de login (Lighthouse: NO_FCP) */
+@keyframes surgir-cartao {
+  from {
+    transform: translateY(10px) scale(0.985);
+  }
 }
 
 @keyframes surgir {

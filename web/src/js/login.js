@@ -1,34 +1,99 @@
 // Tela de login: JSON para /auth/login; mensagens genéricas; espera do 429 com contagem.
+// Com o segundo fator ativo o servidor responde 202 e a MESMA página mostra a etapa do código
+// (aplicativo ou recuperação). O código digitado nunca vai a log nem a armazenamento.
 import { api } from "./api.js";
+import { validarCodigoRecuperacao, validarCodigoTotp } from "./config-seguranca.js";
 
 const form = document.getElementById("form-login");
 const campoLogin = document.getElementById("login");
 const campoSenha = document.getElementById("senha");
 const botao = document.getElementById("entrar");
 const erro = document.getElementById("erro-login");
+const formTotp = document.getElementById("form-totp");
+const tituloTotp = document.getElementById("titulo-totp");
+const dicaTotp = document.getElementById("dica-totp");
+const rotuloTotp = document.getElementById("rotulo-totp");
+const campoTotp = document.getElementById("codigo-totp");
+const botaoTotp = document.getElementById("confirmar-totp");
+const erroTotp = document.getElementById("erro-totp");
+const alternar = document.getElementById("alternar-recuperacao");
+const voltar = document.getElementById("voltar-login");
+
 let contagem = 0;
+let modoRecuperacao = false;
 
 function mostrarErro(texto) {
   erro.textContent = texto;
   erro.hidden = !texto;
 }
 
-function bloquearPor(segundos) {
+function mostrarErroTotp(texto) {
+  erroTotp.textContent = texto;
+  erroTotp.hidden = !texto;
+}
+
+function bloquear(el, rotulo, segundos) {
   window.clearInterval(contagem);
   let resta = Math.max(1, segundos);
-  botao.disabled = true;
+  el.disabled = true;
   const tique = () => {
     if (resta <= 0) {
       window.clearInterval(contagem);
-      botao.disabled = false;
-      botao.textContent = "Entrar";
+      el.disabled = false;
+      el.textContent = rotulo;
       return;
     }
-    botao.textContent = `Aguarde ${resta} s`;
+    el.textContent = `Aguarde ${resta} s`;
     resta -= 1;
   };
   tique();
   contagem = window.setInterval(tique, 1000);
+}
+
+function ajustarCampoDoCodigo() {
+  campoTotp.value = "";
+  mostrarErroTotp("");
+  if (modoRecuperacao) {
+    tituloTotp.textContent = "Código de recuperação";
+    dicaTotp.textContent =
+      "Digite um dos códigos que você guardou ao ativar o segundo fator. Cada um vale uma vez.";
+    rotuloTotp.textContent = "Código de recuperação";
+    campoTotp.setAttribute("maxlength", "11");
+    campoTotp.setAttribute("inputmode", "text");
+    campoTotp.setAttribute("autocapitalize", "characters");
+    alternar.textContent = "Usar o código do aplicativo";
+  } else {
+    tituloTotp.textContent = "Confirme que é você";
+    dicaTotp.textContent = "Abra o aplicativo autenticador e digite o código de 6 números que ele mostra.";
+    rotuloTotp.textContent = "Código do aplicativo";
+    campoTotp.setAttribute("maxlength", "7");
+    campoTotp.setAttribute("inputmode", "numeric");
+    campoTotp.setAttribute("autocapitalize", "none");
+    alternar.textContent = "Usar código de recuperação";
+  }
+}
+
+function abrirEtapaTotp() {
+  window.clearInterval(contagem);
+  modoRecuperacao = false;
+  form.hidden = true;
+  formTotp.hidden = false;
+  botaoTotp.disabled = false;
+  botaoTotp.textContent = "Confirmar";
+  ajustarCampoDoCodigo();
+  campoTotp.focus();
+}
+
+function voltarAoLogin() {
+  window.clearInterval(contagem);
+  campoTotp.value = "";
+  mostrarErroTotp("");
+  formTotp.hidden = true;
+  form.hidden = false;
+  campoSenha.value = "";
+  botao.disabled = false;
+  botao.textContent = "Entrar";
+  campoSenha.focus();
 }
 
 form.addEventListener("submit", async (evento) => {
@@ -43,6 +108,11 @@ form.addEventListener("submit", async (evento) => {
   botao.disabled = true;
   botao.textContent = "Entrando…";
   const r = await api.entrar(login, senha);
+  if (r.ok && r.etapa === "totp") {
+    campoSenha.value = "";
+    abrirEtapaTotp();
+    return;
+  }
   if (r.ok) {
     window.location.replace("index.html");
     return;
@@ -50,7 +120,7 @@ form.addEventListener("submit", async (evento) => {
   campoSenha.value = "";
   if (r.status === 429) {
     mostrarErro("Muitas tentativas. Aguarde e tente novamente.");
-    bloquearPor(r.espera || 30);
+    bloquear(botao, "Entrar", r.espera || 30);
     return;
   }
   botao.disabled = false;
@@ -58,3 +128,41 @@ form.addEventListener("submit", async (evento) => {
   mostrarErro(r.status === 401 ? "Login ou senha inválidos." : "Não foi possível entrar agora.");
   campoSenha.focus();
 });
+
+formTotp.addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const v = modoRecuperacao
+    ? validarCodigoRecuperacao(campoTotp.value)
+    : validarCodigoTotp(campoTotp.value);
+  if (!v.ok) {
+    mostrarErroTotp(v.erro);
+    campoTotp.focus();
+    return;
+  }
+  mostrarErroTotp("");
+  botaoTotp.disabled = true;
+  botaoTotp.textContent = "Confirmando…";
+  const r = await api.entrarTotp(modoRecuperacao ? { recuperacao: v.codigo } : { codigo: v.codigo });
+  if (r.ok) {
+    window.location.replace("index.html");
+    return;
+  }
+  campoTotp.value = "";
+  if (r.status === 429) {
+    mostrarErroTotp("Muitas tentativas. Aguarde e tente novamente.");
+    bloquear(botaoTotp, "Confirmar", r.espera || 30);
+    return;
+  }
+  botaoTotp.disabled = false;
+  botaoTotp.textContent = "Confirmar";
+  mostrarErroTotp(r.status === 401 ? "Código inválido." : "Não foi possível entrar agora.");
+  campoTotp.focus();
+});
+
+alternar.addEventListener("click", () => {
+  modoRecuperacao = !modoRecuperacao;
+  ajustarCampoDoCodigo();
+  campoTotp.focus();
+});
+
+voltar.addEventListener("click", voltarAoLogin);

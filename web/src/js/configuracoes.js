@@ -216,6 +216,7 @@ export function cartaoDaFonte(f, agora = Date.now()) {
     erro,
     orientacao: orientacaoErro(erro, f.tipo, Boolean(f.tls)),
     confiada: Boolean(f.impressao_tls),
+    credencialIlegivel: Boolean(f.credencial_ilegivel), // banco restaurado de outra instalação
     simulada: f.tipo === "simulada",
     idTitulo: `cfg-fonte-${String(f.id)}`,
     rotuloRemover: `Remover ${textoSeguro(f.nome, 64)}`,

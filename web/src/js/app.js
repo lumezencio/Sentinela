@@ -19,6 +19,7 @@ import {
 } from "./lista.js";
 import { novosDoPainel, textoSeguro } from "./novos.js";
 import { organogramaDoPainel } from "./organograma.js";
+import { backupDoPainel, segurancaDoPainel } from "./painel-seguranca.js";
 import { visoesDoPainel } from "./teia-pagina.js";
 import { criarConexao } from "./ws.js";
 
@@ -107,6 +108,11 @@ function painel() {
         await dormir(recuo);
         recuo = Math.min(recuo * 2, RECUO_MAXIMO_MS);
         eu = await api.eu();
+      }
+      if (eu.dados.restrita) {
+        // administrador sem segundo fator com a política ligada: só a ativação funciona
+        window.location.replace("seguranca.html");
+        return;
       }
       this.usuario = eu.dados.login;
       this.admin = eu.dados.papel === "admin";
@@ -549,6 +555,8 @@ function painel() {
     cartoesDoPainel(store),
     telegramDoPainel(),
     paredesDoPainel(),
+    segurancaDoPainel(),
+    backupDoPainel(),
   ]) {
     Object.defineProperties(dados, Object.getOwnPropertyDescriptors(parte));
   }

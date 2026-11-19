@@ -121,6 +121,8 @@ export function visoesDoPainel(store) {
           this.entrarEmConfiguracoes();
           this.entrarEmTelegram();
           this.entrarEmParedes();
+          this.entrarEmSeguranca();
+          this.entrarEmBackup();
         }
         this.agendarRender();
       }

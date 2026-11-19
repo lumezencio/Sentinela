@@ -1,0 +1,192 @@
+/* Página seguranca.html: ativação do segundo fator. Reaproveita o cartão do login (base.css). */
+.cartao-seguranca {
+  display: grid;
+  gap: 16px;
+  width: min(560px, 100%);
+}
+
+.tela-seguranca {
+  align-items: start;
+}
+
+.seg-cabeca {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.seg-cabeca .logo {
+  flex: none;
+  width: 48px;
+  height: 48px;
+}
+
+.seg-cabeca h1 {
+  font-size: 22px;
+}
+
+.seg-quem {
+  margin: 4px 0 0;
+  color: var(--texto-suave);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.seg-passo {
+  margin: 0;
+  color: var(--texto-suave);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.seg-texto {
+  margin: 0;
+  color: var(--texto-suave);
+  font-size: 14px;
+}
+
+.seg-texto strong {
+  color: var(--texto);
+}
+
+.seg-h2 {
+  font-size: 18px;
+}
+
+.seg-form {
+  display: grid;
+  gap: 16px;
+}
+
+.seg-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.seg-acoes .botao-primario {
+  min-height: 44px;
+}
+
+.campo-erro {
+  margin: 0;
+  color: var(--offline);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.seg-qr-bloco {
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+}
+
+/* o QR precisa de fundo claro mesmo no tema escuro, senão o aplicativo não o lê */
+.seg-qr {
+  width: 240px;
+  height: 240px;
+  padding: 12px;
+  border-radius: var(--raio);
+  background: #ffffff;
+  box-shadow: var(--sombra);
+}
+
+.seg-qr img {
+  display: block;
+  width: 216px;
+  height: 216px;
+}
+
+.seg-chave-bloco {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  width: 100%;
+}
+
+.seg-rotulo {
+  margin: 0;
+  color: var(--texto-suave);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.seg-chave {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  justify-content: center;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--fundo);
+  font-size: 16px;
+  letter-spacing: 0.06em;
+  user-select: all;
+}
+
+.seg-codigos {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: codigo;
+}
+
+.seg-codigos li {
+  counter-increment: codigo;
+  padding: 8px 12px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--fundo);
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.seg-codigos li::before {
+  content: counter(codigo) ". ";
+  color: var(--texto-suave);
+  font-size: 12px;
+}
+
+.seg-confirma {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.seg-confirma input {
+  flex: none;
+  width: 20px;
+  min-height: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+  accent-color: var(--primaria);
+}
+
+.seg-rodape {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid var(--borda);
+}
+
+@media (max-width: 420px) {
+  .cartao-seguranca {
+    padding: 24px 16px 16px;
+  }
+  .seg-codigos {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .seg-chave {
+    gap: 4px 12px;
+    font-size: 15px;
+  }
+}

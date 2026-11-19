@@ -2917,3 +2917,179 @@ def test_parede_cartao_de_queda_sem_ip_mac_nem_fabricante(
         assert erros == [], erros
     finally:
         navegador.close()
+
+
+# ---------------------------------------------------------------- Fase 4B: segundo fator e backup
+
+
+def preencher_login(page: Page, login: str, senha: str) -> None:
+    page.goto("/login.html")
+    page.get_by_label("Login").fill(login)
+    page.get_by_label("Senha").fill(senha)
+    page.get_by_role("button", name="Entrar").click()
+
+
+def test_login_com_totp_pede_o_codigo_e_entra(page: Page, conta_com_totp: Any) -> None:
+    conta = conta_com_totp()
+    erros = vigiar_console(page)
+    preencher_login(page, conta.login, conta.senha)
+    campo = page.get_by_label("Código do aplicativo")
+    expect(page.locator("#form-totp")).to_be_visible()
+    expect(page.locator("#form-login")).to_be_hidden()
+    expect(campo).to_be_focused()
+    assert campo.get_attribute("autocomplete") == "one-time-code"
+    assert campo.get_attribute("inputmode") == "numeric"
+    codigo = conta.codigo_seguinte()
+    campo.fill(f"{codigo[:3]} {codigo[3:]}")  # o espaço no meio é tolerado
+    page.get_by_role("button", name="Confirmar").click()
+    page.wait_for_url("**/index.html")
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    assert erros == [], erros
+
+
+def test_login_codigo_errado_mostra_erro_generico_e_mantem_a_etapa(
+    page: Page, conta_com_totp: Any
+) -> None:
+    conta = conta_com_totp()
+    preencher_login(page, conta.login, conta.senha)
+    campo = page.get_by_label("Código do aplicativo")
+    expect(page.locator("#form-totp")).to_be_visible()
+    campo.fill("000000")
+    page.get_by_role("button", name="Confirmar").click()
+    expect(page.locator("#erro-totp")).to_have_text("Código inválido.")
+    expect(page.locator("#form-totp")).to_be_visible()
+    expect(page.locator("#form-login")).to_be_hidden()
+    expect(campo).to_have_value("")
+    expect(campo).to_be_focused()
+    # "Voltar" limpa a etapa e devolve a tela de login
+    page.get_by_role("button", name="Voltar").click()
+    expect(page.locator("#form-login")).to_be_visible()
+    expect(page.locator("#form-totp")).to_be_hidden()
+    expect(page.get_by_label("Senha")).to_have_value("")
+
+
+def test_login_com_codigo_de_recuperacao(page: Page, conta_com_totp: Any) -> None:
+    conta = conta_com_totp()
+    preencher_login(page, conta.login, conta.senha)
+    expect(page.locator("#form-totp")).to_be_visible()
+    page.get_by_role("button", name="Usar código de recuperação").click()
+    campo = page.get_by_label("Código de recuperação", exact=True)
+    expect(campo).to_be_focused()
+    campo.fill(conta.codigos[0].replace("-", "").lower())  # minúsculas e sem hífen
+    page.get_by_role("button", name="Confirmar").click()
+    page.wait_for_url("**/index.html")
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+
+
+def test_admin_restrito_cai_na_pagina_de_seguranca_e_depois_entra(
+    page: Page, conta_com_totp: Any, novo_usuario: Any
+) -> None:
+    import pyotp
+
+    dono = conta_com_totp()  # admin com segundo fator: liga e desliga a política
+    sem_fator, senha = novo_usuario("admin")
+    r = dono.patch("/config/seguranca", {"exigir_totp_admin": True})
+    assert r.status == 200, r.status
+    try:
+        preencher_login(page, sem_fator, senha)
+        page.wait_for_url("**/seguranca.html", timeout=15_000)
+        expect(page.locator("#seg-restrita")).to_be_visible()
+        page.get_by_label("Confirme sua senha").fill(senha)
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.locator("#seg-qr")).to_be_visible()
+        chave = "".join(page.locator("#seg-chave span").all_inner_texts())
+        page.get_by_label("Código que o aplicativo mostra agora").fill(pyotp.TOTP(chave).now())
+        page.get_by_role("button", name="Ativar segundo fator").click()
+        expect(page.locator("#seg-codigos li")).to_have_count(10)
+        page.get_by_label("Guardei os códigos em lugar seguro").check()
+        page.get_by_role("button", name="Continuar").click()
+        page.wait_for_url("**/index.html")
+        expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    finally:
+        assert dono.patch("/config/seguranca", {"exigir_totp_admin": False}).status == 200
+
+
+def test_ativar_mostra_qr_chave_e_10_codigos_so_uma_vez(page: Page, novo_usuario: Any) -> None:
+    import pyotp
+
+    login, senha = novo_usuario("admin")
+    preencher_login(page, login, senha)
+    page.wait_for_url("**/index.html")
+    page.goto("/seguranca.html")
+    expect(page.locator("#seg-restrita")).to_be_hidden()  # política desligada: ativação voluntária
+    page.get_by_label("Confirme sua senha").fill("senha-errada-de-proposito")
+    page.get_by_role("button", name="Continuar").click()
+    expect(page.locator("#seg-senha-erro")).to_have_text("Senha incorreta.")
+    erros = vigiar_console(page)  # o 401 da senha errada acima é esperado e fica de fora
+    page.get_by_label("Confirme sua senha").fill(senha)
+    page.get_by_role("button", name="Continuar").click()
+    qr = page.locator("#seg-qr")
+    expect(qr).to_be_visible()
+    assert qr.evaluate("(i) => i.complete && i.naturalWidth > 0")
+    blocos = page.locator("#seg-chave span")
+    expect(blocos).to_have_count(8)
+    chave = "".join(blocos.all_inner_texts())
+    assert len(chave) == 32
+    page.get_by_label("Código que o aplicativo mostra agora").fill(pyotp.TOTP(chave).now())
+    page.get_by_role("button", name="Ativar segundo fator").click()
+    itens = page.locator("#seg-codigos li")
+    expect(itens).to_have_count(10)
+    codigos = [t.split(". ")[-1].strip() for t in itens.all_inner_texts()]
+    assert all(re.fullmatch(r"[A-Z0-9]{5}-[A-Z0-9]{5}", c) for c in codigos), codigos
+    assert qr.get_attribute("src") is None  # a imagem do QR some depois de ativar
+    continuar = page.get_by_role("button", name="Continuar")
+    expect(continuar).to_be_disabled()
+    with page.expect_download() as baixado:
+        page.get_by_role("button", name="Baixar .txt").click()
+    arquivo = Path(baixado.value.path()).read_text(encoding="utf-8")
+    assert all(c in arquivo for c in codigos)
+    page.get_by_label("Guardei os códigos em lugar seguro").check()
+    expect(continuar).to_be_enabled()
+    # nada de códigos nem chave no armazenamento do navegador
+    guardado = page.evaluate(
+        "JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])"
+    )
+    assert not any(c in guardado for c in codigos) and chave not in guardado
+    # recarregar não mostra de novo: a conta já está ativa e a lista é só da memória
+    page.reload()
+    expect(page.locator("#passo-ativo")).to_be_visible()
+    expect(page.locator("#seg-codigos li")).to_have_count(0)
+    assert not any(c in page.content() for c in codigos)
+    assert erros == [], erros
+
+
+def test_cartao_backup_mostra_aviso_do_env_e_botao_fazer_backup_agora(
+    page: Page, alvo: Alvo
+) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    page.goto("/index.html#configuracoes")
+    cartao = page.locator("#cfg-backup")
+    expect(cartao).to_be_visible(timeout=20_000)
+    aviso = cartao.locator("#bk-aviso-env")
+    expect(aviso).to_be_visible()
+    expect(aviso).to_contain_text(".env")
+    expect(aviso).to_contain_text("SENTINELA_CHAVE_CREDENCIAIS")
+    botao = cartao.get_by_role("button", name="Fazer backup agora")
+    expect(botao).to_be_visible()
+    botao.click()
+    expect(cartao.locator("#bk-aviso")).to_have_text("Backup feito.", timeout=30_000)
+    expect(cartao.locator("#bk-lista li").first).to_be_visible()
+    expect(cartao.locator("#bk-resumo")).to_contain_text("Último backup")
+    expect(aviso).to_be_visible()  # o aviso não some depois do backup
+    # o cartão Segurança vem junto e lista os usuários
+    expect(page.locator("#cfg-seguranca")).to_be_visible()
+    expect(page.locator("#seg-usuarios li").first).to_be_visible()
+    assert erros == [], erros
+
+
+def test_cartao_seguranca_visualizador_nao_aparece(page: Page, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    page.goto("/index.html#configuracoes")
+    page.reload()
+    assert page.url.endswith("#lista"), page.url
+    expect(page.locator("#cfg-seguranca")).to_be_hidden()
+    expect(page.locator("#cfg-backup")).to_be_hidden()
+    expect(page.get_by_role("button", name="Fazer backup agora")).to_be_hidden()

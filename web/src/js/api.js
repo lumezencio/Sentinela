@@ -72,10 +72,40 @@ export async function requisitar(metodo, caminho, { json, form, redirecionar401 
 }
 
 export const api = {
-  entrar: (login, senha) =>
-    requisitar("POST", "/auth/login", { json: { login, senha }, redirecionar401: false }),
+  /** 204 = dentro; 202 {"etapa": "totp"} = falta o código do segundo fator (`etapa: "totp"`). */
+  entrar: async (login, senha) => {
+    const r = await requisitar("POST", "/auth/login", {
+      json: { login, senha },
+      redirecionar401: false,
+    });
+    const etapa = r.status === 202 && r.dados && r.dados.etapa === "totp" ? "totp" : "";
+    return { ...r, etapa };
+  },
+  /** Passo 2 do login: `codigo` (aplicativo) ou `recuperacao`, exatamente um. */
+  entrarTotp: ({ codigo, recuperacao }) =>
+    requisitar("POST", "/auth/totp/entrar", {
+      json: recuperacao !== undefined ? { recuperacao } : { codigo },
+      redirecionar401: false,
+    }),
   sair: () => requisitar("POST", "/auth/logout", { redirecionar401: false }),
   eu: () => requisitar("GET", "/auth/eu"),
+  // ---- segundo fator, política e usuários (Fase 4B) ----
+  iniciarTotp: (senha) =>
+    requisitar("POST", "/auth/totp/iniciar", { json: { senha }, redirecionar401: false }),
+  confirmarTotp: (codigo) =>
+    requisitar("POST", "/auth/totp/confirmar", { json: { codigo }, redirecionar401: false }),
+  verSeguranca: () => requisitar("GET", "/config/seguranca"),
+  definirSeguranca: (exigir) =>
+    requisitar("PATCH", "/config/seguranca", { json: { exigir_totp_admin: Boolean(exigir) } }),
+  listarUsuarios: () => requisitar("GET", "/usuarios"),
+  zerarTotp: (id, senha) =>
+    requisitar("POST", `/usuarios/${encodeURIComponent(id)}/totp/zerar`, {
+      json: { senha },
+      redirecionar401: false,
+    }),
+  // ---- backup (Fase 4B) ----
+  verBackup: () => requisitar("GET", "/backup"),
+  criarBackup: () => requisitar("POST", "/backup"),
   criarEquipamento: (dados) => requisitar("POST", "/equipamentos", { json: dados }),
   verEquipamento: (id) => requisitar("GET", `/equipamentos/${encodeURIComponent(id)}`),
   eventosEquipamento: (id) =>
