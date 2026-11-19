@@ -614,6 +614,7 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
             "sentinela-silencios",
             "sentinela-alertas",
             "sentinela-telegram",
+            "sentinela-backup",
             "sentinela-agendador",
         ]
         assert not any(t.done() for t in vistas)

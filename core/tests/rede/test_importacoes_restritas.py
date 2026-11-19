@@ -20,6 +20,7 @@ CHECAGENS = "monitor/checagens/"  # prefixo: qualquer módulo de checagem
 MIKROTIK = "descoberta/fontes/mikrotik_api.py"
 SONDAGEM = "descoberta/classificador/sondagem.py"
 GRAVADOR = "descoberta/fontes/gravador_http.py"
+PORTA_LOCAL = "backup/porta.py"  # só 127.0.0.1: o ``restaurar`` confere se o core está no ar
 TELEGRAM = "alertas/telegram.py"  # única saída para a internet (DestinoExterno da Guarda)
 
 # biblioteca -> arquivos (relativos a ``sentinela/``) ou prefixos terminados em "/"
@@ -29,7 +30,7 @@ PERMITIDOS: dict[str, tuple[str, ...]] = {
     # backend de rede próprio (destino e impressão TLS conferidos; Telegram: destino travado)
     "httpcore": (GRAVADOR, TELEGRAM),
     "icmplib": ("monitor/checagens/icmp.py", "descoberta/varredura.py"),
-    "socket": (CHECAGENS, MIKROTIK, SONDAGEM, TELEGRAM),
+    "socket": (CHECAGENS, MIKROTIK, SONDAGEM, TELEGRAM, PORTA_LOCAL),
     # TLS próprio: impressão do certificado conferida no adaptador (RouterOS e gravadores);
     # Telegram: verificação normal de cadeia e nome (certifi + CA adicional)
     "ssl": (MIKROTIK, GRAVADOR, TELEGRAM),

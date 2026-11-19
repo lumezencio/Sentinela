@@ -24,6 +24,7 @@ from sentinela.api.comum import auditar, limitar_taxa
 from sentinela.api.deps import SessaoDB, agora_utc, exigir_admin
 from sentinela.api.esquemas_alertas import TelegramEdicao, TelegramSaida, TesteSaida
 from sentinela.db.modelos import Usuario
+from sentinela.seguranca.cofre import Cofre
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/config/telegram", tags=["config"])
@@ -33,11 +34,13 @@ MSG_CONFIGURAR = "Configure o token e ao menos um chat."
 MSG_FALHA = "Falha no envio ao Telegram."
 
 
-async def _saida(db: SessaoDB) -> TelegramSaida:
+async def _saida(db: SessaoDB, cofre: Cofre) -> TelegramSaida:
     a = await ler_telegram(db)
     st = await ler_status(db)
     return TelegramSaida(
         token_definido=a.token_cifrado is not None,
+        token_ilegivel=a.token_cifrado is not None
+        and decifrar_token(cofre, a.token_cifrado) is None,
         chats=list(a.chats),
         incluir_ip=a.incluir_ip,
         ultimo_envio=st["ultimo_envio"],
@@ -46,8 +49,8 @@ async def _saida(db: SessaoDB) -> TelegramSaida:
 
 
 @router.get("", response_model=TelegramSaida)
-async def ver(db: SessaoDB, _admin: Admin) -> TelegramSaida:
-    return await _saida(db)
+async def ver(request: Request, db: SessaoDB, _admin: Admin) -> TelegramSaida:
+    return await _saida(db, request.app.state.cofre)
 
 
 @router.patch("", response_model=TelegramSaida)
@@ -77,7 +80,7 @@ async def editar(
         {"token_alterado": token_alterado, "chats": len(novo.chats), "incluir_ip": novo.incluir_ip},
     )
     await db.commit()
-    return await _saida(db)
+    return await _saida(db, request.app.state.cofre)
 
 
 @router.post("/teste", response_model=TesteSaida)

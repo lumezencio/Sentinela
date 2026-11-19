@@ -4,10 +4,19 @@
     python -m sentinela.cli sub-rede adicionar|remover CIDR
     python -m sentinela.cli sub-rede listar
     python -m sentinela.cli totp-zerar LOGIN
+    python -m sentinela.cli backup-criar [--origem manual|atualizacao]
+    python -m sentinela.cli backup-verificar ARQUIVO
+    python -m sentinela.cli restaurar ARQUIVO
     python -m sentinela.cli oui-atualizar ARQUIVO.csv [...] [--saida oui.tsv.gz]
 
 A senha é lida com ``getpass`` (duas vezes, para confirmar). Fora de produção, se
 ``SENTINELA_ADMIN_SENHA`` estiver definida, ela é usada no lugar (testes/demonstração).
+
+``backup-criar`` imprime só o nome do arquivo gerado em ``<pasta do banco>/backups`` (funciona
+com o core no ar). ``backup-verificar`` sai com 1 e mensagem genérica se o arquivo for inválido.
+``restaurar`` verifica, guarda o banco atual como ``pre-restore``, restaura e imprime o nome do
+``pre-restore``; recusa rodar se o core responder em 127.0.0.1:8000. O ``.env`` nunca entra no
+backup: os comandos repetem o aviso em texto fixo.
 
 ``sub-rede`` usa a mesma validação da API, grava a auditoria com ``usuario_id`` nulo e ação
 ``cli:subrede.*`` e pausa/retoma os equipamentos como a API faz. Ela escreve só no banco: com
@@ -24,9 +33,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sentinela import __version__
+from sentinela.api.backup import AVISO as AVISO_ENV
 from sentinela.api.comum import sincronizar
 from sentinela.api.subredes import (
     MAX_SUB_REDES,
@@ -34,6 +46,15 @@ from sentinela.api.subredes import (
     MSG_LIMITE,
     normalizar_cidr,
 )
+from sentinela.backup.arquivo import (
+    ErroBackup,
+    TipoBackup,
+    criar_backup,
+    restaurar_backup,
+    revisoes_do_codigo,
+    verificar_backup,
+)
+from sentinela.backup.porta import porta_responde
 from sentinela.config import Settings, obter_settings
 from sentinela.db.modelos import Auditoria, SubRede, Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
@@ -45,6 +66,9 @@ from sentinela.seguranca.politica import zerar_totp
 from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 
 VARIAVEL_SENHA = "SENTINELA_ADMIN_SENHA"
+PORTA_CORE = 8000  # a porta do core dentro do contêiner (a mesma do uvicorn na imagem)
+MSG_CORE_NO_AR = "o core está no ar; pare-o antes de restaurar (nada foi alterado)"
+MSG_BACKUP_INVALIDO = "backup inválido, corrompido ou de uma versão mais nova do Sentinela"
 
 
 class ErroCli(Exception):
@@ -183,6 +207,51 @@ async def _totp_zerar(settings: Settings, login: str) -> None:
     )
 
 
+def _caminho_banco(settings: Settings) -> Path:
+    banco = make_url(settings.banco_url).database
+    if not banco:
+        raise ErroCli("o banco configurado não é um arquivo", 2)
+    return Path(banco)
+
+
+def _backup_criar(settings: Settings, origem: TipoBackup) -> None:
+    banco = _caminho_banco(settings)
+    try:
+        caminho = criar_backup(
+            banco, banco.parent / "backups", origem, datetime.now(UTC), __version__
+        )
+    except ErroBackup as e:
+        raise ErroCli(str(e), 1) from None
+    print(caminho.name)
+    print(f"aviso: {AVISO_ENV}", file=sys.stderr)
+
+
+def _backup_verificar(settings: Settings, arquivo: str) -> None:
+    try:
+        manifesto = verificar_backup(
+            Path(arquivo), revisoes_do_codigo(), _caminho_banco(settings).parent
+        )
+    except ErroBackup as e:
+        # só as duas mensagens fixas: versão mais nova ou inválido
+        raise ErroCli(str(e) if "mais nova" in str(e) else MSG_BACKUP_INVALIDO, 1) from None
+    print(f"backup válido: esquema {manifesto.esquema}, Sentinela {manifesto.sentinela}")
+
+
+async def _restaurar(settings: Settings, arquivo: str) -> None:
+    if await porta_responde(PORTA_CORE):
+        raise ErroCli(MSG_CORE_NO_AR, 1)
+    banco = _caminho_banco(settings)
+    try:
+        guardado = restaurar_backup(Path(arquivo), banco, datetime.now(UTC), __version__)
+    except ErroBackup as e:
+        raise ErroCli(str(e) if "mais nova" in str(e) else MSG_BACKUP_INVALIDO, 1) from None
+    except OSError:
+        raise ErroCli("não foi possível restaurar (nada foi apagado)", 1) from None
+    if guardado is not None:
+        print(guardado.name)
+    print(f"aviso: {AVISO_ENV}", file=sys.stderr)
+
+
 def _oui_atualizar(arquivos: list[str], saida: str | None) -> None:
     """Regera a base OUI a partir de CSVs da IEEE já baixados (nunca acessa a rede)."""
     destino = Path(saida) if saida else OUI_PADRAO
@@ -205,6 +274,14 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
         "totp-zerar", help="apaga o segundo fator (TOTP) de um usuário e revoga as sessões dele"
     )
     zerar.add_argument("login")
+    bcriar = comandos.add_parser("backup-criar", help="cria um backup do banco (sem o .env)")
+    bcriar.add_argument("--origem", choices=["manual", "atualizacao"], default="manual")
+    bverif = comandos.add_parser("backup-verificar", help="confere um arquivo de backup")
+    bverif.add_argument("arquivo")
+    restaura = comandos.add_parser(
+        "restaurar", help="restaura um backup (com o core parado); guarda o banco atual antes"
+    )
+    restaura.add_argument("arquivo")
     oui = comandos.add_parser(
         "oui-atualizar", help="regera a base OUI a partir de CSVs da IEEE (MA-L, MA-M, MA-S)"
     )
@@ -216,6 +293,15 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     try:
         if args.comando == "oui-atualizar":
             _oui_atualizar(args.arquivos, args.saida)
+            return 0
+        if args.comando == "backup-criar":
+            _backup_criar(settings, args.origem)
+            return 0
+        if args.comando == "backup-verificar":
+            _backup_verificar(settings, args.arquivo)
+            return 0
+        if args.comando == "restaurar":
+            await _restaurar(settings, args.arquivo)
             return 0
         if args.comando == "totp-zerar":
             await _totp_zerar(settings, args.login)

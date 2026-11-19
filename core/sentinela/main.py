@@ -4,12 +4,15 @@ import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.engine import make_url
 
+from sentinela import __version__
 from sentinela.alertas.agrupador import Agrupador
 from sentinela.alertas.despachante import Despachante
 from sentinela.alertas.silencios import Silencios
@@ -17,6 +20,7 @@ from sentinela.alertas.telegram import ClienteTelegram
 from sentinela.api import (
     alertas,
     auth,
+    backup,
     classes,
     config_descoberta,
     config_geral,
@@ -38,6 +42,7 @@ from sentinela.api import (
     ws_parede,
 )
 from sentinela.api.deps import agora_utc, verificar_csrf
+from sentinela.backup.servico import ServicoBackup
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
@@ -148,6 +153,24 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     )
     _montar_descoberta(app, settings, monitor)
     _montar_telegram(app, settings, monitor)
+    _montar_backup(app, settings)
+
+
+def _montar_backup(app: FastAPI, settings: Settings) -> None:
+    """Serviço de backup (laço não iniciado): o banco e ``backups/`` ficam no mesmo volume."""
+    banco = make_url(settings.banco_url).database
+    if not banco:  # banco em memória: nada a copiar
+        banco = ":memory:"
+    caminho = Path(banco)
+    app.state.backup = ServicoBackup(
+        app.state.sessoes,
+        caminho,
+        caminho.parent / "backups",
+        app.state.relogio,
+        agora_utc,
+        zona(settings),
+        __version__,
+    )
 
 
 def _montar_telegram(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
@@ -247,6 +270,7 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
             tarefas.append(
                 asyncio.create_task(app.state.despachante.executar(), name="sentinela-telegram")
             )
+        tarefas.append(asyncio.create_task(app.state.backup.executar(), name="sentinela-backup"))
         # o agendador por último: os laços da descoberta o usam e param antes dele
         tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
@@ -367,6 +391,7 @@ def criar_app(
     app.include_router(totp.router)
     app.include_router(usuarios.router)
     app.include_router(config_seguranca.router)
+    app.include_router(backup.router)
     app.include_router(subredes.router)
     app.include_router(classes.router)
     app.include_router(importacao.router)  # antes de /equipamentos/{id}
