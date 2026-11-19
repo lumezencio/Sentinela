@@ -89,14 +89,14 @@ test_smoke_arm64_so_em_tag_ou_manual() {
 test_permissoes_minimas_por_job() {
   local j bloco
   grep -qE '^permissions: \{\}' "$WF" || _falhou "permissões globais devem ser vazias"
-  for j in ci meta construir promover lancamento smoke-arm64; do
+  for j in ci meta construir promover marcar-latest lancamento smoke-arm64; do
     bloco="$(trecho_job "$j")"
     grep -qF 'permissions:' <<<"$bloco" || _falhou "job $j sem permissions próprio"
   done
   # id-token só na assinatura; packages: write só onde empurra imagem; contents: write só no lançamento
   [[ "$(grep -c 'id-token: write' "$WF")" -eq 1 ]] || _falhou "id-token: write deve aparecer uma única vez"
   grep -qF 'id-token: write' <(trecho_job promover) || _falhou "id-token: write fora do job promover"
-  [[ "$(grep -c 'packages: write' "$WF")" -eq 2 ]] || _falhou "packages: write só em construir e promover"
+  [[ "$(grep -c 'packages: write' "$WF")" -eq 3 ]] || _falhou "packages: write só em construir, promover e marcar-latest"
   grep -qF 'packages: write' <(trecho_job construir) || _falhou "construir sem packages: write"
   grep -qF 'packages: write' <(trecho_job promover) || _falhou "promover sem packages: write"
   [[ "$(grep -c 'contents: write' "$WF")" -eq 1 ]] || _falhou "contents: write só no lançamento"
@@ -105,6 +105,31 @@ test_permissoes_minimas_por_job() {
 
 test_versao_da_tag_confere_com_pyproject() {
   trecho_job meta | grep -qF 'core/pyproject.toml' || _falhou "meta não lê core/pyproject.toml"
+}
+
+test_identidade_do_consumidor_igual_a_do_workflow() {
+  local comum="$REPO_DIR/scripts/operacao-comum.sh" id_script id_wf
+  id_script="$(grep -oE 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/release\.yml@refs/tags/' "$comum" | head -n 1)"
+  [[ -n "$id_script" ]] || _falhou "identidade cosign não achada em operacao-comum.sh"
+  id_wf="$(grep -oE 'IDENTIDADE: https://github\.com/\$\{\{ github\.repository \}\}/\.github/workflows/release\.yml@' "$WF" | head -n 1)"
+  [[ -n "$id_wf" ]] || _falhou "identidade verificada pelo release.yml não achada"
+  # o repositório real tem a caixa de github.repository; o consumidor tem de usar exatamente ela
+  afirmar_igual "$id_script" "https://github.com/lumezencio/Sentinela/.github/workflows/release.yml@refs/tags/"
+  grep -qF 'github.com/lumezencio/Sentinela/releases/download' "$comum" || _falhou "URL_RELEASE com a caixa errada"
+  grep -qF 'release.yml@${{ github.ref }}' "$WF" || _falhou "o workflow verifica contra github.ref (refs/tags/vX.Y.Z)"
+}
+
+test_so_publica_tag_que_esta_na_main() {
+  local m
+  m="$(trecho_job meta)"
+  grep -qF 'fetch-depth: 0' <<<"$m" || _falhou "meta sem fetch-depth: 0"
+  grep -qF 'merge-base --is-ancestor "$GITHUB_SHA" origin/main' <<<"$m" || _falhou "meta não confere se a tag está na main"
+}
+
+test_latest_so_depois_do_smoke() {
+  if grep -qE -- '-t "?\$IMG:latest' "$WF"; then _falhou "promover não pode mover o latest"; fi
+  grep -qE 'needs: \[.*smoke-arm64.*\]' <(trecho_job marcar-latest) || _falhou "marcar-latest tem de depender do smoke"
+  grep -qF 'sentinela-$s:latest' <(trecho_job marcar-latest) || grep -qF '$img:latest' <(trecho_job marcar-latest) || _falhou "marcar-latest sem o latest"
 }
 
 executar_testes

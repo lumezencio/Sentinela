@@ -90,7 +90,7 @@ test_com_cosign_verifica_com_identidade_e_emissor_do_workflow_release() {
   modo_publicadas
   com_cosign
   atualizar v0.5.0 || _falhou "deveria atualizar"
-  afirmar_log_contem 'cosign verify --certificate-identity https://github.com/lumezencio/sentinela/.github/workflows/release.yml@refs/tags/v0.5.0 --certificate-oidc-issuer https://token.actions.githubusercontent.com ghcr.io/lumezencio/sentinela-core@sha256:'
+  afirmar_log_contem 'cosign verify --certificate-identity https://github.com/lumezencio/Sentinela/.github/workflows/release.yml@refs/tags/v0.5.0 --certificate-oidc-issuer https://token.actions.githubusercontent.com ghcr.io/lumezencio/sentinela-core@sha256:'
   afirmar_log_contem "ghcr.io/lumezencio/sentinela-web@sha256:"
   afirmar_log_nao_contem "curl"
   afirmar_ordem "compose pull core web" "cosign verify" "$COMPOSE_CORE_UP"
@@ -113,7 +113,7 @@ test_sem_cosign_confere_digest_publicado() {
   modo_publicadas
   digests_ok
   atualizar v0.5.0 || _falhou "deveria atualizar: $(cat "$TMP_OP/saida-update")"
-  afirmar_log_contem "curl -fsSL --proto =https --max-time 30 https://github.com/lumezencio/sentinela/releases/download/v0.5.0/digests.txt"
+  afirmar_log_contem "curl -fsSL --proto =https --max-time 30 https://github.com/lumezencio/Sentinela/releases/download/v0.5.0/digests.txt"
   afirmar_log_nao_contem "cosign"
   grep -qF "digests.txt do release" "$TMP_OP/saida-update" || _falhou "deveria avisar do cosign ausente"
 }

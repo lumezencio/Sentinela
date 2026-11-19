@@ -172,7 +172,7 @@ limpar_pre() {
 # Contrato: o chamador define TAG_ALVO (vX.Y.Z) e VERSAO_ALVO (X.Y.Z). Fecha por padrão: sem
 # cosign e sem digests.txt do release, não há como verificar e a operação aborta.
 EMISSOR_COSIGN='https://token.actions.githubusercontent.com'
-URL_RELEASE="https://github.com/lumezencio/sentinela/releases/download"
+URL_RELEASE="https://github.com/lumezencio/Sentinela/releases/download"
 DIGESTS_TXT=""
 
 # obter_digests_sem_cosign: sem cosign instalado, baixa o digests.txt do release (HTTPS) para DIGESTS_TXT
@@ -192,7 +192,7 @@ verificar_imagem() {
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || falhar "não consegui ler o digest da imagem baixada de '$servico'; nenhum contêiner foi trocado"
   if command -v cosign >/dev/null 2>&1; then
     cosign verify \
-      --certificate-identity "https://github.com/lumezencio/sentinela/.github/workflows/release.yml@refs/tags/$TAG_ALVO" \
+      --certificate-identity "https://github.com/lumezencio/Sentinela/.github/workflows/release.yml@refs/tags/$TAG_ALVO" \
       --certificate-oidc-issuer "$EMISSOR_COSIGN" "$repo@$d" >/dev/null ||
       falhar "a assinatura da imagem de '$servico' não confere com o workflow de release de $TAG_ALVO; nenhum contêiner foi trocado"
   else

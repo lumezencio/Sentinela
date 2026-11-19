@@ -129,7 +129,7 @@ test_versao_vem_do_pyproject() {
   printf '[project]\nname = "sentinela"\nversion = "1.2.3"\n' >"$TMP_OP/core/pyproject.toml"
   instalar || _falhou "$(cat "$TMP_OP/saida-install")"
   grep -qx 'VERSAO=1.2.3' "$TMP_OP/.env" || _falhou "VERSAO deveria ser 1.2.3"
-  afirmar_log_contem "cosign verify --certificate-identity https://github.com/lumezencio/sentinela/.github/workflows/release.yml@refs/tags/v1.2.3 "
+  afirmar_log_contem "cosign verify --certificate-identity https://github.com/lumezencio/Sentinela/.github/workflows/release.yml@refs/tags/v1.2.3 "
 }
 
 test_pull_falho_sugere_build_e_nao_sobe_nada() {
@@ -151,7 +151,7 @@ test_env_existente_nunca_e_sobrescrito() {
   instalar || _falhou "$(cat "$TMP_OP/saida-install")"
   afirmar_igual "$(hash_env)" "$h"
   # a VERSAO já fixada no .env vale (não é trocada pela do pyproject)
-  afirmar_log_contem "cosign verify --certificate-identity https://github.com/lumezencio/sentinela/.github/workflows/release.yml@refs/tags/v0.3.9 "
+  afirmar_log_contem "cosign verify --certificate-identity https://github.com/lumezencio/Sentinela/.github/workflows/release.yml@refs/tags/v0.3.9 "
 }
 
 test_env_publicadas_sem_versao_recebe_versao_do_pyproject() {
@@ -173,7 +173,7 @@ test_sem_cosign_confere_digests_do_release() {
   ambiente novo
   digests_ok
   instalar || _falhou "$(cat "$TMP_OP/saida-install")"
-  afirmar_log_contem "curl -fsSL --proto =https --max-time 30 https://github.com/lumezencio/sentinela/releases/download/v0.4.0/digests.txt"
+  afirmar_log_contem "curl -fsSL --proto =https --max-time 30 https://github.com/lumezencio/Sentinela/releases/download/v0.4.0/digests.txt"
 }
 
 test_digest_diferente_nao_sobe_nada() {
