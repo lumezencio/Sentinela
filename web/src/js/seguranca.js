@@ -209,8 +209,11 @@ el.sair.addEventListener("click", async () => {
   window.location.replace("login.html");
 });
 
+// ao sair da página (inclusive para o cache de voltar/avançar) nada de segredo fica na memória nem no DOM
 window.addEventListener("pagehide", () => {
-  if (!jaAtivo) limparSegredos();
+  limparSegredos();
+  codigosEmMemoria = [];
+  el.lista.replaceChildren();
 });
 
 carregar();

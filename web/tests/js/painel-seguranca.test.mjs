@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { api } from "../../src/js/api.js";
-import { backupDoPainel, segurancaDoPainel } from "../../src/js/painel-seguranca.js";
+import { backupDoPainel, segurancaDoPainel } from "../../src/js/configuracoes.js";
 
 function com(api_, funcao) {
   const originais = Object.fromEntries(Object.keys(api_).map((k) => [k, api[k]]));
@@ -59,20 +59,33 @@ test("alternarExigirTotp: sem o meu fator pede confirmação e respeita o 'não'
   assert.equal(c.segExigir, false);
 });
 
-test("backup: sem cópias diz que ainda não houve; com cópias usa o fuso e não trunca", () => {
+test("backup: sem cópias diz que ainda não houve; com cópias usa o fuso e não trunca", async () => {
   const c = backupDoPainel();
   c.fuso = "UTC";
-  c.aplicarBackup({ ultimo_em: null, ultimo_tamanho: null, ultimo_erro: null, copias: [], diretorio: "/dados/backups" });
+  await c.aplicarBackup({ ultimo_em: null, ultimo_tamanho: null, ultimo_erro: null, copias: [], diretorio: "/dados/backups" });
   assert.match(c.bkResumo, /ainda não houve/i);
   assert.equal(c.bkCopias.length, 0);
   const copias = Array.from({ length: 20 }, (_, i) => ({
     nome: `sentinela-${i}-${"x".repeat(60)}.tar.gz`, tipo: "diario", criado_em: "2026-11-18T03:00:00Z", tamanho: 1024 * (i + 1),
   }));
-  c.aplicarBackup({ ultimo_em: "2026-11-18T03:00:00Z", ultimo_tamanho: 2048, ultimo_erro: "falha\u0007 de disco", copias, diretorio: "/dados/backups" });
+  await c.aplicarBackup({ ultimo_em: "2026-11-18T03:00:00Z", ultimo_tamanho: 2048, ultimo_erro: "falha\u0007 de disco", copias, diretorio: "/dados/backups" });
   assert.equal(c.bkCopias.length, 20);
   assert.equal(c.bkCopias[3].nome, copias[3].nome);
   assert.match(c.bkResumo, /03:00/);
   assert.ok(!c.bkUltimoErro.includes("\u0007"));
+});
+
+test("backup: se o fuso chegar depois da lista, os horários se refazem", async () => {
+  const c = backupDoPainel();
+  c.fuso = "UTC";
+  await c.aplicarBackup({
+    ultimo_em: "2026-11-18T03:00:00Z", ultimo_tamanho: 1024, ultimo_erro: null, diretorio: "/x",
+    copias: [{ nome: "a", tipo: "diario", criado_em: "2026-11-18T03:00:00Z", tamanho: 1 }],
+  });
+  assert.match(c.bkCopias[0].quando, /03:00/);
+  c.fuso = "America/Sao_Paulo"; // chegou depois
+  assert.match(c.bkCopias[0].quando, /00:00/);
+  assert.match(c.bkResumo, /00:00/);
 });
 
 test("fazerBackupAgora: sucesso recarrega e avisa; falha mostra o texto fixo do servidor", async () => {

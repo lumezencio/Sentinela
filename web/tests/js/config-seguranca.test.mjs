@@ -34,6 +34,12 @@ test("test_codigo_recuperacao_aceita_minusculas_e_sem_hifen", () => {
   }
 });
 
+test("colar com espaço no começo: código do aplicativo e de recuperação", () => {
+  assert.deepEqual(validarCodigoTotp(" 123 456"), { ok: true, codigo: "123456", erro: "" });
+  assert.equal(validarCodigoRecuperacao(" k7mq2-xdp34").codigo, "K7MQ2-XDP34");
+  assert.equal(validarCodigoRecuperacao(" K7MQ2 XDP34 ").ok, true);
+});
+
 test("test_agrupar_chave_32_em_8_blocos", () => {
   const chave = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
   const g = agruparChave(chave);
@@ -69,7 +75,7 @@ test("test_linha_do_usuario_sem_totp_nao_oferece_zerar", () => {
 });
 
 test("segredo e códigos nunca vão a console nem localStorage (varre os módulos)", () => {
-  for (const arq of ["config-seguranca.js", "config-backup.js", "seguranca.js", "login.js", "painel-seguranca.js"]) {
+  for (const arq of ["config-seguranca.js", "config-backup.js", "seguranca.js", "login.js"]) {
     const fonte = readFileSync(new URL(`../../src/js/${arq}`, import.meta.url), "utf8");
     assert.ok(!/console\./.test(fonte), `${arq}: console`);
     assert.ok(!/localStorage|sessionStorage|indexedDB/.test(fonte), `${arq}: armazenamento`);

@@ -593,3 +593,264 @@ export function configuracoesDoPainel() {
     },
   };
 }
+
+// ---------- cartões Segurança e Backup (Fase 4B) ----------
+// Moram aqui (e não num módulo próprio) para a aba abrir sem mais um pedido de rede. Nada aqui
+// grava senha, chave ou código em console ou armazenamento; texto do servidor só por x-text.
+
+// As funções puras dos cartões só são baixadas quando um cartão vai ser mostrado: a aba
+// Configurações abre com menos pedidos (cada módulo a mais custa uma ida e volta na rede).
+const carregarFormatadores = {
+  backup: () => import("./config-backup.js"),
+  seguranca: () => import("./config-seguranca.js"),
+};
+
+/**
+ * Chama `acao` quando o cartão `id` está na janela (ou já, sem IntersectionObserver). Os pedidos
+ * dos cartões Segurança e Backup só saem quando alguém os vê: a aba Configurações abre sem
+ * esse custo extra de rede e de renderização.
+ */
+function quandoVisivel(id, acao) {
+  const alvo = document.getElementById(id);
+  if (!alvo || typeof IntersectionObserver !== "function") {
+    acao();
+    return;
+  }
+  const obs = new IntersectionObserver((entradas) => {
+    if (!entradas.some((e) => e.isIntersecting)) return;
+    obs.disconnect();
+    acao();
+  });
+  obs.observe(alvo);
+}
+
+/** Estado e métodos do cartão Segurança; mesmo `this` do componente "painel". */
+export function segurancaDoPainel() {
+  let carregando = false;
+  let focoAntes = null;
+  let formatar = null; // módulo config-seguranca.js, depois do 1º carregamento
+
+  return {
+    segExigir: false,
+    segMeuTotp: false,
+    segUsuarios: [],
+    segCarregando: false,
+    segSalvando: false,
+    segErroGeral: "",
+    segAviso: "",
+    // diálogo "Zerar segundo fator"
+    segAlvo: { id: 0, login: "" },
+    segSenha: "",
+    segZerarErro: "",
+    segZerando: false,
+
+    entrarEmSeguranca() {
+      if (!this.admin) return;
+      quandoVisivel("cfg-seguranca", async () => {
+        if (carregando) return;
+        carregando = true;
+        try {
+          await this.carregarSeguranca(this.segUsuarios.length === 0);
+        } finally {
+          carregando = false;
+        }
+      });
+    },
+
+    async carregarSeguranca(comAviso = true) {
+      this.segCarregando = comAviso;
+      const [politica, usuarios, eu] = await Promise.all([
+        api.verSeguranca(),
+        api.listarUsuarios(),
+        api.eu(),
+      ]);
+      this.segCarregando = false;
+      if (!politica.ok || !usuarios.ok || !eu.ok) {
+        this.segErroGeral = (!politica.ok ? politica : !usuarios.ok ? usuarios : eu).erro || MSG_FALHA;
+        return false;
+      }
+      this.segErroGeral = "";
+      this.segExigir = Boolean(politica.dados && politica.dados.exigir_totp_admin);
+      this.segMeuTotp = Boolean(eu.dados && eu.dados.totp_ativo);
+      formatar = await carregarFormatadores.seguranca();
+      this.segUsuarios = (Array.isArray(usuarios.dados) ? usuarios.dados : []).map((u) => ({
+        ...formatar.linhaDoUsuario(u),
+        rotuloZerar: `Zerar o segundo fator de ${textoSeguro(u.login, 64)}`,
+      }));
+      return true;
+    },
+
+    get segExigirMarcado() {
+      return this.segExigir ? "true" : "false";
+    },
+    get segMeuTotpTexto() {
+      return this.segMeuTotp
+        ? "O segundo fator está ativo na sua conta."
+        : "O segundo fator ainda não está ativo na sua conta.";
+    },
+    get segSemUsuarios() {
+      return !this.segCarregando && this.segUsuarios.length === 0;
+    },
+    get segTituloZerar() {
+      return `Zerar o segundo fator de ${this.segAlvo.login}?`;
+    },
+
+    async alternarExigirTotp() {
+      if (this.segSalvando) return;
+      const novo = !this.segExigir;
+      if (novo && !this.segMeuTotp) {
+        const ok = await this.confirmar({
+          titulo: "Exigir o segundo fator?",
+          texto:
+            "Sua conta ainda não tem o segundo fator. Se você exigir agora, o seu próximo acesso " +
+            "só poderá ativá-lo. Ative o seu antes em “Proteger minha conta”, ou continue sabendo disso.",
+          botao: "Exigir mesmo assim",
+          perigo: true,
+        });
+        if (!ok) return;
+      }
+      this.segAviso = "";
+      this.segErroGeral = "";
+      this.segSalvando = true;
+      const r = await api.definirSeguranca(novo);
+      this.segSalvando = false;
+      if (!r.ok) {
+        this.segErroGeral = r.erro || MSG_FALHA;
+        return;
+      }
+      this.segExigir = Boolean(r.dados && r.dados.exigir_totp_admin);
+      this.segAviso = this.segExigir
+        ? "Agora todo administrador precisa do segundo fator."
+        : "O segundo fator deixou de ser obrigatório para administradores.";
+    },
+
+    abrirZerar(id) {
+      const u = this.segUsuarios.find((x) => x.id === id);
+      if (!u || this.segZerando) return;
+      this.segAlvo = { id: u.id, login: u.login };
+      this.segSenha = "";
+      this.segZerarErro = "";
+      focoAntes = document.activeElement;
+      this.$refs.dlgZerar.showModal();
+      this.$nextTick(() => this.$refs.segSenhaCampo && this.$refs.segSenhaCampo.focus());
+    },
+
+    fecharZerar() {
+      this.$refs.dlgZerar.close();
+    },
+
+    aoFecharZerar() {
+      this.segSenha = "";
+      this.segZerarErro = "";
+      if (focoAntes && focoAntes.isConnected && typeof focoAntes.focus === "function") focoAntes.focus();
+      focoAntes = null;
+    },
+
+    async confirmarZerar() {
+      if (this.segZerando) return;
+      if (!this.segSenha) {
+        this.segZerarErro = "Digite sua senha para confirmar.";
+        return;
+      }
+      this.segZerando = true;
+      this.segZerarErro = "";
+      const r = await api.zerarTotp(this.segAlvo.id, this.segSenha);
+      this.segZerando = false;
+      this.segSenha = "";
+      if (!r.ok) {
+        this.segZerarErro =
+          r.status === 401 ? "Senha incorreta." : r.status === 404 ? "Usuário não encontrado." : r.erro || MSG_FALHA;
+        return;
+      }
+      const login = this.segAlvo.login;
+      this.$refs.dlgZerar.close();
+      this.segAviso = `Segundo fator de ${login} zerado. As sessões dele foram encerradas.`;
+      await this.carregarSeguranca(false);
+    },
+  };
+}
+
+/** Estado e métodos do cartão Backup; mesmo `this` do componente "painel". */
+export function backupDoPainel() {
+  let carregado = false;
+  let carregando = false;
+  let formatar = null; // módulo config-backup.js, depois do 1º carregamento
+
+  return {
+    bkUltimoErro: "",
+    bkDiretorio: "",
+    bkCarregando: false,
+    bkCriando: false,
+    bkErro: "",
+    bkAviso: "",
+    bkStatusBruto: null,
+
+    entrarEmBackup() {
+      if (!this.admin) return;
+      quandoVisivel("cfg-backup", async () => {
+        if (carregando) return;
+        carregando = true;
+        try {
+          carregado = await this.carregarBackup(!carregado);
+        } finally {
+          carregando = false;
+        }
+      });
+    },
+
+    async carregarBackup(comAviso = true) {
+      this.bkCarregando = comAviso;
+      const r = await api.verBackup();
+      this.bkCarregando = false;
+      if (!r.ok || !r.dados) {
+        this.bkErro = r.erro || MSG_FALHA;
+        return false;
+      }
+      this.bkErro = "";
+      await this.aplicarBackup(r.dados);
+      return true;
+    },
+
+    async aplicarBackup(d) {
+      formatar = formatar || (await carregarFormatadores.backup()); // antes de mostrar a lista
+      this.bkStatusBruto = d;
+      this.bkDiretorio = textoSeguro(d.diretorio, 120);
+      this.bkUltimoErro = textoSeguro(d.ultimo_erro, 300);
+    },
+
+    // calculados a cada leitura: se o fuso chegar depois da lista, os horários se refazem sozinhos
+    get bkResumo() {
+      return this.bkStatusBruto ? formatar.resumoDoUltimo(this.bkStatusBruto, this.fuso) : "";
+    },
+    get bkCopias() {
+      const d = this.bkStatusBruto;
+      if (!d) return [];
+      return (Array.isArray(d.copias) ? d.copias : []).map((c, i) => ({
+        i,
+        ...formatar.linhaDoBackup(c, this.fuso),
+      }));
+    },
+
+    get bkSemCopias() {
+      return !this.bkCarregando && this.bkCopias.length === 0;
+    },
+    get bkTextoAgenda() {
+      return `Cópia automática todos os dias às 03:00, no fuso ${this.fuso}. Ficam 7 diárias e 4 semanais.`;
+    },
+
+    async fazerBackupAgora() {
+      if (this.bkCriando) return;
+      this.bkAviso = "";
+      this.bkErro = "";
+      this.bkCriando = true;
+      const r = await api.criarBackup();
+      this.bkCriando = false;
+      if (!r.ok) {
+        this.bkErro = r.erro || MSG_FALHA;
+        return;
+      }
+      this.bkAviso = "Backup feito.";
+      await this.carregarBackup(false);
+    },
+  };
+}

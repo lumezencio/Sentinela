@@ -21,6 +21,10 @@ const voltar = document.getElementById("voltar-login");
 
 let contagem = 0;
 let modoRecuperacao = false;
+let etapaDesde = 0; // quando a etapa do código abriu (o token do servidor vale 5 minutos)
+let falhasSeguidas = 0;
+const VALIDADE_ETAPA_MS = 5 * 60 * 1000;
+const MSG_EXPIROU = "A etapa expirou; entre de novo.";
 
 function mostrarErro(texto) {
   erro.textContent = texto;
@@ -58,7 +62,7 @@ function ajustarCampoDoCodigo() {
     dicaTotp.textContent =
       "Digite um dos códigos que você guardou ao ativar o segundo fator. Cada um vale uma vez.";
     rotuloTotp.textContent = "Código de recuperação";
-    campoTotp.setAttribute("maxlength", "11");
+    campoTotp.setAttribute("maxlength", "16");
     campoTotp.setAttribute("inputmode", "text");
     campoTotp.setAttribute("autocapitalize", "characters");
     alternar.textContent = "Usar o código do aplicativo";
@@ -66,7 +70,7 @@ function ajustarCampoDoCodigo() {
     tituloTotp.textContent = "Confirme que é você";
     dicaTotp.textContent = "Abra o aplicativo autenticador e digite o código de 6 números que ele mostra.";
     rotuloTotp.textContent = "Código do aplicativo";
-    campoTotp.setAttribute("maxlength", "7");
+    campoTotp.setAttribute("maxlength", "16");
     campoTotp.setAttribute("inputmode", "numeric");
     campoTotp.setAttribute("autocapitalize", "none");
     alternar.textContent = "Usar código de recuperação";
@@ -76,6 +80,8 @@ function ajustarCampoDoCodigo() {
 function abrirEtapaTotp() {
   window.clearInterval(contagem);
   modoRecuperacao = false;
+  etapaDesde = Date.now();
+  falhasSeguidas = 0;
   form.hidden = true;
   formTotp.hidden = false;
   botaoTotp.disabled = false;
@@ -94,6 +100,11 @@ function voltarAoLogin() {
   botao.disabled = false;
   botao.textContent = "Entrar";
   campoSenha.focus();
+}
+
+/** Etapa vencida (5 min) ou 2 recusas seguidas: o token provavelmente não vale mais. */
+function etapaExpirou() {
+  return Date.now() - etapaDesde > VALIDADE_ETAPA_MS || falhasSeguidas >= 2;
 }
 
 form.addEventListener("submit", async (evento) => {
@@ -139,6 +150,11 @@ formTotp.addEventListener("submit", async (evento) => {
     campoTotp.focus();
     return;
   }
+  if (Date.now() - etapaDesde > VALIDADE_ETAPA_MS) {
+    voltarAoLogin();
+    mostrarErro(MSG_EXPIROU);
+    return;
+  }
   mostrarErroTotp("");
   botaoTotp.disabled = true;
   botaoTotp.textContent = "Confirmando…";
@@ -155,6 +171,12 @@ formTotp.addEventListener("submit", async (evento) => {
   }
   botaoTotp.disabled = false;
   botaoTotp.textContent = "Confirmar";
+  if (r.status === 401) falhasSeguidas += 1;
+  if (r.status === 401 && etapaExpirou()) {
+    voltarAoLogin();
+    mostrarErro(MSG_EXPIROU);
+    return;
+  }
   mostrarErroTotp(r.status === 401 ? "Código inválido." : "Não foi possível entrar agora.");
   campoTotp.focus();
 });

@@ -2940,7 +2940,7 @@ def test_login_com_totp_pede_o_codigo_e_entra(page: Page, conta_com_totp: Any) -
     assert campo.get_attribute("autocomplete") == "one-time-code"
     assert campo.get_attribute("inputmode") == "numeric"
     codigo = conta.codigo_seguinte()
-    campo.fill(f"{codigo[:3]} {codigo[3:]}")  # o espaço no meio é tolerado
+    campo.fill(f" {codigo[:3]} {codigo[3:]}")  # espaços no começo e no meio são tolerados
     page.get_by_role("button", name="Confirmar").click()
     page.wait_for_url("**/index.html")
     expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
@@ -2968,6 +2968,23 @@ def test_login_codigo_errado_mostra_erro_generico_e_mantem_a_etapa(
     expect(page.get_by_label("Senha")).to_have_value("")
 
 
+def test_login_duas_recusas_seguidas_voltam_a_etapa_1_com_aviso(
+    page: Page, conta_com_totp: Any
+) -> None:
+    conta = conta_com_totp()
+    preencher_login(page, conta.login, conta.senha)
+    campo = page.get_by_label("Código do aplicativo")
+    expect(page.locator("#form-totp")).to_be_visible()
+    for _ in range(2):
+        campo.fill("000000")
+        page.get_by_role("button", name="Confirmar").click()
+        if _ == 0:
+            expect(page.locator("#erro-totp")).to_have_text("Código inválido.")
+    expect(page.locator("#form-login")).to_be_visible()
+    expect(page.locator("#form-totp")).to_be_hidden()
+    expect(page.locator("#erro-login")).to_have_text("A etapa expirou; entre de novo.")
+
+
 def test_login_com_codigo_de_recuperacao(page: Page, conta_com_totp: Any) -> None:
     conta = conta_com_totp()
     preencher_login(page, conta.login, conta.senha)
@@ -2975,7 +2992,7 @@ def test_login_com_codigo_de_recuperacao(page: Page, conta_com_totp: Any) -> Non
     page.get_by_role("button", name="Usar código de recuperação").click()
     campo = page.get_by_label("Código de recuperação", exact=True)
     expect(campo).to_be_focused()
-    campo.fill(conta.codigos[0].replace("-", "").lower())  # minúsculas e sem hífen
+    campo.fill(" " + conta.codigos[0].replace("-", "").lower())  # espaço, minúsculas, sem hífen
     page.get_by_role("button", name="Confirmar").click()
     page.wait_for_url("**/index.html")
     expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)

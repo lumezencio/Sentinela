@@ -4,7 +4,7 @@ import { api, irParaLogin } from "./api.js";
 import { cartoesDoPainel } from "./cartoes-painel.js";
 import { paredesDoPainel } from "./config-paredes.js";
 import { telegramDoPainel } from "./config-telegram.js";
-import { configuracoesDoPainel } from "./configuracoes.js";
+import { backupDoPainel, configuracoesDoPainel, segurancaDoPainel } from "./configuracoes.js";
 import {
   aplicarEquipamento,
   aplicarEstado,
@@ -19,7 +19,6 @@ import {
 } from "./lista.js";
 import { novosDoPainel, textoSeguro } from "./novos.js";
 import { organogramaDoPainel } from "./organograma.js";
-import { backupDoPainel, segurancaDoPainel } from "./painel-seguranca.js";
 import { visoesDoPainel } from "./teia-pagina.js";
 import { criarConexao } from "./ws.js";
 
