@@ -20,16 +20,17 @@ export MSYS_NO_PATHCONV=1
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # SENTINELA_RAIZ: o update.sh roda uma CÓPIA deste script (tirada antes de qualquer checkout) e
 # aponta aqui a pasta do projeto; sem isso, a pasta do próprio script. Só vale quando o update.sh a
-# passa (SENTINELA_TRAVA_PAI definida) e a pasta é mesmo de um projeto (docker-compose.yml e
-# restore.sh nela): uma sobra no ambiente do shell não faz o script agir em outra pasta.
+# passa (SENTINELA_TRAVA_PAI definida) e a pasta é mesmo de um projeto (docker-compose.yml
+# nela; o restore.sh pode faltar quando a volta segue um checkout de versão antiga): uma sobra no
+# ambiente do shell não faz o script agir em outra pasta.
 RAIZ="$AQUI"
 if [[ -n "${SENTINELA_RAIZ:-}" ]]; then
   if [[ -z "${SENTINELA_TRAVA_PAI:-}" ]]; then
     echo "aviso: SENTINELA_RAIZ ignorada (só o update.sh a define, junto com SENTINELA_TRAVA_PAI)" >&2
-  elif [[ -f "$SENTINELA_RAIZ/docker-compose.yml" && -f "$SENTINELA_RAIZ/restore.sh" ]]; then
+  elif [[ -f "$SENTINELA_RAIZ/docker-compose.yml" ]]; then
     RAIZ="$SENTINELA_RAIZ"
   else
-    echo "erro: SENTINELA_RAIZ não aponta para uma pasta do Sentinela (faltam docker-compose.yml e restore.sh); nada foi alterado" >&2
+    echo "erro: SENTINELA_RAIZ não aponta para uma pasta do Sentinela (falta docker-compose.yml); nada foi alterado" >&2
     exit 1
   fi
 fi

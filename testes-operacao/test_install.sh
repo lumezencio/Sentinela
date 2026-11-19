@@ -267,7 +267,8 @@ test_candidata_por_digest_sobe_sem_cosign_nem_digests_txt() {
 test_candidata_com_digest_diferente_nao_sobe_e_descarta() {
   ambiente novo
   export SENTINELA_CANDIDATA_CORE="$CAND_CORE" SENTINELA_CANDIDATA_WEB="$CAND_WEB"
-  export SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})" SHIM_SEM_IMAGEM=1
+  SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})"
+  export SHIM_DIGEST_WEB SHIM_SEM_IMAGEM=1
   if instalar; then _falhou "deveria recusar"; fi
   grep -qF "difere do digest aprovado" "$TMP_OP/saida-install" || _falhou "mensagem: $(cat "$TMP_OP/saida-install")"
   afirmar_log_contem "docker rmi ghcr.io/lumezencio/sentinela-web:0.4.0"

@@ -253,10 +253,11 @@ test_restore_raiz_so_vale_com_trava_pai_e_pasta_do_projeto() {
   fi
   grep -qF "não aponta para uma pasta do Sentinela" "$TMP_OP/s2" || _falhou "mensagem: $(cat "$TMP_OP/s2")"
   afirmar_igual "$(wc -c <"$SHIM_LOG" | tr -d ' ')" "0"
-  # só docker-compose.yml, sem restore.sh: também recusa
+  # com docker-compose.yml (mesmo sem restore.sh, como depois do checkout de uma versão antiga): aceita
   : >"$TMP_OP/outra/docker-compose.yml"
-  if SENTINELA_RAIZ="$TMP_OP/outra" SENTINELA_TRAVA_PAI="$$" bash restore.sh backup.tar.gz --sim >/dev/null 2>&1; then
-    _falhou "faltava o restore.sh"
+  SENTINELA_RAIZ="$TMP_OP/outra" SENTINELA_TRAVA_PAI="$$" bash restore.sh backup.tar.gz --sim >"$TMP_OP/s3" 2>&1 || true
+  if grep -qF "não aponta para uma pasta do Sentinela" "$TMP_OP/s3"; then
+    _falhou "deveria aceitar a pasta com docker-compose.yml: $(cat "$TMP_OP/s3")"
   fi
 }
 
