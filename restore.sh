@@ -68,6 +68,25 @@ CORE_PARADO=0
 RESTAURADO=0
 ENTRADA=""
 PRE=""
+INICIOU=0
+ANTES=""
+
+# lista_pre_restore: nomes de pre-restore no volume (padrão fixo, sem entrada do usuário)
+lista_pre_restore() {
+  cli_avulsa core sh -c 'cd /dados/backups && ls -1 -- sentinela-*-pre-restore.tar.gz 2>/dev/null; true'
+}
+
+# pre_restore_novo: o pre-restore mais novo criado depois de ANTES (vazio se não houver)
+pre_restore_novo() {
+  local agora nome novo=""
+  agora="$(lista_pre_restore 2>/dev/null)" || return 0
+  while IFS= read -r nome; do
+    nome="${nome%$'\r'}"
+    nome_backup_valido "$nome" || continue
+    grep -qxF -- "$nome" <<<"$ANTES" || novo="$nome"
+  done <<<"$agora"
+  printf '%s\n' "$novo"
+}
 
 # shellcheck disable=SC2329  # chamada pelos traps abaixo
 finalizar() {
@@ -88,6 +107,14 @@ interrompido() {
   fi
   if [[ $RESTAURADO -eq 1 ]]; then
     echo "A restauração já tinha sido concluída antes da interrupção; o banco anterior ficou guardado como: ${PRE:-(não havia)}. Confira a saúde do core." >&2
+  elif [[ $INICIOU -eq 1 ]]; then
+    # o sinal pegou a própria chamada de restauração: o banco pode já ter sido trocado
+    PRE="$(pre_restore_novo || true)"
+    if [[ -n "$PRE" ]]; then
+      echo "A interrupção ocorreu durante a restauração: o banco pode já ter sido trocado. O banco anterior ficou guardado como: $PRE. Verifique a saúde do core e, se precisar, restaure esse arquivo." >&2
+    else
+      echo "A interrupção ocorreu durante a restauração e não achei um pre-restore novo no volume. Verifique a saúde do core e o conteúdo de /dados/backups." >&2
+    fi
   fi
   exit 130
 }
@@ -130,8 +157,12 @@ if ! compose stop core; then
 fi
 
 echo "Restaurando..."
+ANTES="$(lista_pre_restore 2>/dev/null || true)"
+INICIOU=1
 if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ENTRADA")"; then
   echo "erro: a restauração falhou; o banco anterior foi mantido. Subindo o core de novo..." >&2
+  PRE="$(pre_restore_novo || true)"
+  [[ -z "$PRE" ]] || echo "aviso: foi criado o pre-restore $PRE (em /dados/backups)" >&2
   compose up -d --no-deps --wait --wait-timeout 120 core || true
   CORE_PARADO=0
   exit 1

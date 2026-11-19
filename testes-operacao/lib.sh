@@ -24,7 +24,7 @@ rodar_em_diretorio_temporario() {
   export SHIM_LOG="$TMP_OP/shim-estado/docker.log"
   export SHIM_DIR="$TMP_OP/shim-estado"
   : >"$SHIM_LOG"
-  unset SHIM_FALHAR SHIM_IMAGENS SENTINELA_PROJETO
+  unset SHIM_FALHAR SHIM_IMAGENS SHIM_LISTA SHIM_DORMIR SENTINELA_PROJETO
   PATH="$LIB_DIR/shims:$PATH"
   export PATH
   # o teste roda em subshell: o EXIT limpa mesmo quando uma asserção encerra o teste

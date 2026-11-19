@@ -42,6 +42,11 @@ if falha_pedida; then
   exit 1
 fi
 
+# restaurar criou o pre-restore (marca antes de qualquer espera, como o banco trocado)
+if [[ "$linha" == *"sentinela.cli restaurar "* ]]; then
+  : >"$SHIM_DIR/.restaurou"
+fi
+
 # SHIM_DORMIR="padrão": chamadas que casam esperam 2 s (para testes de sinal)
 # shellcheck disable=SC2053
 if [[ -n "${SHIM_DORMIR:-}" && "$linha" == $SHIM_DORMIR ]]; then
@@ -66,15 +71,32 @@ case "$1" in
     shift
     case "$linha" in
       "compose version"*) exit 0 ;;
+      *"ls -1 -- sentinela-*-pre-restore.tar.gz"*)
+        echo "sentinela-20260101T000000Z-pre-restore.tar.gz"
+        [[ -e "$SHIM_DIR/.restaurou" ]] && echo "sentinela-20261118T030100Z-pre-restore.tar.gz"
+        ;;
+      *"ls -1 -- sentinela-*.tar.gz"*)
+        if [[ -n "${SHIM_LISTA:-}" ]]; then
+          printf '%s\n' "$SHIM_LISTA"
+        else
+          printf '%s\n' "sentinela-20261118T030000Z-manual.tar.gz" "sentinela-20261117T030000Z-diario.tar.gz"
+        fi
+        ;;
       *" backup-criar"*) echo "sentinela-20261118T030000Z-manual.tar.gz" ;;
       *" backup-verificar"*) echo "backup válido: esquema 0005, Sentinela 0.4.0" ;;
       *" restaurar "*) echo "sentinela-20261118T030100Z-pre-restore.tar.gz" ;;
       *" cp "*)
+        origem="${*: -2:1}"
         destino="${*: -1}"
         mkdir -p "$destino"
-        echo "conteudo-ficticio" >"$destino/sentinela-20261118T030000Z-manual.tar.gz"
-        echo "orfao-ficticio" >"$destino/.entrada-1-2.tar.gz"
-        chmod 644 "$destino/sentinela-20261118T030000Z-manual.tar.gz"
+        case "$origem" in
+          */.)
+            # cópia da pasta inteira (o que os scripts NÃO devem fazer): traz também o que é de trabalho
+            echo "conteudo-ficticio" >"${destino%/}/sentinela-20261118T030000Z-manual.tar.gz"
+            echo "orfao-ficticio" >"${destino%/}/.entrada-1-2.tar.gz"
+            ;;
+          *) echo "conteudo-ficticio" >"${destino%/}/$(basename "$origem")" ;;
+        esac
         ;;
     esac
     exit 0

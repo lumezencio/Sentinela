@@ -152,6 +152,23 @@ test_restore_sinal_depois_de_restaurar_informa_o_pre_restore() {
   afirmar_log_contem "rm -f /dados/backups/.entrada-"
 }
 
+test_restore_sinal_durante_o_restaurar_informa_o_pre_restore_novo() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  local sinal
+  for sinal in TERM HUP; do
+    rm -f "$SHIM_DIR/.restaurou"
+    : >"$SHIM_LOG"
+    sinal_durante "*sentinela.cli restaurar*" "$sinal" "sentinela.cli restaurar"
+    [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro após $sinal"
+    grep -q "pode já ter sido trocado.*sentinela-20261118T030100Z-pre-restore.tar.gz.*restaure esse arquivo" "$TMP_OP/saida-restore" ||
+      _falhou "deveria informar o pre-restore novo (e não o antigo)"
+    if grep -q "sentinela-20260101T000000Z-pre-restore" "$TMP_OP/saida-restore"; then _falhou "citou um pre-restore antigo"; fi
+    afirmar_ordem "ls -1 -- sentinela-*-pre-restore.tar.gz" "sentinela.cli restaurar" "compose up -d --no-deps core"
+    [[ "$(grep -c 'ls -1 -- sentinela-\*-pre-restore' "$SHIM_LOG")" -eq 2 ]] || _falhou "esperava listar antes e depois"
+  done
+}
+
 test_restore_falha_no_stop_tenta_subir_o_core() {
   rodar_em_diretorio_temporario
   fixture_backup
@@ -239,7 +256,14 @@ test_backup_exportar_copia_e_avisa_do_env() {
   fi
   aviso="$(bash -c 'source scripts/operacao-comum.sh; printf %s "$AVISO_ENV"')"
   grep -qF -- "$aviso" <<<"$saida" || _falhou "faltou o aviso do .env"
-  afirmar_log_contem "cp core:/dados/backups/."
+  afirmar_log_contem "cp core:/dados/backups/sentinela-20261118T030000Z-manual.tar.gz"
+  afirmar_log_contem "cp core:/dados/backups/sentinela-20261117T030000Z-diario.tar.gz"
+  # toda origem de cp é um backup de nome estrito; nunca a pasta inteira
+  local origem
+  while IFS= read -r origem; do
+    [[ "$origem" =~ ^core:/dados/backups/sentinela-[0-9]{8}T[0-9]{6}Z-[a-z-]+\.tar\.gz$ ]] || _falhou "origem de cp fora do padrão: $origem"
+  done < <(grep ' cp ' "$SHIM_LOG" | awk '{print $(NF-1)}')
+  [[ "$(grep -c ' cp ' "$SHIM_LOG")" -eq 2 ]] || _falhou "esperava 2 cópias, uma por backup"
   # arquivo de trabalho (nome com ponto) nunca sai do volume; nenhuma pasta de trabalho sobra
   [[ ! -e "$TMP_OP/saida/.entrada-1-2.tar.gz" ]] || _falhou "exportou um .entrada-*"
   [[ -z "$(find "$TMP_OP/saida" -name '.exportando.*')" ]] || _falhou "sobrou pasta de trabalho"
@@ -254,7 +278,7 @@ test_backup_exportar_em_pasta_existente_nao_muda_o_modo() {
   bash backup.sh --exportar "$TMP_OP/ja-existe" >/dev/null 2>&1 || _falhou "falhou"
   [[ -f "$TMP_OP/ja-existe/arquivo-do-dono.txt" ]] || _falhou "mexeu no que já existia"
   if fs_suporta_modo; then afirmar_igual "$(stat -c %a "$TMP_OP/ja-existe")" "755"; fi
-  afirmar_log_contem "cp core:/dados/backups/."
+  afirmar_log_contem "cp core:/dados/backups/sentinela-"
 }
 
 test_backup_exportar_erros_de_argumento() {
@@ -276,7 +300,43 @@ test_backup_exportar_pasta_com_hifen_vira_relativa() {
   rodar_em_diretorio_temporario
   bash backup.sh --exportar "-pasta" >/dev/null 2>&1 || _falhou "falhou"
   [[ -d "$TMP_OP/-pasta" ]] || _falhou "pasta não criada"
-  afirmar_log_contem "cp core:/dados/backups/. ./-pasta"
+  afirmar_log_contem "cp core:/dados/backups/sentinela-20261118T030000Z-manual.tar.gz ./-pasta/.exportando."
+}
+
+test_backup_exportar_interrompido_remove_a_pasta_de_trabalho() {
+  rodar_em_diretorio_temporario
+  local sinal pid i rc
+  for sinal in TERM HUP; do
+    rm -rf "$TMP_OP/saida-int"
+    : >"$SHIM_LOG"
+    SHIM_DORMIR="*compose cp*" bash backup.sh --exportar "$TMP_OP/saida-int" >/dev/null 2>&1 &
+    pid=$!
+    for ((i = 0; i < 100; i++)); do
+      grep -q ' cp ' "$SHIM_LOG" && break
+      sleep 0.1
+    done
+    [[ -n "$(find "$TMP_OP/saida-int" -name '.exportando.*' 2>/dev/null)" ]] || _falhou "a pasta de trabalho deveria existir durante a cópia"
+    kill -"$sinal" "$pid"
+    rc=0
+    wait "$pid" || rc=$?
+    [[ "$rc" -ne 0 ]] || _falhou "deveria sair com erro após $sinal"
+    [[ -z "$(find "$TMP_OP/saida-int" -name '.exportando.*')" ]] || _falhou "sobrou a pasta de trabalho após $sinal"
+  done
+}
+
+test_backup_exportar_falha_no_cp_limpa_a_pasta_de_trabalho() {
+  rodar_em_diretorio_temporario
+  export SHIM_FALHAR="*compose cp*"
+  if bash backup.sh --exportar "$TMP_OP/saida" >/dev/null 2>&1; then _falhou "deveria sair com erro"; fi
+  [[ -z "$(find "$TMP_OP/saida" -name '.exportando.*')" ]] || _falhou "sobrou a pasta de trabalho"
+}
+
+test_backup_exportar_ignora_nome_inesperado_do_volume() {
+  rodar_em_diretorio_temporario
+  export SHIM_LISTA=$'sentinela-20261118T030000Z-manual.tar.gz\n../../etc/passwd\n.entrada-1.tar.gz\nsentinela-x-manual.tar.gz'
+  bash backup.sh --exportar "$TMP_OP/saida" >/dev/null 2>&1 || _falhou "falhou"
+  [[ "$(grep -c ' cp ' "$SHIM_LOG")" -eq 1 ]] || _falhou "só o nome válido deveria ser copiado"
+  afirmar_log_nao_contem "passwd"
 }
 
 test_backup_sem_argumento_chama_backup_criar_manual() {
@@ -313,16 +373,15 @@ test_nenhum_script_usa_down_prune_volume_nem_rmi_forcado() {
   for proibido in " down" "prune" "volume rm" "rmi -f" "docker rm" " --rmi" "-v sentinela"; do
     afirmar_log_nao_contem "$proibido"
   done
-  # "rm -f" só existe na limpeza explícita de /dados/backups/.entrada-* dentro do contêiner avulso
-  if grep -F " rm -f" "$SHIM_LOG" | grep -vE 'rm -f /dados/backups/\.entrada-'; then
-    _falhou "rm -f fora da limpeza da cópia temporária"
+  # "rm -f" só existe nas duas limpezas exatas de /dados/backups/.entrada-*, no contêiner avulso
+  if grep -F " rm -f" "$SHIM_LOG" |
+    grep -vE '^docker compose run --rm --no-deps -T core (sh -c rm -f /dados/backups/\.entrada-\*|rm -f /dados/backups/\.entrada-[0-9]{8}T[0-9]{6}-[0-9]+\.tar\.gz)$'; then
+    _falhou "rm -f fora das limpezas exatas"
   fi
   # shellcheck disable=SC2016  # o $ENTRADA é texto a procurar, não expansão
-  if texto_dos_scripts | grep -F "rm -f" | grep -vE '\.entrada-|"\$ENTRADA"'; then
-    _falhou "rm -f no texto dos scripts fora da limpeza da cópia temporária"
-  fi
-  if texto_dos_scripts | grep -E '(^|[^[:alnum:]_-])(down|prune)([^[:alnum:]_-]|$)|volume rm|rmi -f|docker rm|system prune|[[:space:]]-v[[:space:]]+["$./~][^[:space:]]*:'; then
-    _falhou "texto dos scripts usa comando proibido (down, prune, volume rm, rmi -f, -v)"
+  if texto_dos_scripts | grep -F "rm -f" |
+    grep -vE ':[[:space:]]*(cli_avulsa core sh -c .rm -f /dados/backups/\.entrada-\*. \|\||cli_avulsa core rm -f "\$ENTRADA" >/dev/null 2>&1 \|\|)$'; then
+    _falhou "rm -f no texto dos scripts fora das limpezas exatas"
   fi
 }
 

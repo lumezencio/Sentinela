@@ -22,6 +22,11 @@ falhar() {
   exit 1
 }
 
+# nome_backup_valido NOME: só nomes de backup gerados pelo core (nada de '/', '..' ou ponto inicial)
+nome_backup_valido() {
+  [[ "$1" =~ ^sentinela-[0-9]{8}T[0-9]{6}Z-(diario|semanal|manual|atualizacao|pre-restore)\.tar\.gz$ ]]
+}
+
 # valor_env NOME PADRAO: lê NOME de .env; imprime PADRAO se ausente ou vazio
 valor_env() {
   local nome="$1" padrao="${2:-}" linha valor=""
