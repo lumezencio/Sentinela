@@ -6,6 +6,10 @@
 #                                  prefixo "1x:" faz falhar só na primeira vez; "A-B:" só nas
 #                                  chamadas de número A a B que casam com o padrão
 #   SHIM_DIGEST_CORE / SHIM_DIGEST_WEB  digest que "image inspect" devolve (padrão: aaaa.../bbbb...)
+#   SHIM_CONFIG_FILES              rótulo com.docker.compose.project.config_files (NENHUM = vazio)
+#   SHIM_IGUAL=1                   "image inspect" devolve o mesmo ID da imagem em execução
+#   SHIM_ID_CORE_POS               ID do core em execução depois da volta (up ... core web)
+#   SHIM_SEM_BACKUP_CLI=1          "sentinela.cli --help" não lista backup-criar (core antigo)
 #   SHIM_IMAGENS="repo:tag ..."    saída de "docker image ls" (uma por linha)
 #   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
 #   SHIM_DORMIR="padrão"           chamadas que casam esperam 2 s (testes de sinal)
@@ -77,8 +81,26 @@ fi
 
 case "$1" in
   inspect)
-    # imagem em uso pelo contêiner (id fictício derivado do id do contêiner)
-    echo "sha256:img-${*: -1}"
+    cid="${*: -1}"
+    case "$linha" in
+      *config_files*)
+        # arquivos compose com que o core foi criado (NENHUM = rótulo ausente)
+        if [[ "${SHIM_CONFIG_FILES:-}" == "NENHUM" ]]; then
+          echo ""
+        else
+          echo "${SHIM_CONFIG_FILES:-$PWD/docker-compose.yml}"
+        fi
+        ;;
+      *)
+        # imagem em uso pelo contêiner; depois da volta (up --no-build ... core web) vale *_POS
+        servico="${cid#cid-}"
+        if [[ -e "$SHIM_DIR/.voltou" && "$servico" == core && -n "${SHIM_ID_CORE_POS:-}" ]]; then
+          echo "$SHIM_ID_CORE_POS"
+        else
+          echo "sha256:rodando-$servico"
+        fi
+        ;;
+    esac
     exit 0
     ;;
   version | info | tag | rmi | pull | build) exit 0 ;;
@@ -87,9 +109,21 @@ case "$1" in
       for img in ${SHIM_IMAGENS:-}; do echo "$img"; done
     elif [[ "${2:-}" == "inspect" ]]; then
       ref="${*: -1}"
-      case "$ref" in
-        *sentinela-core*) echo "${ref%%:*}@${SHIM_DIGEST_CORE:-sha256:$(printf 'a%.0s' {1..64})}" ;;
-        *) echo "${ref%%:*}@${SHIM_DIGEST_WEB:-sha256:$(printf 'b%.0s' {1..64})}" ;;
+      case "$linha" in
+        *RepoDigests*)
+          # uma entrada de outro registro vem antes: o script tem de escolher a do "repo@"
+          echo "outro.example/x@sha256:$(printf 'f%.0s' {1..64})"
+          case "$ref" in
+            *sentinela-core*) echo "${ref%%:*}@${SHIM_DIGEST_CORE:-sha256:$(printf 'a%.0s' {1..64})}" ;;
+            *) echo "${ref%%:*}@${SHIM_DIGEST_WEB:-sha256:$(printf 'b%.0s' {1..64})}" ;;
+          esac
+          ;;
+        *)
+          # ID local da imagem: SHIM_IGUAL=1 = a mesma que já roda
+          servico=web
+          [[ "$ref" == *sentinela-core* ]] && servico=core
+          if [[ "${SHIM_IGUAL:-}" == "1" ]]; then echo "sha256:rodando-$servico"; else echo "sha256:novo-$servico"; fi
+          ;;
       esac
     fi
     exit 0
@@ -111,12 +145,16 @@ case "$1" in
           printf '%s\n' "sentinela-20261118T030000Z-manual.tar.gz" "sentinela-20261117T030000Z-diario.tar.gz"
         fi
         ;;
+      *"sentinela.cli --help"*)
+        if [[ "${SHIM_SEM_BACKUP_CLI:-}" == "1" ]]; then echo "usage: cli [-h] {criar-admin,sub-rede}"; else echo "usage: cli [-h] {criar-admin,backup-criar,restaurar}"; fi
+        ;;
       *" backup-criar --origem atualizacao"*) echo "sentinela-20261118T030000Z-atualizacao.tar.gz" ;;
       *" backup-criar"*) echo "sentinela-20261118T030000Z-manual.tar.gz" ;;
       *" ps -q "*) echo "cid-${*: -1}" ;;
       *" backup-verificar"*) echo "backup válido: esquema 0005, Sentinela 0.4.0" ;;
       *" restaurar "*) echo "sentinela-20261118T030100Z-pre-restore.tar.gz" ;;
       # estado do core (gravado depois de qualquer espera: é o estado ao fim da chamada)
+      *" up "*" core web") : >"$SHIM_DIR/.voltou" ;;
       *" stop core") echo "Exited (0) 1 second ago" >"$SHIM_DIR/.core-estado" ;;
       *" up "*" core") echo "Up 1 second (healthy)" >"$SHIM_DIR/.core-estado" ;;
       *" ps "*)

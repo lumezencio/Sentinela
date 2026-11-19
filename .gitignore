@@ -51,3 +51,7 @@ Thumbs.db
 
 # Saída da prova de zero broadcast (testes-rede/rodar.sh)
 testes-rede/saida/
+
+# Estado do update.sh
+.sentinela-pre-tags
+.operacao.lock/

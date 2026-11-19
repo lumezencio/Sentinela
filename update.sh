@@ -1,34 +1,47 @@
 #!/usr/bin/env bash
 # Atualiza o Sentinela para uma versão publicada (tag vX.Y.Z), com volta automática.
 #
-#   ./update.sh [VERSÃO] [--imagens-publicadas]
+#   ./update.sh [VERSÃO] [--imagens-publicadas] [--permitir-voltar-versao]
 #
-# VERSÃO é uma tag "vX.Y.Z" (padrão: a mais recente). Sem opção de imagem, respeita o
-# .env: IMAGENS=publicadas baixa as imagens assinadas do ghcr.io; sem IMAGENS (instalação
-# das Fases 1-3) ou IMAGENS=locais reconstrói as imagens a partir do código da tag.
-# --imagens-publicadas migra uma instalação local para as imagens publicadas (grava
-# IMAGENS=publicadas e VERSAO no .env).
+# VERSÃO é uma tag "vX.Y.Z" (padrão: a mais recente). Sem opção de imagem, respeita o .env:
+# IMAGENS=publicadas baixa as imagens assinadas do ghcr.io; sem IMAGENS (instalação das Fases
+# 1-3) ou IMAGENS=locais reconstrói as imagens a partir do código da tag. --imagens-publicadas
+# migra uma instalação local para as imagens publicadas (grava IMAGENS e VERSAO no .env).
+# Versão menor que a instalada é recusada, a menos que se passe --permitir-voltar-versao.
 #
-# Antes de mudar qualquer coisa: trava, árvore git limpa, Docker, 2 GiB livres, core saudável,
-# tag alvo resolvida e (imagens publicadas, sem cosign) digests.txt do release baixado.
-# Depois: backup do banco (tipo "atualizacao"), marcação pre_<data> das imagens em uso, cópia
-# do .env (.env.pre_<data>, 0600), checkout da tag, imagens novas, e troca do core (saúde por
-# até 120 s) e depois do web.
+# Ordem (cada passo que falha antes do 4 não troca nenhum contêiner):
+#   1. verificações sem mudar nada: trava, árvore git limpa, Docker, 2 GiB livres, arquivos
+#      compose do core em execução (instalações --demo), saúde, tag alvo, digests.txt.
+#   2. proteção: marcação pre_<data> das imagens em uso (e seus IDs), cópia do .env
+#      (.env.pre_<data>, 0600).
+#   3. preparo: checkout da tag, imagens novas (pull + verificação, ou build) e, se o resultado
+#      for idêntico ao que já roda, "já está na versão" (nada a trocar).
+#   4. backup do banco (tipo "atualizacao") imediatamente antes da troca; se o core em execução é
+#      de uma versão sem backup-criar (Fases 1-3), usa a CLI da imagem nova num contêiner avulso
+#      sobre o mesmo volume (o backup do SQLite é online).
+#   5. troca: core (saúde por até 120 s) e depois web, sem build nem pull.
+#   6. limpeza: só as marcações pre_ do manifesto .sentinela-pre-tags (as 3 mais recentes ficam).
 #
-# VOLTA AUTOMÁTICA: qualquer falha depois do backup devolve o checkout anterior e o .env e
-# remarca as imagens pre_<data>; se algum contêiner já tinha sido trocado, para o core,
-# RESTAURA O BACKUP feito antes (restore.sh --do-volume), sobe core e web com as imagens
-# antigas e confere a saúde. A volta NUNCA faz "alembic downgrade": uma migração pode ter
-# mudado o esquema, e o downgrade da 0002 recria "equipamento" com chaves estrangeiras
-# ligadas; o caminho seguro é sempre o banco do backup.
+# Imagens publicadas: o digest baixado é conferido com "cosign verify" (identidade exata do
+# workflow release.yml na tag alvo e emissor do GitHub) ou, sem cosign, com o digests.txt do
+# release. CONTRATO com o release.yml: digests.txt tem uma linha por imagem, "core sha256:<64 hex>"
+# e "web sha256:<64 hex>", com o digest do ÍNDICE multi-arquitetura (o que o cosign assina).
 #
-# INTERRUPÇÃO (Ctrl+C, TERM, HUP): antes de qualquer contêiner ser trocado, só desfaz os
-# arquivos (checkout, .env, marcações). Depois disso NÃO age mais: relata os fatos (fase, estado
-# real dos contêineres, o backup e as marcações pre_) e os comandos exatos da volta manual.
+# VOLTA AUTOMÁTICA (só para FALHAS): depois do backup, se algum contêiner foi trocado, para o
+# core, RESTAURA O BACKUP (restore.sh --do-volume --sem-subir, com a CLI da imagem nova, que
+# sempre a tem), devolve checkout, .env e marcações pre_, sobe core e web com as imagens
+# anteriores e confere saúde e IDs das imagens. Dados gravados depois do backup são descartados.
+# NUNCA faz "alembic downgrade": uma migração pode ter mudado o esquema, e o downgrade da 0002
+# recria "equipamento" com chaves estrangeiras ligadas; o caminho seguro é sempre o banco do backup.
 #
-# Guarda só as 3 marcações pre_ mais recentes e apaga apenas as próprias. Nunca usa
-# "compose down", "prune", "rmi -f" nem "git reset --hard"; só mexe neste projeto compose
-# (ou no de SENTINELA_PROJETO).
+# INTERRUPÇÃO (Ctrl+C, TERM, HUP): antes de qualquer contêiner ser trocado, só desfaz os arquivos.
+# Depois da primeira troca NÃO age (a volta automática é para falhas, não para interrupções, para
+# nunca competir com um comando em andamento): relata os fatos (fase, estado real dos contêineres,
+# o backup, as marcações pre_) e os comandos exatos da volta manual. Se a troca já tinha terminado,
+# só avisa e sai com 0.
+#
+# Nunca usa "compose down", "prune", "rmi -f" nem "git reset --hard"; só mexe neste projeto
+# compose (ou no de SENTINELA_PROJETO), com os mesmos arquivos -f do core em execução.
 # shellcheck disable=SC2317,SC2329  # funções chamadas só pelos traps e pela volta
 set -euo pipefail
 
@@ -39,17 +52,17 @@ cd "$RAIZ"
 # shellcheck source=scripts/operacao-comum.sh
 source "$RAIZ/scripts/operacao-comum.sh"
 
-IDENTIDADE_COSIGN='^https://github\.com/lumezencio/sentinela/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 EMISSOR_COSIGN='https://token.actions.githubusercontent.com'
 URL_RELEASE="https://github.com/lumezencio/sentinela/releases/download"
 ESPACO_MIN_KB=$((2 * 1024 * 1024))
 
 # Estado da execução: uma só variável de fase, mais os fatos que a volta e o relatório usam
 FASE="verificando"
-PROTEGIDO=0 # 1 quando backup, marcações pre_ e cópia do .env existem
-TOCOU=0     # 1 a partir do primeiro comando que troca um contêiner
+PROTEGIDO=0 # 1 quando as marcações pre_ e a cópia do .env existem (checkout/.env/tags revertíveis)
+TOCOU=0     # 1 a partir do primeiro comando que troca um contêiner (o backup já existe)
 INTERROMPIDO=0
 CONCLUIDO=0 # 1 quando a troca terminou bem (só a limpeza resta)
+ALVO_VERIFICADO=0
 BACKUP=""
 TS_PRE=""
 ENV_PRE=""
@@ -58,10 +71,13 @@ SHA_ANTERIOR=""
 VERSAO_ANTERIOR=""
 IMAGENS_ANTERIOR=""
 TAG_COMPOSE_ANTERIOR="latest"
+ID_CORE_ANTES=""
+ID_WEB_ANTES=""
 TAG_ALVO=""
 VERSAO_ALVO=""
 MODO="locais"
 DIGESTS_TXT=""
+TAGS_ALVO_BAIXADAS=0
 
 recuar() {
   local l
@@ -80,9 +96,12 @@ estado_servicos() {
 
 # comandos_de_volta: a volta manual, exata, com os nomes desta execução
 comandos_de_volta() {
-  local p="docker compose"
-  [[ -z "${SENTINELA_PROJETO:-}" ]] || p="docker compose -p $SENTINELA_PROJETO"
+  local p="docker compose" f
+  [[ -z "${SENTINELA_PROJETO:-}" ]] || p="$p -p $SENTINELA_PROJETO"
+  for f in ${SENTINELA_COMPOSE_ARQUIVOS:-}; do p="$p -f $f"; done
   echo "Volta manual (execute na pasta do projeto, nesta ordem):"
+  echo "  $p stop core"
+  echo "  ./restore.sh --do-volume $BACKUP --sim --sem-subir"
   if [[ -n "$RAMO_ANTERIOR" ]]; then
     echo "  git checkout $RAMO_ANTERIOR"
   else
@@ -91,12 +110,11 @@ comandos_de_volta() {
   echo "  cp $ENV_PRE .env && chmod 600 .env"
   echo "  docker tag $IMG_REPO_CORE:$TS_PRE $IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR"
   echo "  docker tag $IMG_REPO_WEB:$TS_PRE $IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR"
-  echo "  $p stop core"
-  echo "  ./restore.sh --do-volume $BACKUP --sim"
   echo "  $p up -d --no-deps --no-build --pull never --wait core web"
 }
 
-# reverter_arquivos: checkout e .env anteriores e marcações das imagens (sem tocar em contêiner)
+# reverter_arquivos: checkout e .env anteriores, marcações das imagens e a marcação da versão
+# alvo que não chegou a ser verificada (sem tocar em contêiner; rmi nunca com -f)
 reverter_arquivos() {
   local ok=0
   if [[ -n "$RAMO_ANTERIOR" ]]; then
@@ -112,45 +130,66 @@ reverter_arquivos() {
   docker tag "$IMG_REPO_CORE:$TS_PRE" "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR" || ok=1
   docker tag "$IMG_REPO_WEB:$TS_PRE" "$IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR" || ok=1
   if [[ "$(git rev-parse HEAD 2>/dev/null)" != "$SHA_ANTERIOR" ]]; then ok=1; fi
+  if [[ $TAGS_ALVO_BAIXADAS -eq 1 && $ALVO_VERIFICADO -eq 0 ]]; then
+    docker rmi "$IMG_REPO_CORE:$VERSAO_ALVO" "$IMG_REPO_WEB:$VERSAO_ALVO" >/dev/null 2>&1 || true
+  fi
   return "$ok"
 }
 
-# voltar: falha depois do backup. Cada passo é relatado pelo que foi de fato conferido.
+# id_em_execucao SERVICO: ID da imagem do contêiner do serviço agora (vazio se não achar)
+id_em_execucao() {
+  local cid
+  cid="$(compose ps -q "$1" 2>/dev/null | head -n 1 | tr -d '\r')"
+  [[ -n "$cid" ]] || return 0
+  docker inspect --format '{{.Image}}' "$cid" 2>/dev/null | tr -d '\r' || true
+}
+
+# voltar: falha depois da proteção. Cada passo é relatado pelo que foi de fato conferido.
 voltar() {
   set +e
   trap '' INT TERM HUP
+  local restaurou=1 arquivos=1 subiu=1
   {
     echo
-    echo "FALHA na fase: $FASE. Voltando ao estado anterior..."
+    echo "FALHA na fase: $FASE. Voltando ao estado anterior. NÃO INTERROMPA: voltando."
   } >&2
-  if reverter_arquivos; then
+  if [[ $TOCOU -eq 1 ]]; then
+    echo "Restaurando o backup $BACKUP (dados gravados depois dele serão descartados)..." >&2
+    compose stop core >&2 &&
+      SENTINELA_TRAVA_PAI="$$" bash "$RAIZ/restore.sh" --do-volume "$BACKUP" --sim --sem-subir >&2
+    restaurou=$?
+  fi
+  reverter_arquivos
+  arquivos=$?
+  if [[ $arquivos -eq 0 ]]; then
     echo "Checkout anterior, .env e marcações das imagens restaurados." >&2
   else
     echo "ERRO: não consegui restaurar tudo (checkout, .env ou marcações)." >&2
-    comandos_de_volta >&2
-    return 1
   fi
   if [[ $TOCOU -eq 1 ]]; then
-    echo "Restaurando o backup $BACKUP..." >&2
-    if compose stop core >&2 &&
-      SENTINELA_TRAVA_PAI="$$" bash "$RAIZ/restore.sh" --do-volume "$BACKUP" --sim >&2 &&
-      compose up -d --no-deps --no-build --pull never --wait core web >&2; then
-      if saude_ok; then
-        echo "Volta concluída: imagens e banco anteriores de volta, core saudável." >&2
+    if [[ $restaurou -eq 0 && $arquivos -eq 0 ]]; then
+      compose up -d --no-deps --no-build --pull never --wait core web >&2
+      subiu=$?
+      if [[ $subiu -eq 0 ]] && saude_ok &&
+        [[ -z "$ID_CORE_ANTES" || "$(id_em_execucao core)" == "$ID_CORE_ANTES" ]] &&
+        [[ -z "$ID_WEB_ANTES" || "$(id_em_execucao web)" == "$ID_WEB_ANTES" ]]; then
+        echo "Volta concluída: banco do backup restaurado, imagens anteriores de volta (IDs conferidos) e core saudável." >&2
       else
-        echo "A volta subiu os contêineres, mas o core NÃO respondeu saudável." >&2
+        echo "A volta subiu os contêineres, mas NÃO consegui confirmar a saúde do core e os IDs das imagens anteriores." >&2
       fi
     else
-      echo "ERRO: a volta automática não terminou." >&2
+      echo "ERRO: a volta automática não terminou; os contêineres não foram religados." >&2
       comandos_de_volta >&2
     fi
   else
     echo "Nenhum contêiner tinha sido trocado; o banco não foi mexido." >&2
     if saude_ok; then echo "O core responde saudável." >&2; else echo "O core NÃO respondeu saudável agora." >&2; fi
   fi
-  echo "Estado atual:" >&2
-  estado_servicos >&2
-  echo "Últimas linhas do log do core:" >&2
+  {
+    echo "Estado atual:"
+    estado_servicos
+    echo "Últimas linhas do log do core:"
+  } >&2
   compose logs --tail 30 core >&2 || true
   return 1
 }
@@ -158,29 +197,31 @@ voltar() {
 interrompido() {
   trap - INT TERM HUP
   INTERROMPIDO=1
+  if [[ $CONCLUIDO -eq 1 ]]; then
+    echo "aviso: a atualização já tinha terminado; só a limpeza das marcações antigas foi interrompida (sem prejuízo)." >&2
+    exit 0
+  fi
   {
     echo
     echo "Interrompido durante: $FASE."
   } >&2
-  if [[ $CONCLUIDO -eq 1 ]]; then
-    echo "A atualização já tinha terminado; só a limpeza das marcações antigas foi interrompida." >&2
-  elif [[ $PROTEGIDO -eq 1 && $TOCOU -eq 0 ]]; then
+  if [[ $PROTEGIDO -eq 1 && $TOCOU -eq 0 ]]; then
     if reverter_arquivos; then
       echo "Nenhum contêiner tinha sido trocado: desfiz o checkout, o .env e as marcações." >&2
     else
       echo "Nenhum contêiner tinha sido trocado, mas não consegui desfazer tudo." >&2
     fi
-  elif [[ $PROTEGIDO -eq 1 ]]; then
+  elif [[ $TOCOU -eq 1 ]]; then
     echo "Nada mais foi feito depois da interrupção; os contêineres ficaram como estão." >&2
   else
-    echo "O backup e as marcações ainda não estavam concluídos; nenhum contêiner tinha sido trocado." >&2
+    echo "Nenhum contêiner tinha sido trocado e nada foi alterado em arquivos." >&2
   fi
   {
     echo "Estado atual:"
     estado_servicos
     [[ -z "$BACKUP" ]] || echo "Backup desta atualização (em /dados/backups): $BACKUP"
     [[ $PROTEGIDO -eq 0 ]] || echo "Marcações das imagens anteriores: $IMG_REPO_CORE:$TS_PRE e $IMG_REPO_WEB:$TS_PRE"
-    if [[ $PROTEGIDO -eq 1 && $CONCLUIDO -eq 0 ]]; then comandos_de_volta; fi
+    if [[ $TOCOU -eq 1 ]]; then comandos_de_volta; fi
     echo "Verifique a saúde antes de usar (docker compose ps; docker compose logs core)."
   } >&2
   exit 130
@@ -202,6 +243,49 @@ espaco_livre_kb() {
   df -Pk . | awk 'NR == 2 { print $4 }'
 }
 
+# versao_menor A B: 0 se A < B (X.Y.Z numérico; sem sort -V, que falta no macOS)
+versao_menor() {
+  local a b i x y
+  local -a A B
+  a="${1%%-*}"
+  b="${2%%-*}"
+  IFS=. read -r -a A <<<"$a"
+  IFS=. read -r -a B <<<"$b"
+  for i in 0 1 2; do
+    x="${A[i]:-0}"
+    y="${B[i]:-0}"
+    [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]] || return 1
+    if ((x < y)); then return 0; fi
+    if ((x > y)); then return 1; fi
+  done
+  return 1
+}
+
+# detectar_arquivos_compose: os arquivos -f do core em execução (label do compose), exportados
+# para todas as chamadas (inclusive as do restore.sh); recusa se não der para saber
+detectar_arquivos_compose() {
+  local cid rotulo f dir nomes=""
+  cid="$(compose ps -q core 2>/dev/null | head -n 1 | tr -d '\r')"
+  [[ -n "$cid" ]] || falhar "não encontrei o contêiner do core em execução; suba o Sentinela antes de atualizar (nada foi alterado)"
+  rotulo="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null | tr -d '\r' || true)"
+  [[ -n "$rotulo" ]] ||
+    falhar "não consegui descobrir com quais arquivos compose o core foi criado (instalação --demo ou personalizada?); atualize manualmente ou recrie o core com docker compose up. Nada foi alterado"
+  local IFS=,
+  for f in $rotulo; do
+    dir="$(cd "$(dirname "$f")" 2>/dev/null && pwd)" || dir=""
+    f="$(basename "$f")"
+    [[ "$dir" == "$RAIZ" && "$f" =~ ^docker-compose[A-Za-z0-9._-]*\.ya?ml$ && -f "$RAIZ/$f" ]] ||
+      falhar "o core em execução usa um arquivo compose fora desta pasta ou com nome inesperado ($f); atualize manualmente. Nada foi alterado"
+    nomes="$nomes $f"
+  done
+  nomes="${nomes# }"
+  # só o arquivo padrão: o compose já o usa sozinho (nada a repassar)
+  if [[ "$nomes" != "docker-compose.yml" ]]; then
+    SENTINELA_COMPOSE_ARQUIVOS="$nomes"
+    export SENTINELA_COMPOSE_ARQUIVOS
+  fi
+}
+
 # resolver_alvo ARG: define TAG_ALVO (tag de lançamento existente no repositório)
 resolver_alvo() {
   local arg="$1"
@@ -217,39 +301,69 @@ resolver_alvo() {
   VERSAO_ALVO="${arg#v}"
 }
 
-# marcar_imagem SERVICO REPO: marca a imagem do contêiner em uso como REPO:pre_<ts>
+# marcar_imagem SERVICO REPO: marca a imagem do contêiner em uso como REPO:pre_<ts> (e guarda o ID)
 marcar_imagem() {
-  local servico="$1" repo="$2" cid id
-  cid="$(compose ps -q "$servico" 2>/dev/null | head -n 1 | tr -d '\r')"
-  [[ -n "$cid" ]] || falhar "não encontrei o contêiner de '$servico' em execução (nada foi alterado)"
-  id="$(docker inspect --format '{{.Image}}' "$cid" | tr -d '\r')"
-  [[ -n "$id" ]] || falhar "não consegui descobrir a imagem em uso de '$servico' (nada foi alterado)"
+  local servico="$1" repo="$2" id
+  id="$(id_em_execucao "$servico")"
+  [[ -n "$id" ]] || falhar "não consegui descobrir a imagem em uso de '$servico'; nenhum contêiner foi trocado"
   docker tag "$id" "$repo:$TS_PRE" ||
-    falhar "não consegui marcar a imagem de '$servico' como $TS_PRE (nada foi alterado)"
+    falhar "não consegui marcar a imagem de '$servico' como $TS_PRE; nenhum contêiner foi trocado (pode ter ficado a marcação do outro serviço)"
+  registrar_pre "$repo:$TS_PRE" || true
+  if [[ "$servico" == core ]]; then ID_CORE_ANTES="$id"; else ID_WEB_ANTES="$id"; fi
+}
+
+# id_da_tag REF: ID local da imagem REF (vazio se não existir)
+id_da_tag() {
+  docker image inspect --format '{{.Id}}' "$1" 2>/dev/null | tr -d '\r' || true
 }
 
 # verificar_imagem SERVICO REPO: assinatura (cosign) ou digest do release; fecha por padrão
 verificar_imagem() {
   local servico="$1" repo="$2" ref d esperado
-  ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$repo:$VERSAO_ALVO" | tr -d '\r')" ||
-    falhar "não consegui ler o digest da imagem baixada de '$servico'"
+  ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:$VERSAO_ALVO" | tr -d '\r' | grep -F "$repo@" | head -n 1)" ||
+    ref=""
   d="${ref#*@}"
-  [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || falhar "digest inesperado para a imagem de '$servico'"
+  [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || falhar "não consegui ler o digest da imagem baixada de '$servico'; nenhum contêiner foi trocado"
   if command -v cosign >/dev/null 2>&1; then
-    cosign verify --certificate-identity-regexp "$IDENTIDADE_COSIGN" \
+    cosign verify \
+      --certificate-identity "https://github.com/lumezencio/sentinela/.github/workflows/release.yml@refs/tags/$TAG_ALVO" \
       --certificate-oidc-issuer "$EMISSOR_COSIGN" "$repo@$d" >/dev/null ||
-      falhar "a assinatura da imagem de '$servico' não confere com o workflow de release"
+      falhar "a assinatura da imagem de '$servico' não confere com o workflow de release de $TAG_ALVO; nenhum contêiner foi trocado"
   else
     esperado="$(awk -v s="$servico" '$1 == s { print $2 }' <<<"$DIGESTS_TXT" | head -n 1)"
     [[ -n "$esperado" && "$esperado" == "$d" ]] ||
-      falhar "o digest baixado de '$servico' difere do digests.txt do release; imagem recusada"
+      falhar "o digest baixado de '$servico' difere do digests.txt do release; imagem recusada, nenhum contêiner foi trocado"
   fi
 }
 
-# limpar: marcações pre_ além das 3 mais recentes e cópias antigas do .env
+# fazer_backup: backup do banco (tipo atualizacao) e BACKUP = nome do arquivo
+fazer_backup() {
+  local ajuda saida
+  ajuda="$(compose exec -T core python -m sentinela.cli --help 2>&1 || true)"
+  if [[ "$ajuda" == *backup-criar* ]]; then
+    saida="$(compose exec -T core python -m sentinela.cli backup-criar --origem atualizacao)" || saida=""
+  else
+    echo "O core em execução é de uma versão sem backup-criar (Fases 1-3): usando a CLI da imagem nova num contêiner avulso sobre o mesmo volume (backup online do SQLite)."
+    saida="$(compose run --rm --no-deps -T core python -m sentinela.cli backup-criar --origem atualizacao)" || saida=""
+  fi
+  BACKUP="$(printf '%s\n' "$saida" | tail -n 1 | tr -d '\r')"
+  nome_backup_valido "$BACKUP" || {
+    BACKUP=""
+    falhar "não foi possível fazer o backup; nenhum contêiner foi trocado. Caminho manual: pare o core (docker compose stop core), copie o volume de dados do core para um arquivo seguro (por exemplo com um contêiner avulso que monte o volume e o compacte), religue (docker compose start core) e só então rode ./update.sh de novo"
+  }
+}
+
+# descartar_protecao: o preparo mostrou que nada muda; apaga as marcações e a cópia desta execução
+descartar_protecao() {
+  docker rmi "$IMG_REPO_CORE:$TS_PRE" "$IMG_REPO_WEB:$TS_PRE" >/dev/null 2>&1 || true
+  rm -f -- "$ENV_PRE"
+  PROTEGIDO=0
+}
+
+# limpar: marcações pre_ do manifesto além das 3 mais recentes e cópias antigas do .env
 limpar() {
   local f
-  limpar_pre
+  limpar_pre "$TS_PRE"
   # os nomes têm data UTC: ordem do glob = ordem cronológica; ficam as 3 últimas
   local -a copias=()
   for f in .env.pre_*; do
@@ -262,10 +376,11 @@ limpar() {
 }
 
 main() {
-  local versao_arg="" flag_publicadas=0 arg espaco
+  local versao_arg="" flag_publicadas=0 permitir_voltar=0 arg espaco atual
   for arg in "$@"; do
     case "$arg" in
       --imagens-publicadas) flag_publicadas=1 ;;
+      --permitir-voltar-versao) permitir_voltar=1 ;;
       -h | --help)
         awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$RAIZ/update.sh"
         return 0
@@ -299,6 +414,7 @@ main() {
   espaco="$(espaco_livre_kb)"
   [[ "$espaco" =~ ^[0-9]+$ && "$espaco" -ge "$ESPACO_MIN_KB" ]] ||
     falhar "menos de 2 GiB livres nesta pasta; libere espaço antes de atualizar (nada foi alterado)"
+  detectar_arquivos_compose
   saude_ok || falhar "o core não está saudável agora; corrija antes de atualizar (nada foi alterado)"
 
   git fetch --tags --quiet || falhar "não consegui buscar as tags do repositório (nada foi alterado)"
@@ -306,55 +422,81 @@ main() {
   SHA_ANTERIOR="$(git rev-parse HEAD)"
   VERSAO_ANTERIOR="$(valor_env VERSAO "")"
   IMAGENS_ANTERIOR="$(valor_env IMAGENS "")"
-  if [[ "$(git rev-parse "refs/tags/$TAG_ALVO^{commit}")" == "$SHA_ANTERIOR" ]] &&
-    { [[ $flag_publicadas -eq 0 ]] || [[ "$IMAGENS_ANTERIOR" == publicadas && "$VERSAO_ANTERIOR" == "$VERSAO_ALVO" ]]; }; then
-    echo "já está na versão $TAG_ALVO; nada a fazer."
-    return 0
+  atual="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+  if [[ -n "$atual" && $permitir_voltar -eq 0 ]] && versao_menor "${VERSAO_ALVO}" "${atual#v}"; then
+    falhar "$TAG_ALVO é anterior à versão instalada ($atual); voltar de versão pode falhar com o banco atual. Para forçar: ./update.sh $TAG_ALVO --permitir-voltar-versao (nada foi alterado)"
   fi
-  if [[ "$MODO" == publicadas ]] && ! command -v cosign >/dev/null 2>&1; then
-    echo "aviso: 'cosign' não encontrado; vou conferir o digest das imagens com o digests.txt do release (instale o cosign para verificar a assinatura)." >&2
-    DIGESTS_TXT="$(curl -fsSL --proto '=https' --max-time 30 "$URL_RELEASE/$TAG_ALVO/digests.txt")" ||
-      falhar "sem 'cosign' e sem o digests.txt do release $TAG_ALVO não dá para verificar as imagens; instale o cosign. Nada foi alterado"
+  if [[ "$MODO" == publicadas ]]; then
+    # já está na versão? (a versão que RODA, não o checkout: VERSAO e IDs das imagens em execução)
+    if [[ "$IMAGENS_ANTERIOR" == publicadas && "$VERSAO_ANTERIOR" == "$VERSAO_ALVO" ]]; then
+      local rc rw
+      rc="$(id_em_execucao core)"
+      rw="$(id_em_execucao web)"
+      if [[ -n "$rc" && "$rc" == "$(id_da_tag "$IMG_REPO_CORE:$VERSAO_ALVO")" &&
+        -n "$rw" && "$rw" == "$(id_da_tag "$IMG_REPO_WEB:$VERSAO_ALVO")" ]]; then
+        echo "já está na versão $TAG_ALVO (os contêineres em execução usam as imagens dela); nada a fazer."
+        return 0
+      fi
+    fi
+    if ! command -v cosign >/dev/null 2>&1; then
+      echo "aviso: 'cosign' não encontrado; vou conferir o digest das imagens com o digests.txt do release (instale o cosign para verificar a assinatura)." >&2
+      DIGESTS_TXT="$(curl -fsSL --proto '=https' --max-time 30 "$URL_RELEASE/$TAG_ALVO/digests.txt")" ||
+        falhar "sem 'cosign' e sem o digests.txt do release $TAG_ALVO não dá para verificar as imagens; instale o cosign. Nada foi alterado"
+    fi
   fi
 
-  # --- 2. proteção: backup, marcações pre_ e cópia do .env ---
-  FASE="backup do banco"
+  # --- 2. proteção: marcações pre_ e cópia do .env (ainda sem backup e sem trocar nada) ---
+  FASE="marcando as imagens em uso"
   RAMO_ANTERIOR="$(git symbolic-ref -q --short HEAD || true)"
   TAG_COMPOSE_ANTERIOR="${VERSAO_ANTERIOR:-latest}"
   TS_PRE="$(tag_pre)"
   ENV_PRE=".env.$TS_PRE"
-  echo "Fazendo o backup do banco..."
-  BACKUP="$(compose exec -T core python -m sentinela.cli backup-criar --origem atualizacao | tail -n 1 | tr -d '\r')" ||
-    falhar "o backup falhou; nada foi alterado"
-  nome_backup_valido "$BACKUP" || falhar "o backup não devolveu um nome válido; nada foi alterado"
-  FASE="marcando as imagens em uso"
   marcar_imagem core "$IMG_REPO_CORE"
   marcar_imagem web "$IMG_REPO_WEB"
   { (umask 077 && cp .env "$ENV_PRE") && chmod 600 "$ENV_PRE"; } ||
-    falhar "não consegui guardar a cópia do .env (nada foi trocado)"
+    falhar "não consegui guardar a cópia do .env; nenhum contêiner foi trocado (as marcações pre_ ficaram)"
   PROTEGIDO=1
 
-  # --- 3 e 4. troca (a partir daqui, falha ou erro = volta automática) ---
-  FASE="checkout de $TAG_ALVO"
-  echo "Indo para $TAG_ALVO..."
-  git checkout -q --detach "refs/tags/$TAG_ALVO"
+  # --- 3. preparo: checkout e imagens novas (a partir daqui, falha ou erro = volta) ---
+  if [[ "$(git rev-parse "refs/tags/$TAG_ALVO^{commit}")" != "$SHA_ANTERIOR" ]]; then
+    FASE="checkout de $TAG_ALVO"
+    echo "Indo para $TAG_ALVO..."
+    git checkout -q --detach "refs/tags/$TAG_ALVO"
+  fi
   if [[ "$MODO" == publicadas ]]; then
     FASE="baixando e verificando as imagens publicadas"
     definir_env IMAGENS publicadas
     definir_env VERSAO "$VERSAO_ALVO"
-    compose pull core web
+    TAGS_ALVO_BAIXADAS=1
+    compose pull core web ||
+      falhar "não consegui baixar as imagens da versão $VERSAO_ALVO (rede, ghcr.io ou versão não publicada); nenhum contêiner foi trocado"
     verificar_imagem core "$IMG_REPO_CORE"
     verificar_imagem web "$IMG_REPO_WEB"
+    ALVO_VERIFICADO=1
   else
     FASE="construindo as imagens locais"
     compose build core web
+    # imagens idênticas às que rodam: nada a trocar (a versão que RODA, não o checkout)
+    if [[ -n "$ID_CORE_ANTES" && "$(id_da_tag "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR")" == "$ID_CORE_ANTES" &&
+      "$(id_da_tag "$IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR")" == "$ID_WEB_ANTES" ]]; then
+      descartar_protecao
+      echo "já está na versão $TAG_ALVO (as imagens construídas são idênticas às em execução); nada a trocar."
+      return 0
+    fi
   fi
+
+  # --- 4. backup, imediatamente antes da troca ---
+  FASE="backup do banco"
+  echo "Fazendo o backup do banco..."
+  fazer_backup
+
+  # --- 5. troca ---
   FASE="trocando o core"
   TOCOU=1
-  compose up -d --no-deps --wait --wait-timeout 120 core
+  compose up -d --no-deps --no-build --pull never --wait --wait-timeout 120 core
   saude_ok
   FASE="trocando o web"
-  compose up -d --no-deps --wait --wait-timeout 120 web
+  compose up -d --no-deps --no-build --pull never --wait --wait-timeout 120 web
   saude_ok
 
   # --- 6. limpeza: um erro aqui não desfaz uma atualização que já deu certo ---

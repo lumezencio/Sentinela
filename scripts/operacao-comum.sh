@@ -8,13 +8,15 @@ export MSYS_NO_PATHCONV=1
 
 export AVISO_ENV="o backup NÃO inclui o .env: sem a SENTINELA_CHAVE_CREDENCIAIS original, as senhas das fontes e o token do Telegram não abrem. Guarde o .env em lugar seguro, separado do backup."
 
-# compose ARGS...: docker compose no projeto desta pasta (ou em SENTINELA_PROJETO)
+# compose ARGS...: docker compose no projeto desta pasta (ou em SENTINELA_PROJETO), com os mesmos
+# arquivos -f do core em execução quando o update.sh os detectou (SENTINELA_COMPOSE_ARQUIVOS,
+# nomes separados por espaço: instalações --demo usam docker-compose.demo.yml junto).
 compose() {
-  if [[ -n "${SENTINELA_PROJETO:-}" ]]; then
-    docker compose -p "$SENTINELA_PROJETO" "$@"
-  else
-    docker compose "$@"
-  fi
+  local -a args=()
+  local f
+  [[ -z "${SENTINELA_PROJETO:-}" ]] || args+=(-p "$SENTINELA_PROJETO")
+  for f in ${SENTINELA_COMPOSE_ARQUIVOS:-}; do args+=(-f "$f"); done
+  docker compose ${args[@]+"${args[@]}"} "$@"
 }
 
 falhar() {
@@ -73,22 +75,29 @@ esperar_saude() {
   return 1
 }
 
-# Trava entre execuções (mkdir é atômico; flock falta no macOS).
-# update.sh chama restore.sh já com a trava: ele exporta SENTINELA_TRAVA_PAI=<seu PID> e o filho,
-# cujo PPID é esse PID, reaproveita a trava sem adquiri-la nem soltá-la.
+# Trava entre execuções (mkdir é atômico; flock falta no macOS). O PID do dono fica em
+# .operacao.lock/pid. update.sh chama restore.sh já com a trava: exporta SENTINELA_TRAVA_PAI=<seu
+# PID> e o filho só a reaproveita se esse valor for o seu PPID E o PID gravado na trava (nem
+# adquire nem solta).
 TRAVA_DIR=".operacao.lock"
 TRAVA_MINHA=0
 trava_adquirir() {
-  if [[ "${SENTINELA_TRAVA_PAI:-}" == "$PPID" && -d "$TRAVA_DIR" ]]; then
-    return 0
+  local dono=""
+  if [[ -n "${SENTINELA_TRAVA_PAI:-}" && "${SENTINELA_TRAVA_PAI}" == "$PPID" && -f "$TRAVA_DIR/pid" ]]; then
+    dono="$(cat "$TRAVA_DIR/pid" 2>/dev/null || true)"
+    if [[ "$dono" == "$PPID" ]]; then
+      return 0
+    fi
   fi
   if ! mkdir "$TRAVA_DIR" 2>/dev/null; then
     falhar "outra operação (backup, restauração ou atualização) está em curso; se não houver, apague a pasta $TRAVA_DIR"
   fi
   TRAVA_MINHA=1
+  printf '%s\n' "$$" >"$TRAVA_DIR/pid" 2>/dev/null || true
 }
 trava_liberar() {
   if [[ "$TRAVA_MINHA" -eq 1 ]]; then
+    rm -- "$TRAVA_DIR/pid" 2>/dev/null || true
     rmdir "$TRAVA_DIR" 2>/dev/null || true
     TRAVA_MINHA=0
   fi
@@ -120,18 +129,41 @@ tag_pre() {
   date -u +pre_%Y%m%dT%H%M%SZ
 }
 
-# limpar_pre: apaga só as marcações pre_* do Sentinela além das 3 mais recentes de cada imagem.
-# Nunca -f (imagem em uso ou com outra marcação fica), nunca outra imagem.
+# Manifesto das marcações pre_ criadas por update.sh (uma por linha, REPO:pre_<ts>). A limpeza só
+# mexe no que está aqui: marcações pre_ feitas à mão ou por outro processo nunca são tocadas.
+MANIFESTO_PRE=".sentinela-pre-tags"
+
+# registrar_pre REF: acrescenta uma marcação ao manifesto (só o formato exato)
+registrar_pre() {
+  [[ "$1" =~ ^ghcr\.io/lumezencio/sentinela-(core|web):pre_[0-9]{8}T[0-9]{6}Z$ ]] || return 1
+  (umask 077 && printf '%s\n' "$1" >>"$MANIFESTO_PRE")
+}
+
+# limpar_pre [TS_ATUAL]: das marcações do manifesto que ainda existem, mantém as 3 mais recentes
+# de cada imagem e a TS_ATUAL; remove as demais (sem -f: imagem em uso fica) e regrava o manifesto
 limpar_pre() {
-  local lista ref repo
-  lista="$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)" || return 0
+  local atual="${1:-}" lista ref repo i tmp
+  local -a mantem=()
+  [[ -f "$MANIFESTO_PRE" ]] || return 0
+  lista="$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | tr -d '\r')" || return 0
   for repo in "$IMG_REPO_CORE" "$IMG_REPO_WEB"; do
+    i=0
     while IFS= read -r ref; do
       [[ -n "$ref" ]] || continue
-      docker rmi "$ref" >/dev/null 2>&1 || echo "aviso: não consegui remover a marcação $ref" >&2
-    done < <(
-      printf '%s\n' "$lista" | tr -d '\r' |
-        grep -E "^${repo//./\.}:pre_[0-9]{8}T[0-9]{6}Z$" | sort -r | tail -n +4
-    )
+      grep -qxF -- "$ref" <<<"$lista" || continue # já não existe: sai do manifesto
+      i=$((i + 1))
+      if ((i > 3)) && [[ -z "$atual" || "$ref" != *":$atual" ]]; then
+        if docker rmi "$ref" >/dev/null 2>&1; then
+          continue
+        fi
+        echo "aviso: não consegui remover a marcação $ref" >&2
+      fi
+      mantem+=("$ref")
+    done < <(tr -d '\r' <"$MANIFESTO_PRE" | grep -E "^${repo//./\.}:pre_[0-9]{8}T[0-9]{6}Z$" | sort -ru)
   done
+  tmp="$(mktemp "${PWD}/.pre-tags.XXXXXX")"
+  chmod 600 "$tmp"
+  if ((${#mantem[@]} > 0)); then printf '%s\n' "${mantem[@]}" >"$tmp"; fi
+  mv "$tmp" "$MANIFESTO_PRE"
 }
+

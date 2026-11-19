@@ -539,4 +539,18 @@ test_nenhum_script_usa_down_prune_volume_nem_rmi_forcado() {
   fi
 }
 
+test_restore_sem_subir_restaura_e_deixa_o_core_parado() {
+  rodar_em_diretorio_temporario
+  bash restore.sh --do-volume sentinela-20261118T030000Z-atualizacao.tar.gz --sim --sem-subir >/dev/null 2>&1 || _falhou "deveria restaurar"
+  afirmar_ordem "compose stop core" "sentinela.cli restaurar /dados/backups/sentinela-20261118T030000Z-atualizacao.tar.gz"
+  afirmar_log_nao_contem "compose up"
+}
+
+test_restore_sem_subir_com_falha_na_restauracao_nao_sobe_o_core() {
+  rodar_em_diretorio_temporario
+  export SHIM_FALHAR="*sentinela.cli restaurar*"
+  if bash restore.sh --do-volume sentinela-20261118T030000Z-atualizacao.tar.gz --sim --sem-subir >/dev/null 2>&1; then _falhou "deveria falhar"; fi
+  afirmar_log_nao_contem "compose up"
+}
+
 executar_testes

@@ -3,6 +3,7 @@
 #
 #   ./restore.sh ARQUIVO.tar.gz [--sim]          arquivo do host
 #   ./restore.sh --do-volume NOME [--sim]        arquivo que já está em /dados/backups
+#   --sem-subir                                  só restaura: o core fica parado (uso do update.sh)
 #
 # Verifica o arquivo (sha256, integridade, esquema), pede confirmação (--sim pula), para
 # SÓ o serviço core, restaura num contêiner avulso sobre o mesmo volume (o banco atual é
@@ -31,6 +32,7 @@ ARQUIVO=""
 NOME_VOLUME=""
 DO_VOLUME=0
 SIM=0
+SEM_SUBIR=0
 FIM_OPCOES=0
 while [[ $# -gt 0 ]]; do
   arg="$1"
@@ -43,6 +45,10 @@ while [[ $# -gt 0 ]]; do
         ;;
       --sim)
         SIM=1
+        continue
+        ;;
+      --sem-subir)
+        SEM_SUBIR=1
         continue
         ;;
       --do-volume)
@@ -235,6 +241,7 @@ echo "Restaurando..."
 if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ALVO")"; then
   echo "erro: a restauração falhou (veja a mensagem acima)." >&2
   relatar_pre_restore
+  [[ $SEM_SUBIR -eq 0 ]] || falhar "a restauração não foi concluída; o core foi deixado parado (--sem-subir)"
   FASE="subindo o core após a falha da restauração"
   echo "Subindo o core de novo e esperando a saúde..." >&2
   if compose up -d --no-deps --wait --wait-timeout 120 core; then
@@ -247,6 +254,12 @@ PRE="${PRE%$'\r'}"
 # só um backup de nome estrito em /dados/backups pode ser devolvido (e citado como original)
 if nome_backup_valido "$PRE"; then
   PRE_ORIGINAL="$PRE"
+fi
+
+if [[ $SEM_SUBIR -eq 1 ]]; then
+  echo "Banco restaurado; o core foi deixado parado (--sem-subir): quem chamou sobe o serviço."
+  [[ -z "$PRE" ]] || echo "O banco anterior ficou guardado como: $PRE (em /dados/backups)"
+  exit 0
 fi
 
 FASE="subindo o core com o banco restaurado"
