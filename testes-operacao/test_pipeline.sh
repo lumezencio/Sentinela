@@ -59,17 +59,15 @@ test_codeql_cobre_python_e_javascript() {
   if grep -qE 'run:.*\$\{\{' "$CQ"; then _falhou "\${{ }} dentro de run:"; fi
 }
 
-test_actions_novas_fixadas_por_sha() {
+test_todas_as_actions_fixadas_por_sha() {
   local f linha n=0
-  for f in "$CQ" "$CI"; do
+  for f in "$CI" "$CQ" "$REPO_DIR/.github/workflows/release.yml"; do
     while IFS= read -r linha; do
-      # as actions antigas do ci.yml seguem por tag major; só exigimos SHA nas de codeql.yml
-      [[ "$f" == "$CQ" ]] || continue
       n=$((n + 1))
-      [[ "$linha" =~ uses:\ [A-Za-z0-9._/-]+@[0-9a-f]{40}\ \#\ v[0-9] ]] || _falhou "action sem SHA de 40 hex e tag em comentário: $linha"
+      [[ "$linha" =~ uses:\ [A-Za-z0-9._/-]+@[0-9a-f]{40}\ \#\ v[0-9] ]] || _falhou "$(basename "$f"): action sem SHA de 40 hex e tag em comentário: $linha"
     done < <(grep -E '^\s+(- )?uses: ' "$f" | grep -vF "uses: ./")
   done
-  ((n >= 3)) || _falhou "poucas actions no codeql.yml ($n)"
+  ((n >= 20)) || _falhou "poucas actions encontradas ($n)"
   grep -qE 'uses: github/codeql-action/init@[0-9a-f]{40}' "$CQ" || _falhou "codeql init sem SHA"
   grep -qE 'uses: github/codeql-action/analyze@[0-9a-f]{40}' "$CQ" || _falhou "codeql analyze sem SHA"
 }
