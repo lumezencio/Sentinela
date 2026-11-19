@@ -83,7 +83,13 @@ async def test_login_ok_define_cookies_seguros(
 
     eu = await cliente.get("/api/v1/auth/eu")
     assert eu.status_code == 200
-    assert eu.json() == {"login": "ana", "papel": "admin"}
+    assert eu.json() == {
+        "login": "ana",
+        "papel": "admin",
+        "totp_ativo": False,
+        "restrita": False,
+        "codigos_restantes": None,
+    }
 
 
 async def test_sessao_guarda_so_o_hash_do_token(
@@ -465,9 +471,13 @@ async def test_csrf_global_em_toda_escrita_da_api(app: FastAPI, cliente: httpx.A
     caminhos: dict[str, dict[str, object]] = app.openapi()["paths"]
     verificadas = 0
     for caminho, operacoes in caminhos.items():
-        # isentas por desenho: o login e o pedido de emparelhamento do telão (TV sem sessão,
-        # limitado por IP)
-        if not caminho.startswith("/api/v1") or caminho in (LOGIN_URL, "/api/v1/parede/pedido"):
+        # isentas por desenho: o login (e o passo do código TOTP) e o pedido de emparelhamento
+        # do telão (TV sem sessão, limitado por IP)
+        if not caminho.startswith("/api/v1") or caminho in (
+            LOGIN_URL,
+            "/api/v1/auth/totp/entrar",
+            "/api/v1/parede/pedido",
+        ):
             continue
         concreto = re.sub(r"\{[^}]+\}", "1", caminho)
         for metodo in {m.upper() for m in operacoes} - {"GET", "HEAD", "OPTIONS"}:

@@ -93,6 +93,8 @@ class TelegramSaida(BaseModel):
     """Nunca carrega o token: só se ele existe."""
 
     token_definido: bool
+    # o token existe mas não abre com a chave atual (banco restaurado de outra instalação)
+    token_ilegivel: bool = False
     chats: list[str]
     incluir_ip: bool
     ultimo_envio: datetime | None

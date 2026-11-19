@@ -740,6 +740,9 @@
               <div><dt>Conexão</dt><dd><span x-text="f.tlsRotulo"></span><span class="suave" x-show="f.confiada"> · certificado confiado</span></dd></div>
               <div><dt>Última coleta</dt><dd :title="f.coletaTitulo" x-text="f.coleta"></dd></div>
             </dl>
+            <div class="alerta cfg-ilegivel" x-show="f.credencialIlegivel" x-cloak>
+              <p><strong>Credencial ilegível: informe de novo.</strong> A senha guardada não abre com a chave desta instalação (por exemplo, depois de restaurar um backup feito em outra máquina). Use Editar e digite a senha outra vez.</p>
+            </div>
             <div class="alerta cfg-erro" x-show="f.erro">
               <p><strong>Último erro:</strong> <span x-text="f.erro"></span></p>
               <p class="dica" x-show="f.orientacao" x-text="f.orientacao"></p>
@@ -840,6 +843,7 @@
       </div>
       <p class="alerta alerta-ok" id="tg-aviso" role="status" x-show="tgAviso" x-text="tgAviso"></p>
       <p class="alerta" id="tg-erro-geral" role="alert" x-show="tgErroGeral" x-text="tgErroGeral"></p>
+      <p class="alerta" id="tg-ilegivel" x-show="tg.ilegivel" x-cloak><strong>Token ilegível: informe de novo.</strong> O token guardado não abre com a chave desta instalação (por exemplo, depois de restaurar um backup feito em outra máquina). Cole o token outra vez e salve.</p>
       <form class="cfg-tg-form" @submit.prevent="salvarTelegram" novalidate autocomplete="off">
         <div class="campo-form">
           <label for="tg-token">Token do bot</label>
@@ -933,6 +937,72 @@
         </div>
       </div>
       <p class="cfg-fuso"><strong class="mono" id="cfg-fuso" x-text="fuso"></strong> <span class="suave">definido pelo servidor (SENTINELA_FUSO)</span></p>
+    </section>
+
+    <section class="cfg-bloco" id="cfg-seguranca" aria-labelledby="cfg-seg-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-seg-titulo">Segurança</h2>
+          <p class="dica">Segundo fator de autenticação (código de 6 números de um aplicativo no celular) para entrar no Sentinela. Quem perder o aplicativo usa um código de recuperação ou pede a um administrador para zerar o segundo fator.</p>
+        </div>
+      </div>
+      <p class="alerta alerta-ok" id="seg-aviso" role="status" x-show="segAviso" x-text="segAviso"></p>
+      <p class="alerta" id="seg-erro-geral-cfg" role="alert" x-show="segErroGeral" x-text="segErroGeral"></p>
+      <div class="cfg-seg-politica">
+        <button class="chave" id="seg-exigir" type="button" role="switch" :aria-checked="segExigirMarcado" :disabled="segSalvando" @click="alternarExigirTotp">
+          <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+          <span class="chave-rotulo">Exigir segundo fator para administradores</span>
+        </button>
+        <p class="dica">Desligado por padrão. Ligado, o administrador que ainda não tem o segundo fator só consegue ativá-lo; o resto do Sentinela fica fechado para ele até lá. Em emergência, no servidor: <span class="mono">docker compose exec core python -m sentinela.cli totp-zerar &lt;login&gt;</span>.</p>
+      </div>
+      <div class="cfg-seg-minha">
+        <p class="cfg-seg-minha-texto" id="seg-minha" x-text="segMeuTotpTexto"></p>
+        <a class="botao" id="seg-proteger" href="seguranca.html">Proteger minha conta</a>
+      </div>
+      <h3 class="cfg-tel-subtitulo">Usuários</h3>
+      <p class="vazio cfg-tel-vazio" x-show="segCarregando" x-cloak>Carregando…</p>
+      <p class="dica" x-show="segSemUsuarios" x-cloak>Nenhum usuário encontrado.</p>
+      <ul class="cfg-seg-lista" id="seg-usuarios">
+        <template x-for="u in segUsuarios" :key="u.id">
+          <li class="cfg-seg-linha" :data-id="u.id">
+            <div class="cfg-tel-info">
+              <p class="cfg-tel-nome"><strong x-text="u.login"></strong> <span class="selo" x-text="u.papel"></span></p>
+              <p class="dica" x-text="u.totp"></p>
+            </div>
+            <button class="botao botao-fantasma botao-remover" type="button" x-show="u.podeZerar" x-cloak :disabled="segZerando" :aria-label="u.rotuloZerar" @click="abrirZerar(u.id)">Zerar segundo fator</button>
+          </li>
+        </template>
+      </ul>
+    </section>
+
+    <section class="cfg-bloco" id="cfg-backup" aria-labelledby="cfg-bk-titulo">
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-bk-titulo">Backup</h2>
+          <p class="dica" id="bk-agenda" x-text="bkTextoAgenda"></p>
+        </div>
+        <button class="botao botao-primario" id="bk-agora" type="button" :disabled="bkCriando" @click="fazerBackupAgora">Fazer backup agora</button>
+      </div>
+      <p class="alerta alerta-ok" id="bk-aviso" role="status" x-show="bkAviso" x-text="bkAviso"></p>
+      <p class="alerta" id="bk-erro" role="alert" x-show="bkErro" x-text="bkErro"></p>
+      <p class="cfg-bk-resumo" id="bk-resumo" x-text="bkResumo"></p>
+      <p class="alerta" id="bk-ultimo-erro" x-show="bkUltimoErro" x-cloak><strong>Último erro:</strong> <span x-text="bkUltimoErro"></span></p>
+      <p class="cfg-fuso"><span class="suave">Fuso dos horários:</span> <strong class="mono" x-text="fuso"></strong> <span class="suave">definido pelo servidor (SENTINELA_FUSO), somente leitura</span></p>
+      <div class="alerta cfg-bk-env" id="bk-aviso-env" role="note">
+        <p><strong>O backup não inclui o arquivo .env.</strong> Guarde-o em outro lugar seguro: sem a chave SENTINELA_CHAVE_CREDENCIAIS, as senhas das fontes e o token do Telegram não abrem.</p>
+      </div>
+      <h3 class="cfg-tel-subtitulo">Cópias guardadas</h3>
+      <p class="vazio cfg-tel-vazio" x-show="bkCarregando" x-cloak>Carregando…</p>
+      <p class="dica" id="bk-vazio" x-show="bkSemCopias" x-cloak>Nenhuma cópia guardada ainda.</p>
+      <ul class="cfg-bk-lista" id="bk-lista">
+        <template x-for="c in bkCopias" :key="c.i">
+          <li class="cfg-bk-linha">
+            <p class="cfg-bk-nome mono" x-text="c.nome"></p>
+            <p class="cfg-bk-meta"><span class="selo" x-text="c.tipo"></span> <span x-text="c.quando"></span> <span class="suave" x-text="c.tamanho"></span></p>
+          </li>
+        </template>
+      </ul>
+      <p class="dica cfg-bk-dir">Guardadas no volume de dados do Sentinela, em <span class="mono" x-text="bkDiretorio"></span>. Para restaurar, use o <span class="mono">backup.sh</span> no servidor.</p>
     </section>
     </div>
   </section>
@@ -1346,6 +1416,21 @@
       <div class="rodape">
         <button class="botao botao-fantasma" value="nao" x-ref="naoConfirmar">Cancelar</button>
         <button value="sim" :class="classeConfirmar" x-text="confirmacao.botao"></button>
+      </div>
+    </form>
+  </dialog>
+  <dialog class="dialogo" x-ref="dlgZerar" aria-labelledby="titulo-zerar" aria-describedby="texto-zerar" @close="aoFecharZerar">
+    <form @submit.prevent="confirmarZerar" novalidate autocomplete="off">
+      <h2 id="titulo-zerar" x-text="segTituloZerar"></h2>
+      <p class="dica" id="texto-zerar">Ele perde o segundo fator e todas as sessões abertas dele são encerradas. Para confirmar, digite a sua senha de administrador.</p>
+      <div class="campo-form">
+        <label for="seg-zerar-senha">Sua senha</label>
+        <input id="seg-zerar-senha" type="password" autocomplete="current-password" maxlength="256" x-ref="segSenhaCampo" x-model="segSenha" aria-describedby="seg-zerar-erro">
+        <p class="campo-erro" id="seg-zerar-erro" role="alert" x-show="segZerarErro" x-text="segZerarErro"></p>
+      </div>
+      <div class="rodape">
+        <button class="botao botao-fantasma" type="button" @click="fecharZerar">Cancelar</button>
+        <button class="botao botao-perigo" id="seg-zerar-confirmar" type="submit" :disabled="segZerando">Zerar segundo fator</button>
       </div>
     </form>
   </dialog>

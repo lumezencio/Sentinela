@@ -48,6 +48,7 @@ async def test_get_padrao(cliente_admin: httpx.AsyncClient) -> None:
     assert r.status_code == 200
     assert r.json() == {
         "token_definido": False,
+        "token_ilegivel": False,
         "chats": [],
         "incluir_ip": False,
         "ultimo_envio": None,

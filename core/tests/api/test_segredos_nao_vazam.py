@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from sentinela.alertas.telegram import ErroTelegram
-from sentinela.db.modelos import Auditoria, Config, Fonte
+from sentinela.db.modelos import Auditoria, Config, Fonte, Usuario
 from sentinela.descoberta.fontes.base import CertificadoNaoConfiado, ErroColeta, ResultadoTeste
 from sentinela.relogio import RelogioFalso
 from tests.api.apoio_descoberta import (
@@ -29,6 +29,8 @@ from tests.api.apoio_descoberta import (
     sessoes,
     subrede,
 )
+from tests.apoio_totp import Tempo, codigo_em
+from tests.conftest import SENHA_TESTE, CriarUsuario
 
 MARCA_SENHA = "MARCA-senha-7c1e"
 MARCA_COMUNIDADE = "MARCA-comunidade-3b9"
@@ -257,3 +259,70 @@ async def test_token_do_telegram_nao_vaza(
     assert not [c for c in status_telegram if MARCA_TOKEN_TELEGRAM in c]
     # o token só existe cifrado na linha de configuração
     assert not [c for c in config if MARCA_TOKEN_TELEGRAM in c]
+
+
+async def test_segredo_totp_codigo_e_etapa_nao_vazam(
+    app: FastAPI,
+    cliente: httpx.AsyncClient,
+    criar_usuario: CriarUsuario,
+    caplog: pytest.LogCaptureFixture,
+    tempo: Tempo,
+) -> None:
+    """Segredo base32, código de recuperação e token da etapa só aparecem onde a entrega única
+    os mostra: nunca em logs, auditoria, ``GET /usuarios`` nem mensagens de erro."""
+    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="sentinela")
+    adm = await criar_usuario("adm", SENHA_TESTE, "admin")
+    login = {"login": "adm", "senha": SENHA_TESTE}
+    assert (await cliente.post("/api/v1/auth/login", json=login)).status_code == 204
+    cliente.headers["X-CSRF"] = cliente.cookies["sentinela_csrf"]
+    ini = await cliente.post("/api/v1/auth/totp/iniciar", json={"senha": SENHA_TESTE})
+    chave = ini.json()["chave"].replace(" ", "")
+    ativ = await cliente.post(
+        "/api/v1/auth/totp/confirmar", json={"codigo": codigo_em(chave, tempo())}
+    )
+    codigos = ativ.json()["codigos"]
+    assert len(codigos) == 10
+    entregues = {chave, *codigos}
+
+    respostas: list[httpx.Response] = []  # tudo que veio DEPOIS da entrega única
+    respostas.append(await cliente.get("/api/v1/usuarios"))
+    respostas.append(await cliente.get("/api/v1/auth/eu"))
+    respostas.append(await cliente.get("/api/v1/auth/totp/qr"))  # 404: ativo
+    respostas.append(await cliente.post("/api/v1/auth/totp/iniciar", json={"senha": SENHA_TESTE}))
+    respostas.append(await cliente.post("/api/v1/auth/totp/confirmar", json={"codigo": chave}))
+    respostas.append(await cliente.post("/api/v1/auth/totp/confirmar", json={"codigo": codigos[0]}))
+    # login em duas etapas: erros com o código de recuperação e o segredo no corpo
+    cliente.cookies.clear()
+    assert (await cliente.post("/api/v1/auth/login", json=login)).status_code == 202
+    token = cliente.cookies["sentinela_etapa"]
+    for corpo in (
+        {"recuperacao": chave[:10]},
+        {"codigo": chave[:6]},
+        {"codigo": "1", "recuperacao": codigos[0]},
+    ):
+        respostas.append(await cliente.post("/api/v1/auth/totp/entrar", json=corpo))
+    respostas.append(
+        await cliente.post("/api/v1/auth/totp/entrar", json={"recuperacao": codigos[1]})
+    )
+    entregues.add(token)
+
+    for r in respostas:
+        for segredo in entregues:
+            assert segredo not in r.text
+            assert segredo not in str(dict(r.headers))
+    async with sessoes(app)() as db:
+        auditoria = [
+            repr((a.acao, a.alvo, a.antes, a.depois, a.ip))
+            for a in (await db.execute(select(Auditoria))).scalars()
+        ]
+        config = [repr((c.chave, c.valor)) for c in (await db.execute(select(Config))).scalars()]
+        usuario = repr(
+            (await db.execute(select(Usuario).where(Usuario.id == adm.id))).scalar_one().__dict__
+        )
+    assert any("totp.ativar" in a for a in auditoria)
+    for segredo in entregues:
+        assert segredo not in caplog.text
+        assert not [a for a in auditoria if segredo in a]
+        assert not [c for c in config if segredo in c]
+        assert segredo not in usuario  # o segredo só existe cifrado

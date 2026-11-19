@@ -731,3 +731,108 @@ html[data-aba="configuracoes"] {
 .ca:focus {
   outline: none;
 }
+
+/* ---------- Configurações: Segurança e Backup ---------- */
+.cfg-seg-politica {
+  display: grid;
+  gap: 8px;
+  max-width: 760px;
+}
+
+.cfg-seg-minha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 16px;
+}
+
+.cfg-seg-minha-texto {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cfg-seg-lista,
+.cfg-bk-lista {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cfg-seg-linha,
+.cfg-bk-linha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--superficie);
+}
+
+.cfg-seg-linha .cfg-tel-info {
+  flex: 1 1 240px;
+}
+
+.cfg-bk-resumo {
+  margin: 0 0 8px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+#bk-ultimo-erro,
+.cfg-bk-env,
+.cfg-fuso {
+  margin-top: 12px;
+}
+
+.cfg-bk-env p {
+  margin: 0;
+}
+
+.cfg-bk-nome {
+  flex: 1 1 320px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cfg-bk-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.cfg-bk-dir {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+.cfg-ilegivel {
+  margin-top: 12px;
+  border-left-color: var(--instavel);
+}
+
+.cfg-ilegivel p {
+  margin: 0;
+}
+
+#tg-ilegivel {
+  margin-bottom: 12px;
+  border-left-color: var(--instavel);
+}
+
+.cfg-seg-politica .chave {
+  text-align: left;
+}
+
+.cfg-seg-linha .botao-remover {
+  border-color: var(--borda); /* botão com contorno: alinha à borda esquerda quando quebra de linha */
+}

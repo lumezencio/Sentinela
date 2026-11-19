@@ -36,6 +36,12 @@ def gerar_hash(senha: str) -> str:
     return _hasher.hash(senha)
 
 
+def gerar_hash_segredo(texto: str) -> str:
+    """argon2id de um segredo gerado pelo sistema (código de recuperação), sem a política de
+    tamanho das senhas."""
+    return _hasher.hash(texto)
+
+
 def verificar(hash: str, senha: str) -> bool:
     """True só se ``senha`` confere com ``hash``; hash inválido conta como falha."""
     try:
@@ -69,6 +75,10 @@ async def _no_executor[T](funcao: Callable[..., T], *args: str) -> T:
 
 async def gerar_hash_async(senha: str) -> str:
     return await _no_executor(gerar_hash, senha)
+
+
+async def gerar_hash_segredo_async(texto: str) -> str:
+    return await _no_executor(gerar_hash_segredo, texto)
 
 
 async def verificar_async(hash: str, senha: str) -> bool:

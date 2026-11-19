@@ -49,6 +49,7 @@ from sentinela.config import Settings
 from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento, Usuario
 from sentinela.monitor.agendador import Agendador
 from sentinela.relogio import Relogio
+from sentinela.seguranca.politica import restrita
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +95,10 @@ async def _usuario(
     sessoes: async_sessionmaker[AsyncSession], websocket: WebSocket
 ) -> Usuario | None:
     async with sessoes() as db:
-        return await usuario_do_cookie(db, websocket.cookies)
+        usuario = await usuario_do_cookie(db, websocket.cookies)
+    if usuario is not None and restrita(usuario, websocket.app.state.politica_totp):
+        return None  # sessão restrita (admin sem TOTP) só serve à ativação
+    return usuario
 
 
 async def sessao_valida(sessoes: async_sessionmaker[AsyncSession], websocket: WebSocket) -> bool:

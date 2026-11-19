@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Sentinela: ativar o segundo fator de autenticação">
+  <title>Sentinela · Segurança da conta</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/seguranca.css">
+  <script src="js/tema.js"></script>
+  <script type="module" src="js/seguranca.js"></script>
+</head>
+<body>
+  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div></div>
+  <main class="tela-login tela-seguranca">
+    <section class="cartao-login cartao-seguranca vidro" aria-labelledby="titulo-seg">
+      <header class="seg-cabeca">
+        <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+          <g class="giro"><ellipse class="orbita" cx="20" cy="20" rx="17" ry="7"/><circle class="eletron" cx="37" cy="20" r="2.2"/></g>
+          <g class="giro giro-2"><ellipse class="orbita orbita-2" cx="20" cy="20" rx="7" ry="17"/><circle class="eletron" cx="20" cy="3" r="1.8"/></g>
+          <circle class="nucleo" cx="20" cy="20" r="4.5"/>
+        </svg>
+        <div>
+          <h1 id="titulo-seg">Segundo fator de autenticação</h1>
+          <p class="seg-quem" id="seg-quem" hidden></p>
+        </div>
+      </header>
+
+      <p class="alerta seg-aviso" id="seg-restrita" hidden>O administrador exige o segundo fator. Ative-o agora para continuar usando o Sentinela.</p>
+      <p class="alerta" id="seg-erro-geral" role="alert" hidden></p>
+      <p class="alerta alerta-ok" id="seg-status" role="status" hidden></p>
+
+      <p class="seg-passo" id="seg-passo" hidden></p>
+
+      <!-- carregando o estado da conta -->
+      <p class="seg-texto" id="seg-carregando">Carregando…</p>
+
+      <!-- passo 1: senha -->
+      <form class="seg-form" id="passo-senha" novalidate hidden>
+        <p class="seg-texto">O segundo fator pede, além da senha, um código de 6 números que muda a cada 30 segundos. Você precisa de um aplicativo autenticador no celular (Google Authenticator, Microsoft Authenticator, Aegis, 1Password ou similar).</p>
+        <div class="campo-form">
+          <label for="seg-senha">Confirme sua senha</label>
+          <input id="seg-senha" name="senha" type="password" autocomplete="current-password" maxlength="256" required aria-describedby="seg-senha-erro">
+          <p class="campo-erro" id="seg-senha-erro" role="alert" hidden></p>
+        </div>
+        <div class="seg-acoes">
+          <button class="botao botao-primario" id="seg-iniciar" type="submit">Continuar</button>
+        </div>
+      </form>
+
+      <!-- passo 2: QR, chave e código de confirmação -->
+      <form class="seg-form" id="passo-qr" novalidate hidden>
+        <p class="seg-texto">Abra o aplicativo autenticador, escolha adicionar conta e leia o QR abaixo. Se não puder ler a imagem, digite a chave.</p>
+        <div class="seg-qr-bloco">
+          <div class="seg-qr">
+            <img id="seg-qr" alt="QR do segundo fator do Sentinela, para ler no aplicativo autenticador" width="216" height="216">
+          </div>
+          <div class="seg-chave-bloco">
+            <p class="seg-rotulo" id="seg-chave-rotulo">Chave para digitar</p>
+            <p class="seg-chave mono" id="seg-chave" aria-labelledby="seg-chave-rotulo"></p>
+            <button class="botao" id="seg-copiar-chave" type="button">Copiar chave</button>
+          </div>
+        </div>
+        <div class="campo-form">
+          <label for="seg-codigo">Código que o aplicativo mostra agora</label>
+          <input id="seg-codigo" name="codigo" class="campo-codigo" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="16" required aria-describedby="seg-codigo-erro">
+          <p class="campo-erro" id="seg-codigo-erro" role="alert" hidden></p>
+        </div>
+        <div class="seg-acoes">
+          <button class="botao botao-primario" id="seg-confirmar" type="submit">Ativar segundo fator</button>
+        </div>
+      </form>
+
+      <!-- passo 3: códigos de recuperação (uma única vez) -->
+      <section class="seg-form" id="passo-codigos" aria-labelledby="titulo-codigos" hidden>
+        <h2 class="seg-h2" id="titulo-codigos" tabindex="-1">Seus códigos de recuperação</h2>
+        <p class="seg-texto">Se você perder o celular, cada um destes códigos entra no lugar do aplicativo, uma única vez. <strong>Eles aparecem só agora</strong> e não ficam salvos em lugar nenhum desta página: guarde-os antes de continuar.</p>
+        <ol class="seg-codigos mono" id="seg-codigos"></ol>
+        <div class="seg-acoes">
+          <button class="botao" id="seg-copiar-codigos" type="button">Copiar códigos</button>
+          <button class="botao" id="seg-baixar-codigos" type="button">Baixar .txt</button>
+        </div>
+        <label class="seg-confirma" for="seg-guardei">
+          <input type="checkbox" id="seg-guardei">
+          <span>Guardei os códigos em lugar seguro</span>
+        </label>
+        <div class="seg-acoes">
+          <button class="botao botao-primario" id="seg-continuar" type="button" disabled>Continuar</button>
+        </div>
+      </section>
+
+      <!-- já ativo -->
+      <section class="seg-form" id="passo-ativo" hidden>
+        <p class="seg-texto" id="seg-ativo-texto"></p>
+        <div class="seg-acoes">
+          <a class="botao botao-primario" id="seg-voltar-painel" href="index.html">Ir para o painel</a>
+        </div>
+      </section>
+
+      <footer class="seg-rodape">
+        <button class="botao botao-fantasma" id="seg-sair" type="button">Sair</button>
+      </footer>
+    </section>
+  </main>
+</body>
+</html>

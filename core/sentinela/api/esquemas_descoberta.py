@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from sentinela.db.modelos import Descoberta, Fonte
+from sentinela.seguranca.cofre import Cofre, ErroCofre
 
 TipoFonte = Literal["mikrotik", "snmp", "hikvision", "dahua"]
 StatusDescoberta = Literal["pendente", "aprovada", "ignorada"]
@@ -119,6 +120,16 @@ class FonteEdicao(_Fechado):
         return self
 
 
+def _ilegivel(f: Fonte, cofre: Cofre | None) -> bool:
+    if cofre is None or not f.credencial_cifrada:
+        return False
+    try:
+        cofre.decifrar(f.credencial_cifrada)
+    except ErroCofre:
+        return True
+    return False
+
+
 class FonteSaida(BaseModel):
     id: str
     tipo: str
@@ -133,9 +144,11 @@ class FonteSaida(BaseModel):
     ultimo_erro: str | None
     equipamento_id: str | None
     credencial_definida: bool
+    # a credencial existe mas não abre com a chave atual (banco restaurado de outra instalação)
+    credencial_ilegivel: bool = False
 
     @classmethod
-    def de(cls, f: Fonte) -> "FonteSaida":
+    def de(cls, f: Fonte, cofre: Cofre | None = None) -> "FonteSaida":
         return cls(
             id=f.id,
             tipo=f.tipo,
@@ -150,6 +163,7 @@ class FonteSaida(BaseModel):
             ultimo_erro=f.ultimo_erro,
             equipamento_id=f.equipamento_id,
             credencial_definida=bool(f.credencial_cifrada),
+            credencial_ilegivel=_ilegivel(f, cofre),
         )
 
 

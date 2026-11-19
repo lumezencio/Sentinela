@@ -3,10 +3,22 @@
     python -m sentinela.cli criar-admin --login X
     python -m sentinela.cli sub-rede adicionar|remover CIDR
     python -m sentinela.cli sub-rede listar
+    python -m sentinela.cli totp-zerar LOGIN
+    python -m sentinela.cli backup-criar [--origem manual|atualizacao]
+    python -m sentinela.cli backup-verificar ARQUIVO
+    python -m sentinela.cli restaurar ARQUIVO
     python -m sentinela.cli oui-atualizar ARQUIVO.csv [...] [--saida oui.tsv.gz]
 
 A senha é lida com ``getpass`` (duas vezes, para confirmar). Fora de produção, se
 ``SENTINELA_ADMIN_SENHA`` estiver definida, ela é usada no lugar (testes/demonstração).
+
+``backup-criar`` imprime só o nome do arquivo gerado em ``<pasta do banco>/backups`` (funciona
+com o core no ar). ``backup-verificar`` sai com 1 e mensagem genérica se o arquivo for inválido.
+``restaurar`` verifica, guarda o banco atual como ``pre-restore``, restaura e imprime o nome do
+``pre-restore``. Recusa rodar se o core responder na porta 8000 em 127.0.0.1 (``compose exec``) ou
+pelo nome de serviço ``core`` na rede do compose (``compose run``); fora do compose a sonda não vê
+o core, e a trava final é o banco ter escritor ativo. O caminho seguro é o ``restore.sh``, que
+para o core antes. O ``.env`` nunca entra no backup: os comandos repetem o aviso em texto fixo.
 
 ``sub-rede`` usa a mesma validação da API, grava a auditoria com ``usuario_id`` nulo e ação
 ``cli:subrede.*`` e pausa/retoma os equipamentos como a API faz. Ela escreve só no banco: com
@@ -23,9 +35,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sentinela import __version__
+from sentinela.api.backup import AVISO as AVISO_ENV
 from sentinela.api.comum import sincronizar
 from sentinela.api.subredes import (
     MAX_SUB_REDES,
@@ -33,6 +48,15 @@ from sentinela.api.subredes import (
     MSG_LIMITE,
     normalizar_cidr,
 )
+from sentinela.backup.arquivo import (
+    ErroBackup,
+    TipoBackup,
+    criar_backup,
+    restaurar_backup,
+    revisoes_do_codigo,
+    verificar_backup,
+)
+from sentinela.backup.porta import HOSTS_DO_CORE, porta_responde
 from sentinela.config import Settings, obter_settings
 from sentinela.db.modelos import Auditoria, SubRede, Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
@@ -40,9 +64,13 @@ from sentinela.descoberta.classificador.oui import CAMINHO_PADRAO as OUI_PADRAO
 from sentinela.descoberta.classificador.oui import atualizar_de_csv
 from sentinela.monitor.montagem import sub_redes_do_banco
 from sentinela.rede.guarda import DestinoProibido, Guarda
+from sentinela.seguranca.politica import zerar_totp
 from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 
 VARIAVEL_SENHA = "SENTINELA_ADMIN_SENHA"
+PORTA_CORE = 8000  # a porta do core dentro do contêiner (a mesma do uvicorn na imagem)
+HOSTS_CORE: tuple[str, ...] = HOSTS_DO_CORE  # 127.0.0.1 (exec) e o serviço "core" (run)
+MSG_CORE_NO_AR = "o core está no ar; pare-o antes de restaurar (nada foi alterado)"
 
 
 class ErroCli(Exception):
@@ -152,6 +180,80 @@ async def _sub_rede(settings: Settings, acao: str, texto: str | None) -> None:
         await motor.dispose()
 
 
+async def _totp_zerar(settings: Settings, login: str) -> None:
+    """Emergência (perdeu o aplicativo e os códigos): apaga o TOTP e revoga as sessões."""
+    motor = criar_motor(settings.banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            alvo = await db.scalar(select(Usuario).where(Usuario.login == login.strip()))
+            if alvo is None:
+                raise ErroCli("usuário não encontrado; nada foi alterado", 1)
+            await zerar_totp(db, alvo.id)
+            db.add(
+                Auditoria(
+                    usuario_id=None,
+                    acao="cli:totp.zerar",
+                    alvo=f"usuario:{alvo.id}",
+                    antes=None,
+                    depois=None,
+                    ip=None,
+                    em=datetime.now(UTC),
+                )
+            )
+            await db.commit()
+    finally:
+        await motor.dispose()
+    print(
+        f"segundo fator de {login.strip()!r} apagado e sessões revogadas; "
+        "o usuário pode ativar de novo no próximo login"
+    )
+
+
+def _caminho_banco(settings: Settings) -> Path:
+    banco = make_url(settings.banco_url).database
+    if not banco:
+        raise ErroCli("o banco configurado não é um arquivo", 2)
+    return Path(banco)
+
+
+def _backup_criar(settings: Settings, origem: TipoBackup) -> None:
+    banco = _caminho_banco(settings)
+    try:
+        caminho = criar_backup(
+            banco, banco.parent / "backups", origem, datetime.now(UTC), __version__
+        )
+    except ErroBackup as e:
+        raise ErroCli(str(e), 1) from None
+    print(caminho.name)
+    print(f"aviso: {AVISO_ENV}", file=sys.stderr)
+
+
+def _backup_verificar(settings: Settings, arquivo: str) -> None:
+    try:
+        manifesto = verificar_backup(
+            Path(arquivo), revisoes_do_codigo(), _caminho_banco(settings).parent
+        )
+    except ErroBackup as e:
+        # ErroBackup só carrega textos fixos (inválido, versão mais nova, sem espaço...)
+        raise ErroCli(str(e), 1) from None
+    print(f"backup válido: esquema {manifesto.esquema}, Sentinela {manifesto.sentinela}")
+
+
+async def _restaurar(settings: Settings, arquivo: str) -> None:
+    if await porta_responde(PORTA_CORE, hosts=HOSTS_CORE):
+        raise ErroCli(MSG_CORE_NO_AR, 1)
+    banco = _caminho_banco(settings)
+    try:
+        guardado = restaurar_backup(Path(arquivo), banco, datetime.now(UTC), __version__)
+    except ErroBackup as e:
+        raise ErroCli(str(e), 1) from None
+    except OSError:
+        raise ErroCli("não foi possível restaurar (nada foi apagado)", 1) from None
+    if guardado is not None:
+        print(guardado.name)
+    print(f"aviso: {AVISO_ENV}", file=sys.stderr)
+
+
 def _oui_atualizar(arquivos: list[str], saida: str | None) -> None:
     """Regera a base OUI a partir de CSVs da IEEE já baixados (nunca acessa a rede)."""
     destino = Path(saida) if saida else OUI_PADRAO
@@ -170,6 +272,18 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     sub = comandos.add_parser("sub-rede", help="declara as sub-redes privadas monitoradas")
     sub.add_argument("acao", choices=["adicionar", "remover", "listar"])
     sub.add_argument("cidr", nargs="?", help="ex. 10.99.0.0/24")
+    zerar = comandos.add_parser(
+        "totp-zerar", help="apaga o segundo fator (TOTP) de um usuário e revoga as sessões dele"
+    )
+    zerar.add_argument("login")
+    bcriar = comandos.add_parser("backup-criar", help="cria um backup do banco (sem o .env)")
+    bcriar.add_argument("--origem", choices=["manual", "atualizacao"], default="manual")
+    bverif = comandos.add_parser("backup-verificar", help="confere um arquivo de backup")
+    bverif.add_argument("arquivo")
+    restaura = comandos.add_parser(
+        "restaurar", help="restaura um backup (com o core parado); guarda o banco atual antes"
+    )
+    restaura.add_argument("arquivo")
     oui = comandos.add_parser(
         "oui-atualizar", help="regera a base OUI a partir de CSVs da IEEE (MA-L, MA-M, MA-S)"
     )
@@ -181,6 +295,18 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     try:
         if args.comando == "oui-atualizar":
             _oui_atualizar(args.arquivos, args.saida)
+            return 0
+        if args.comando == "backup-criar":
+            _backup_criar(settings, args.origem)
+            return 0
+        if args.comando == "backup-verificar":
+            _backup_verificar(settings, args.arquivo)
+            return 0
+        if args.comando == "restaurar":
+            await _restaurar(settings, args.arquivo)
+            return 0
+        if args.comando == "totp-zerar":
+            await _totp_zerar(settings, args.login)
             return 0
         if args.comando == "sub-rede":
             await _sub_rede(settings, args.acao, args.cidr)

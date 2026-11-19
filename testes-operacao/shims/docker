@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Docker falso para testar os scripts de operação sem tocar em contêiner nenhum.
+# Registra cada chamada (uma linha) em $SHIM_LOG e responde por caso.
+#
+#   SHIM_FALHAR="padrão1|padrão2"  chamadas cuja linha casa com o padrão (glob) saem com 1;
+#                                  prefixo "1x:" faz falhar só na primeira vez; "A-B:" só nas
+#                                  chamadas de número A a B que casam com o padrão
+#   SHIM_DIGEST_CORE / SHIM_DIGEST_WEB  digest que "image inspect" devolve (padrão: aaaa.../bbbb...)
+#   SHIM_CONFIG_FILES              rótulo com.docker.compose.project.config_files (NENHUM = vazio)
+#   SHIM_IGUAL=1                   "image inspect" devolve o mesmo ID da imagem em execução
+#   SHIM_ID_CORE_POS               ID do core em execução depois da volta (up ... core web)
+#   SHIM_VERSAO_RODANDO            versão do pacote no core em execução (padrão 0.4.0)
+#   SHIM_SEM_BACKUP_CLI=1          "sentinela.cli --help" não lista backup-criar (core antigo)
+#   SHIM_IMAGENS="repo:tag ..."    saída de "docker image ls" (uma por linha)
+#   SHIM_ARCH                      arquitetura do servidor (docker version --format {{.Server.Arch}}; padrão amd64)
+#   SHIM_SEM_IMAGEM=1              "image inspect" de tag (ID) falha até o primeiro pull: a tag ainda não existia
+#   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
+#   SHIM_DORMIR="padrão"           chamadas que casam esperam 2 s (testes de sinal)
+#   "compose ps" responde "core: <estado>" com o estado deixado pelo último stop/up do core
+set -uo pipefail
+
+: "${SHIM_LOG:?SHIM_LOG não definido}"
+SHIM_DIR="${SHIM_DIR:-$(dirname "$SHIM_LOG")}"
+linha="$*"
+# log cru (com todos os -f) à parte; no log principal some o "-f docker-compose.yml" padrão, para os
+# testes lerem "compose up ..." (os testes dos arquivos compose conferem o log cru)
+printf 'docker %s\n' "$linha" >>"$SHIM_DIR/docker.raw.log"
+linha="${linha//-f docker-compose.yml /}"
+printf 'docker %s\n' "$linha" >>"$SHIM_LOG"
+
+falha_pedida() {
+  local padrao uma marca janela n de ate
+  local -a padroes=()
+  IFS='|' read -r -a padroes <<<"${SHIM_FALHAR:-}"
+  for padrao in "${padroes[@]}"; do
+    [[ -n "$padrao" ]] || continue
+    uma=0
+    janela=""
+    if [[ "$padrao" == 1x:* ]]; then
+      uma=1
+      padrao="${padrao#1x:}"
+    elif [[ "$padrao" =~ ^([0-9]+)-([0-9]+):(.*)$ ]]; then
+      janela="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+      padrao="${BASH_REMATCH[3]}"
+    fi
+    # shellcheck disable=SC2053
+    if [[ "$linha" == $padrao ]]; then
+      if [[ -n "$janela" ]]; then
+        marca="$SHIM_DIR/.conta-$(printf '%s' "$padrao" | cksum | cut -d' ' -f1)"
+        n=$(($(cat "$marca" 2>/dev/null || echo 0) + 1))
+        echo "$n" >"$marca"
+        read -r de ate <<<"$janela"
+        ((n >= de && n <= ate)) && return 0
+        continue
+      fi
+      if ((uma)); then
+        marca="$SHIM_DIR/.falhou-$(printf '%s' "$padrao" | cksum | cut -d' ' -f1)"
+        [[ -e "$marca" ]] && continue
+        : >"$marca"
+      fi
+      return 0
+    fi
+  done
+  return 1
+}
+
+if falha_pedida; then
+  echo "shim: falha simulada para: $linha" >&2
+  exit 1
+fi
+
+# primeiro pull (docker pull ou compose pull): a partir daí a imagem "existe" (SHIM_SEM_IMAGEM)
+if [[ "$linha" =~ ^(compose( -[^ ]+ [^ ]+)* )?pull[[:space:]] ]]; then : >"$SHIM_DIR/.baixou"; fi
+
+# restaurar criou o pre-restore (marca antes de qualquer espera, como o banco trocado)
+if [[ "$linha" == *"sentinela.cli restaurar "* ]]; then
+  [[ -e "$SHIM_DIR/.restaurou" ]] && : >"$SHIM_DIR/.restaurou2"
+  : >"$SHIM_DIR/.restaurou"
+fi
+
+# SHIM_DORMIR="padrão": chamadas que casam esperam 2 s (para testes de sinal)
+# shellcheck disable=SC2053
+if [[ -n "${SHIM_DORMIR:-}" && "$linha" == $SHIM_DORMIR ]]; then
+  sleep 2
+fi
+
+# entrada padrão enviada ao volume: guarda para o teste conferir o conteúdo
+if [[ "$linha" == *"sh -c"*"cat >"* ]]; then
+  cat >"$SHIM_DIR/stdin.recebido"
+fi
+
+case "$1" in
+  inspect)
+    cid="${*: -1}"
+    case "$linha" in
+      *Mounts*) echo "sentinela_dados_teste" ;;
+      *config_files*)
+        # arquivos compose com que o core foi criado (NENHUM = rótulo ausente)
+        if [[ "${SHIM_CONFIG_FILES:-}" == "NENHUM" ]]; then
+          echo ""
+        else
+          echo "${SHIM_CONFIG_FILES:-$PWD/docker-compose.yml}"
+        fi
+        ;;
+      *)
+        # imagem em uso pelo contêiner; depois da volta (up --no-build ... core web) vale *_POS
+        servico="${cid#cid-}"
+        if [[ -e "$SHIM_DIR/.voltou" && "$servico" == core && -n "${SHIM_ID_CORE_POS:-}" ]]; then
+          echo "$SHIM_ID_CORE_POS"
+        else
+          echo "sha256:rodando-$servico"
+        fi
+        ;;
+    esac
+    exit 0
+    ;;
+  version)
+    case "$linha" in
+      *Server.Arch*) echo "${SHIM_ARCH-amd64}" ;;
+      *Server.Version*) echo "27.0.0" ;;
+    esac
+    exit 0
+    ;;
+  info | tag | rmi | pull | build) exit 0 ;;
+  image)
+    if [[ "${2:-}" == "ls" ]]; then
+      for img in ${SHIM_IMAGENS:-}; do echo "$img"; done
+    elif [[ "${2:-}" == "inspect" ]]; then
+      ref="${*: -1}"
+      case "$linha" in
+        *RepoDigests*)
+          # uma entrada de outro registro vem antes: o script tem de escolher a do "repo@"
+          echo "outro.example/x@sha256:$(printf 'f%.0s' {1..64})"
+          case "$ref" in
+            *sentinela-core*) echo "${ref%%:*}@${SHIM_DIGEST_CORE:-sha256:$(printf 'a%.0s' {1..64})}" ;;
+            *) echo "${ref%%:*}@${SHIM_DIGEST_WEB:-sha256:$(printf 'b%.0s' {1..64})}" ;;
+          esac
+          ;;
+        *)
+          [[ "${SHIM_SEM_IMAGEM:-}" == "1" && ! -e "$SHIM_DIR/.baixou" ]] && exit 1
+          # ID local da imagem: SHIM_IGUAL=1 = a mesma que já roda
+          servico=web
+          [[ "$ref" == *sentinela-core* ]] && servico=core
+          if [[ "${SHIM_IGUAL:-}" == "1" ]]; then echo "sha256:rodando-$servico"; else echo "sha256:novo-$servico"; fi
+          ;;
+      esac
+    fi
+    exit 0
+    ;;
+  buildx) exit 0 ;;
+  compose)
+    shift
+    case "$linha" in
+      "compose version --short"*) echo "2.30.0" ;;
+      "compose version"*) exit 0 ;;
+      *"ls -1 -- sentinela-*-pre-restore.tar.gz"*)
+        echo "sentinela-20260101T000000Z-pre-restore.tar.gz"
+        [[ -e "$SHIM_DIR/.restaurou" ]] && echo "sentinela-20261118T030100Z-pre-restore.tar.gz"
+        [[ -e "$SHIM_DIR/.restaurou2" ]] && echo "sentinela-20261118T030200Z-pre-restore.tar.gz"
+        ;;
+      *"ls -1 -- sentinela-*.tar.gz"*)
+        if [[ -n "${SHIM_LISTA:-}" ]]; then
+          printf '%s\n' "$SHIM_LISTA"
+        else
+          printf '%s\n' "sentinela-20261118T030000Z-manual.tar.gz" "sentinela-20261117T030000Z-diario.tar.gz"
+        fi
+        ;;
+      *"sentinela.__version__"*) echo "${SHIM_VERSAO_RODANDO:-0.4.0}" ;;
+      *"sentinela.cli --help"*)
+        if [[ "${SHIM_SEM_BACKUP_CLI:-}" == "1" ]]; then echo "usage: cli [-h] {criar-admin,sub-rede}"; else echo "usage: cli [-h] {criar-admin,backup-criar,restaurar}"; fi
+        ;;
+      *" backup-criar --origem atualizacao"*) echo "sentinela-20261118T030000Z-atualizacao.tar.gz" ;;
+      *" backup-criar"*) echo "sentinela-20261118T030000Z-manual.tar.gz" ;;
+      *" ps -q "*) echo "cid-${*: -1}" ;;
+      *" backup-verificar"*) echo "backup válido: esquema 0005, Sentinela 0.4.0" ;;
+      *" restaurar "*) echo "sentinela-20261118T030100Z-pre-restore.tar.gz" ;;
+      # estado do core (gravado depois de qualquer espera: é o estado ao fim da chamada)
+      *" up "*" core web") : >"$SHIM_DIR/.voltou" ;;
+      *" stop core") echo "Exited (0) 1 second ago" >"$SHIM_DIR/.core-estado" ;;
+      *" up "*" core") echo "Up 1 second (healthy)" >"$SHIM_DIR/.core-estado" ;;
+      *" ps "*)
+        printf 'core: %s\n' "$(cat "$SHIM_DIR/.core-estado" 2>/dev/null || echo "Up 1 hour (healthy)")"
+        ;;
+      *" cp "*)
+        origem="${*: -2:1}"
+        destino="${*: -1}"
+        mkdir -p "$destino"
+        case "$origem" in
+          */.)
+            # cópia da pasta inteira (o que os scripts NÃO devem fazer): traz também o que é de trabalho
+            echo "conteudo-ficticio" >"${destino%/}/sentinela-20261118T030000Z-manual.tar.gz"
+            echo "orfao-ficticio" >"${destino%/}/.entrada-1-2.tar.gz"
+            ;;
+          *) echo "conteudo-ficticio" >"${destino%/}/$(basename "$origem")" ;;
+        esac
+        ;;
+    esac
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac

@@ -4,7 +4,7 @@ import { api, irParaLogin } from "./api.js";
 import { cartoesDoPainel } from "./cartoes-painel.js";
 import { paredesDoPainel } from "./config-paredes.js";
 import { telegramDoPainel } from "./config-telegram.js";
-import { configuracoesDoPainel } from "./configuracoes.js";
+import { backupDoPainel, configuracoesDoPainel, segurancaDoPainel } from "./configuracoes.js";
 import {
   aplicarEquipamento,
   aplicarEstado,
@@ -107,6 +107,11 @@ function painel() {
         await dormir(recuo);
         recuo = Math.min(recuo * 2, RECUO_MAXIMO_MS);
         eu = await api.eu();
+      }
+      if (eu.dados.restrita) {
+        // administrador sem segundo fator com a política ligada: só a ativação funciona
+        window.location.replace("seguranca.html");
+        return;
       }
       this.usuario = eu.dados.login;
       this.admin = eu.dados.papel === "admin";
@@ -549,6 +554,8 @@ function painel() {
     cartoesDoPainel(store),
     telegramDoPainel(),
     paredesDoPainel(),
+    segurancaDoPainel(),
+    backupDoPainel(),
   ]) {
     Object.defineProperties(dados, Object.getOwnPropertyDescriptors(parte));
   }

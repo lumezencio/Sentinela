@@ -118,9 +118,9 @@ async def _carregar(db: AsyncSession, id: str) -> Fonte:
 
 
 @router.get("", response_model=list[FonteSaida])
-async def listar(db: SessaoDB, _admin: Admin) -> list[FonteSaida]:
+async def listar(request: Request, db: SessaoDB, _admin: Admin) -> list[FonteSaida]:
     fontes = (await db.execute(select(Fonte).order_by(Fonte.nome, Fonte.id))).scalars()
-    return [FonteSaida.de(f) for f in fontes]
+    return [FonteSaida.de(f, request.app.state.cofre) for f in fontes]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=FonteSaida)
@@ -146,7 +146,7 @@ async def criar(entrada: FonteEntrada, request: Request, db: SessaoDB, admin: Ad
     auditar(db, request, admin, "fonte.criar", fonte.id, depois=_retrato(fonte))
     await db.commit()
     _orq(request).fonte_alterada(fonte.id)
-    return FonteSaida.de(fonte)
+    return FonteSaida.de(fonte, request.app.state.cofre)
 
 
 @router.patch("/{id}", response_model=FonteSaida)
@@ -187,7 +187,7 @@ async def editar(
     auditar(db, request, admin, "fonte.editar", fonte.id, antes, depois)
     await db.commit()
     _orq(request).fonte_alterada(fonte.id)
-    return FonteSaida.de(fonte)
+    return FonteSaida.de(fonte, request.app.state.cofre)
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -277,7 +277,7 @@ async def confiar(
     await db.commit()
     _mostradas(request).pop(id, None)
     _orq(request).fonte_alterada(id)
-    return FonteSaida.de(fonte)
+    return FonteSaida.de(fonte, request.app.state.cofre)
 
 
 @router.post("/{id}/coletar", status_code=status.HTTP_202_ACCEPTED, response_model=FonteSaida)
@@ -300,4 +300,4 @@ async def coletar(id: IdFonte, request: Request, db: SessaoDB, admin: Admin) -> 
         raise nao_encontrado() from None
     auditar(db, request, admin, "fonte.coletar", id)
     await db.commit()
-    return FonteSaida.de(fonte)
+    return FonteSaida.de(fonte, request.app.state.cofre)

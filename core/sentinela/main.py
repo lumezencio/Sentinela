@@ -4,12 +4,15 @@ import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.engine import make_url
 
+from sentinela import __version__
 from sentinela.alertas.agrupador import Agrupador
 from sentinela.alertas.despachante import Despachante
 from sentinela.alertas.silencios import Silencios
@@ -17,9 +20,11 @@ from sentinela.alertas.telegram import ClienteTelegram
 from sentinela.api import (
     alertas,
     auth,
+    backup,
     classes,
     config_descoberta,
     config_geral,
+    config_seguranca,
     config_telegram,
     descobertas,
     equipamentos,
@@ -30,11 +35,14 @@ from sentinela.api import (
     saude,
     silencios,
     subredes,
+    totp,
+    usuarios,
     varredura,
     ws,
     ws_parede,
 )
 from sentinela.api.deps import agora_utc, verificar_csrf
+from sentinela.backup.servico import ServicoBackup
 from sentinela.config import Settings, obter_settings
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
@@ -66,6 +74,8 @@ from sentinela.registro import configurar_logs
 from sentinela.relogio import Relogio, RelogioReal
 from sentinela.seguranca.bloqueio import BloqueioFantasma, LimitadorIP
 from sentinela.seguranca.cofre import Cofre
+from sentinela.seguranca.etapa import RegistroEtapas
+from sentinela.seguranca.politica import exigir_totp_admin
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +103,7 @@ async def ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     try:
         async with app.state.sessoes() as db:
             await semear_classes(db)
+            app.state.politica_totp = await exigir_totp_admin(db)
         await _montar_monitor(app, settings)
         async with _lacos_do_monitor(app):
             yield
@@ -142,6 +153,24 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
     )
     _montar_descoberta(app, settings, monitor)
     _montar_telegram(app, settings, monitor)
+    _montar_backup(app, settings)
+
+
+def _montar_backup(app: FastAPI, settings: Settings) -> None:
+    """Serviço de backup (laço não iniciado): o banco e ``backups/`` ficam no mesmo volume."""
+    banco = make_url(settings.banco_url).database
+    if not banco:  # banco em memória: nada a copiar
+        banco = ":memory:"
+    caminho = Path(banco)
+    app.state.backup = ServicoBackup(
+        app.state.sessoes,
+        caminho,
+        caminho.parent / "backups",
+        app.state.relogio,
+        agora_utc,
+        zona(settings),
+        __version__,
+    )
 
 
 def _montar_telegram(app: FastAPI, settings: Settings, monitor: Monitor) -> None:
@@ -241,6 +270,7 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
             tarefas.append(
                 asyncio.create_task(app.state.despachante.executar(), name="sentinela-telegram")
             )
+        tarefas.append(asyncio.create_task(app.state.backup.executar(), name="sentinela-backup"))
         # o agendador por último: os laços da descoberta o usam e param antes dele
         tarefas.append(
             asyncio.create_task(app.state.agendador.executar(), name="sentinela-agendador")
@@ -299,6 +329,21 @@ async def _erro_de_validacao(_request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(detalhes)})
 
 
+def _recusar_varios_workers() -> None:
+    """A etapa do login (``RegistroEtapas``) e os limitadores vivem em memória do processo:
+    com vários workers o passo 2 cairia noutro processo e os limites se multiplicariam.
+    O Sentinela roda com UM processo uvicorn; recusa subir se ``WEB_CONCURRENCY`` > 1."""
+    try:
+        workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+    except ValueError:
+        workers = 1
+    if workers > 1:
+        raise RuntimeError(
+            "O Sentinela exige um único processo (WEB_CONCURRENCY=1): o login em duas etapas "
+            "e os limites de tentativas ficam em memória."
+        )
+
+
 def criar_app(
     settings: Settings | None = None,
     *,
@@ -311,6 +356,7 @@ def criar_app(
     ``terminar`` só é chamado se ``settings.sair_se_monitor_morrer`` (testes injetam um falso).
     """
     configurar_logs()
+    _recusar_varios_workers()
     settings = settings or obter_settings()
     relogio = relogio or RelogioReal()
     producao = settings.ambiente == "producao"
@@ -335,9 +381,17 @@ def criar_app(
     app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
     # telão: no máximo 10 pedidos de emparelhamento por IP por hora (rota sem sessão)
     app.state.pedidos_ip = LimitadorIP(relogio, max_falhas=10, janela_s=3600)
+    app.state.etapas_totp = RegistroEtapas()
+    # ativar/confirmar/zerar TOTP: 10 por minuto por usuário
+    app.state.taxa_totp = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
+    app.state.politica_totp = False  # o ciclo de vida carrega o valor gravado
     app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
+    app.include_router(totp.router)
+    app.include_router(usuarios.router)
+    app.include_router(config_seguranca.router)
+    app.include_router(backup.router)
     app.include_router(subredes.router)
     app.include_router(classes.router)
     app.include_router(importacao.router)  # antes de /equipamentos/{id}

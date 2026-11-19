@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# git de teste: registra a chamada em $SHIM_LOG e repassa ao git de verdade (o primeiro fora desta pasta).
+aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+printf 'git %s\n' "$*" >>"${SHIM_LOG:?}"
+IFS=: read -r -a partes <<<"$PATH"
+for d in "${partes[@]}"; do
+  [[ "$d" == "$aqui" ]] && continue
+  if [[ -x "$d/git" ]]; then exec "$d/git" "$@"; fi
+done
+echo "shim git: git real não encontrado" >&2
+exit 127

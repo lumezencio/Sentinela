@@ -465,13 +465,43 @@ class ServidorLocal:
         self._cert = cert
         self._servidor: Any = None
         self._thread: threading.Thread | None = None
+        # IPs que a checagem simulada dá como caídos (sobrevive a derrubar/levantar)
+        self.quedas_forcadas: set[str] = set()
+
+    def forcar_queda(self, ips: list[str]) -> None:
+        self.quedas_forcadas.update(ips)
+
+    def liberar_quedas(self) -> None:
+        self.quedas_forcadas.clear()
 
     def _app(self) -> Any:
         from fastapi.staticfiles import StaticFiles
         from starlette.middleware.base import BaseHTTPMiddleware
 
+        import sentinela.main as principal
         from sentinela.config import Settings
+        from sentinela.demo import simulador
         from sentinela.main import criar_app
+        from sentinela.monitor.estados import ResultadoChecagem
+
+        # a demonstração programa quedas reais: as aleatórias abrem um alerta a cada 30 a 45 s e a
+        # correlacionada (switch + 14 filhos) começa 90 s depois de subir. Cada uma vira um cartão
+        # ao vivo em qualquer teste que esteja com a página aberta, e os testes de cartão contam
+        # cartões na tela. Aqui a rede simulada fica estável; o teste que precisa de queda a pede
+        # com ``ServidorLocal.forcar_queda`` (fixture ``queda_forcada``).
+        simulador._P_QUEDA = 0.0
+        simulador._INTERVALO_SWITCH_S = 1e9
+        simulador._QUEDA_CORRELACIONADA_INICIO_S = 1e9
+        servidor = self
+
+        class ChecagemDoSmoke(simulador.ChecagemSimulada):
+            async def executar(self, destino: Any, timeout: float = 2.0) -> Any:  # noqa: ASYNC109
+                r = await super().executar(destino, timeout)
+                if str(ipaddress.IPv4Address(destino.ip)) in servidor.quedas_forcadas:
+                    return ResultadoChecagem(ok=False, latencia_ms=None, erro="queda do smoke")
+                return r
+
+        principal.ChecagemSimulada = ChecagemDoSmoke  # type: ignore[misc]
 
         settings = Settings(
             ambiente="desenvolvimento",
@@ -643,6 +673,144 @@ def novo_alerta(alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]) -> Iter
     yield criar
     if criados:
         _em_thread(lambda: asyncio.run(apagar_alertas(alvo.banco_url, criados, renomeados)))
+
+
+async def _estados(banco_url: str, ips: list[str]) -> dict[str, str]:
+    from sqlalchemy import select
+
+    from sentinela.db.modelos import Equipamento
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            linhas = await db.execute(
+                select(Equipamento.ip, Equipamento.estado).where(Equipamento.ip.in_(ips))
+            )
+            return {ip: estado for ip, estado in linhas}
+    finally:
+        await motor.dispose()
+
+
+@pytest.fixture
+def queda_forcada(alvo: Alvo) -> Iterator[Any]:
+    """Derruba de propósito os IPs dados na checagem simulada do core local (a demonstração do
+    smoke não cai sozinha). Na saída eles voltam e a fixture espera ficarem online, para o
+    "voltou" não cair dentro do teste seguinte. Contra o compose devolve ``False``: lá a
+    demonstração já derruba equipamentos sozinha."""
+    servidor = alvo.core if isinstance(alvo.core, ServidorLocal) else None
+    derrubados: list[str] = []
+
+    def derrubar(ips: list[str]) -> bool:
+        if servidor is None:
+            return False
+        servidor.forcar_queda(ips)
+        derrubados.extend(ips)
+        return True
+
+    yield derrubar
+    if servidor is None or not derrubados:
+        return
+    servidor.liberar_quedas()
+    limite = time.monotonic() + 90
+    estados: dict[str, str] = {}
+    while True:
+        estados.clear()
+        _em_thread(lambda: estados.update(asyncio.run(_estados(alvo.banco_url, derrubados))))
+        if all(e == "online" for e in estados.values()):
+            return
+        if time.monotonic() > limite:
+            raise RuntimeError(f"equipamentos derrubados pelo smoke não voltaram: {estados}")
+        time.sleep(1)
+
+
+async def criar_usuario(banco_url: str, login: str, senha: str, papel: str = "admin") -> None:
+    """Usuário descartável no banco do core local (sem segundo fator)."""
+    from sentinela.db.modelos import Usuario
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+    from sentinela.seguranca.senhas import gerar_hash
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            db.add(Usuario(login=login, hash_senha=gerar_hash(senha), papel=papel))
+            await db.commit()
+    finally:
+        await motor.dispose()
+
+
+@dataclass
+class ContaTotp:
+    login: str
+    senha: str
+    segredo: str
+    codigos: list[str]
+    contador_usado: int
+    api: Any  # APIRequestContext já autenticado (sessão rotacionada pela ativação)
+
+    def codigo_seguinte(self) -> str:
+        """Código da janela seguinte à usada na ativação (dentro da tolerância de ±1)."""
+        import pyotp
+
+        return pyotp.TOTP(self.segredo).at(time.time() + 30)
+
+    def patch(self, caminho: str, corpo: dict[str, Any]) -> Any:
+        csrf = next(
+            c["value"] for c in self.api.storage_state()["cookies"] if c["name"] == "sentinela_csrf"
+        )
+        return self.api.patch(f"/api/v1{caminho}", data=corpo, headers={"X-CSRF": csrf})
+
+
+@pytest.fixture
+def novo_usuario(alvo: Alvo) -> Any:
+    """Fábrica de usuários descartáveis (login e senha aleatórios); só no core local."""
+    if not alvo.banco_url:
+        pytest.skip("usuários descartáveis só com o core local do smoke")
+
+    def criar(papel: str = "admin") -> tuple[str, str]:
+        login, senha = f"u{secrets.token_hex(6)}", secrets.token_urlsafe(18)
+        _em_thread(lambda: asyncio.run(criar_usuario(alvo.banco_url, login, senha, papel)))
+        return login, senha
+
+    return criar
+
+
+@pytest.fixture
+def conta_com_totp(alvo: Alvo, novo_usuario: Any, playwright: Any) -> Any:
+    """Fábrica de administradores com o segundo fator já ativo (ativado pela API, como o
+    navegador faria). Cada conta é nova: o servidor recusa reaproveitar um código."""
+    import pyotp
+
+    abertos: list[Any] = []
+
+    def criar() -> ContaTotp:
+        login, senha = novo_usuario("admin")
+        api = playwright.request.new_context(base_url=alvo.url, ignore_https_errors=True)
+        abertos.append(api)
+        r = api.post("/api/v1/auth/login", data={"login": login, "senha": senha})
+        assert r.status == 204, r.status
+
+        def csrf() -> str:
+            return next(
+                c["value"] for c in api.storage_state()["cookies"] if c["name"] == "sentinela_csrf"
+            )
+
+        r = api.post("/api/v1/auth/totp/iniciar", data={"senha": senha}, headers={"X-CSRF": csrf()})
+        assert r.status == 200, r.status
+        segredo = r.json()["chave"].replace(" ", "")
+        totp = pyotp.TOTP(segredo)
+        codigo = totp.now()
+        r = api.post(
+            "/api/v1/auth/totp/confirmar", data={"codigo": codigo}, headers={"X-CSRF": csrf()}
+        )
+        assert r.status == 200, r.status
+        codigos = r.json()["codigos"]
+        assert len(codigos) == 10
+        return ContaTotp(login, senha, segredo, codigos, int(time.time()) // 30, api)
+
+    yield criar
+    for api in abertos:
+        api.dispose()
 
 
 @pytest.fixture(scope="session")

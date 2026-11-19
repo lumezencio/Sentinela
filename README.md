@@ -4,9 +4,10 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fases 1, 2, 3 e 4A concluídas** (núcleo de monitoramento, lista ao vivo, Docker, Teia 3D,
-> Organograma, descoberta automática com classificador, alertas por Telegram e telão para TV). Faltam
-> TOTP, backup/restauração e atualização (Fase 4B). Veja
+> Status: **Fases 1, 2, 3, 4A e 4B concluídas, versão 0.4.0** (núcleo de monitoramento, lista ao
+> vivo, Docker, Teia 3D, Organograma, descoberta automática com classificador, alertas por Telegram,
+> telão para TV, segundo fator TOTP, backup e restauração, atualização com volta automática e
+> imagens multi-arquitetura assinadas). Veja
 > [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
 
 ## Como funciona
@@ -15,6 +16,7 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 - **Classifica sozinho:** fabricante pelo MAC, nome DHCP, dados SNMP/LLDP e do gravador; portas conhecidas e página web só quando você autoriza. Você aprova e corrige.
 - **Monitora com educação:** checagens unicast com teto global de pacotes por segundo; câmeras e controles de acesso checados com mais frequência.
 - **Mostra bonito e leve:** Teia 3D, Organograma por classe, lista, modo telão para TV, alertas por Telegram.
+- **Um único processo:** o core roda com um só worker do uvicorn (o login em duas etapas e os limites de tentativas ficam em memória); `WEB_CONCURRENCY` maior que 1 faz o core recusar subir.
 
 ## Instalação
 
@@ -22,9 +24,18 @@ Requisitos: **Docker Engine 25 ou mais novo** e **Docker Compose 2.24.4 ou mais 
 (o instalador confere e recusa versões antigas), `openssl` e `bash`.
 
 ```bash
-./install.sh          # instalação real
+./install.sh          # instalação real: baixa as imagens publicadas e verificadas
+./install.sh --build  # constrói as imagens neste computador a partir do código
 ./install.sh --demo   # demonstração com 300 equipamentos simulados (volume próprio)
 ```
+
+Por padrão o instalador usa as **imagens publicadas** (`ghcr.io/lumezencio/sentinela-core` e
+`sentinela-web`, `linux/amd64` e `linux/arm64`) na versão de `core/pyproject.toml`, conferidas com
+`cosign` ou com o `digests.txt` do release (veja [Imagens e verificação](#imagens-e-verificação)).
+Com `--build`, as imagens são construídas aqui. O `.env` guarda a escolha em `IMAGENS=publicadas|locais`
+e a versão em `VERSAO=X.Y.Z`; um `.env` das Fases 1 a 3 (sem `IMAGENS`) vale como `locais`.
+Raspberry Pi OS de **32 bits (armv7) não é suportado**: o instalador recusa com mensagem clara
+(veja [Raspberry Pi](#raspberry-pi)). `WEB_CONCURRENCY` tem de ficar em 1: o core recusa subir com mais.
 
 O instalador gera o `.env` (só se não existir), uma CA local e o certificado do host em
 `certs/`, sobe os containers e mostra a URL e o caminho da CA para instalar nos dispositivos.
@@ -73,6 +84,118 @@ rode o instalador de novo.
 > todos os clientes chegarem ao nginx com o mesmo IP (o gateway da rede interna). Com isso,
 > o limite de tentativas e o bloqueio por IP do login valem para todos juntos. O bloqueio
 > por login continua individual. Em Linux o IP real do cliente é preservado.
+
+## Segundo fator (TOTP)
+
+O segundo fator é opcional e **por usuário** (RFC 6238: SHA-1, 6 dígitos, passo de 30 s, tolerância de
+uma janela para cada lado), compatível com qualquer aplicativo autenticador. Um código já usado é
+recusado, e os erros contam no mesmo bloqueio progressivo do login (a contagem só zera depois do
+código aceito).
+
+- **Ativar:** entre, abra a página **Segurança** (`seguranca.html`), peça a ativação, leia o QR (ou
+  digite a chave de 32 caracteres) e confirme com o primeiro código. O segredo fica cifrado no banco.
+- **Códigos de recuperação:** a ativação mostra **10 códigos, uma única vez**. Guarde-os fora do
+  computador; cada um vale uma vez e só existe o hash no banco.
+- **Exigir para administradores:** em **Configurações → Segurança**, a chave "Exigir segundo fator
+  para administradores" fica **desligada por padrão**. Ligada, o administrador que ainda não ativou o
+  TOTP entra numa sessão **restrita**: só consegue ativar o segundo fator, e todo o resto (inclusive
+  o tempo real) recusa até lá.
+- **Perdeu o aparelho e os códigos?** Outro administrador usa **Zerar segundo fator** na lista de
+  usuários em **Configurações → Segurança** (auditado; as sessões do usuário caem). Sem outro
+  administrador, use a CLI no servidor:
+
+  ```bash
+  docker compose exec core python -m sentinela.cli totp-zerar <login>
+  ```
+
+## Backup e restauração
+
+O core faz sozinho um backup do banco **todo dia às 03:00** (fuso de `SENTINELA_FUSO`), pela API de
+backup do SQLite (com o Sentinela no ar), compactado, em `/dados/backups/` dentro do volume (diretório
+`0700`, arquivos `0600`), com manifesto (esquema, versão, data e sha256). Ficam **7 diários e 4
+semanais**; os backups `manual`, `atualizacao` e `pre-restore` são rotacionados por tipo. O cartão
+**Backup** em Configurações lista e cria backups.
+
+> **ATENÇÃO: o backup NÃO inclui o `.env`.** Sem a `SENTINELA_CHAVE_CREDENCIAIS` original, as senhas das
+> fontes de descoberta e o token do Telegram **não abrem** (aparecem como "credencial ilegível,
+> informe de novo"). **Guarde uma cópia do `.env` fora do computador**, junto com os backups.
+
+```bash
+./backup.sh                    # backup manual no volume; imprime o nome do arquivo
+./backup.sh --exportar PASTA   # cria o backup e copia todos para PASTA (0700/0600): leve para fora da máquina
+./restore.sh ARQUIVO.tar.gz    # restaura um arquivo do host (pede confirmação; --sim pula)
+./restore.sh --do-volume NOME  # restaura um arquivo que já está em /dados/backups
+```
+
+O `restore.sh` confere o arquivo (sha256, integridade e esquema; backup de esquema mais novo que o
+código instalado é recusado), para **só** o `core`, guarda o banco atual como `pre-restore`, restaura,
+sobe o core e espera a saúde; se a saúde falhar, devolve o banco anterior.
+
+## Atualização
+
+```bash
+./update.sh                          # para a versão publicada mais recente
+./update.sh v0.4.0                   # para uma versão específica
+./update.sh --imagens-publicadas     # migra uma instalação local (Fases 1 a 3) para as imagens publicadas
+```
+
+O `update.sh` confere tudo antes de mexer (árvore git limpa, Docker, espaço, saúde, tag e digests),
+marca as imagens em uso como `pre_<data>`, faz um backup do tipo `atualizacao`, troca o `core` (espera a
+saúde por até 120 s) e depois o `web`. **Se qualquer passo depois do backup falhar, volta sozinho:**
+restaura o backup, o checkout anterior e as imagens `pre_<data>` e confere a saúde (os dados gravados
+depois do backup são descartados). Nunca faz `alembic downgrade`. Interrompido com Ctrl+C depois da
+primeira troca, ele só relata o estado e imprime o comando exato da volta manual.
+
+- Instalações das Fases 1 a 3 (`.env` sem `IMAGENS`) valem como `locais`: o `update.sh` reconstrói as
+  imagens a partir do código da tag. `--imagens-publicadas` migra para as publicadas (grava `IMAGENS` e
+  `VERSAO` no `.env`).
+- Versão menor que a instalada é recusada, a menos que se passe `--permitir-voltar-versao`.
+- Guarda as 3 marcações `pre_*` mais recentes e apaga **somente** as que ele mesmo criou.
+- **Nunca use `docker compose down -v`**: o `-v` apaga o volume com o banco e os backups. Para parar
+  sem perder dados, use `docker compose stop` ou `docker compose down` (sem `-v`).
+
+## Imagens e verificação
+
+Cada versão publica duas imagens multi-arquitetura (`linux/amd64` e `linux/arm64`) no GHCR, com as tags
+`X.Y.Z` (sem o `v`) e `latest`. Antes de ganhar essas tags, a imagem candidata (`rc-<run>`) passa
+pelo `trivy` (HIGH e CRITICAL corrigíveis reprovam) nas duas arquiteturas e por um teste de subida em
+arm64 (emulado) com o `install.sh` real, pelo digest aprovado. **Só se os dois passarem** nasce a tag
+`X.Y.Z`, com o SBOM (SPDX) e a assinatura **sem chave** do `cosign` (identidade OIDC do GitHub); o
+`latest` anda por último. Se o `trivy` ou o teste arm64 falharem, não existe `X.Y.Z` nem assinatura:
+sobra só a candidata `rc-<run>` no GHCR (a limpeza dela é manual).
+
+```bash
+cosign verify ghcr.io/lumezencio/sentinela-core:0.4.0 \
+  --certificate-identity-regexp '^https://github.com/lumezencio/Sentinela/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+O mesmo vale para `sentinela-web` (`cosign` 3.x ou mais novo). O `install.sh` e o `update.sh` fazem essa
+conferência sozinhos; **sem `cosign` instalado**, usam o `digests.txt` anexado ao release (um digest
+por imagem, o do índice multi-arquitetura). O SBOM e os digests ficam anexados ao release.
+
+**Publicar uma versão (dono do repositório):** a partir da `main` com tudo integrado,
+`git tag v0.4.0 && git push origin v0.4.0`. O `release.yml` confere a tag contra o `version` de
+`core/pyproject.toml`, exige que a tag esteja na `main`, constrói, varre, assina e promove. **Os
+pacotes do GHCR nascem privados:** depois da primeira publicação, torne `sentinela-core` e
+`sentinela-web` públicos (GitHub → Packages → Package settings), senão ninguém baixa sem login.
+
+## Raspberry Pi
+
+Funciona em **Raspberry Pi 4 ou 5 com 2 GB ou mais**, com **Raspberry Pi OS de 64 bits** (as imagens
+são `arm64`; 32 bits/armv7 não é suportado e o instalador recusa). Instale o Docker pelo script
+oficial e rode o instalador:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"   # saia e entre de novo
+git clone https://github.com/lumezencio/Sentinela.git && cd Sentinela
+./install.sh
+```
+
+A meta é menos de **10 minutos** entre "Docker instalado" e a "tela de login" (a maior parte é o
+download das imagens). Esse tempo **ainda não foi medido num Raspberry Pi real**; o CI só confirma que
+a imagem `arm64` (emulada) sobe e fica saudável.
 
 ## Rodar a demonstração
 

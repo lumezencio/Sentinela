@@ -61,7 +61,7 @@ export function telegramDoPainel() {
   let carregando = false;
 
   return {
-    tg: { definido: false, ultimoEnvio: "", ultimoErro: "" },
+    tg: { definido: false, ilegivel: false, ultimoEnvio: "", ultimoErro: "" },
     tgForm: FORM_VAZIO(),
     tgErros: {},
     tgErroGeral: "",
@@ -100,6 +100,7 @@ export function telegramDoPainel() {
     aplicarTelegram(d) {
       this.tg = {
         definido: Boolean(d.token_definido),
+        ilegivel: Boolean(d.token_ilegivel),
         ultimoEnvio: d.ultimo_envio ? haQuanto(d.ultimo_envio) : "",
         ultimoErro: textoSeguro(d.ultimo_erro, 300),
       };

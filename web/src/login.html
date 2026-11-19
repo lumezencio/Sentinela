@@ -38,6 +38,22 @@
         <p class="alerta" id="erro-login" role="alert" hidden></p>
         <button class="botao botao-primario" id="entrar" type="submit">Entrar</button>
       </form>
+      <form class="form-login" id="form-totp" novalidate hidden>
+        <div class="etapa-texto">
+          <h2 id="titulo-totp">Confirme que é você</h2>
+          <p id="dica-totp">Abra o aplicativo autenticador e digite o código de 6 números que ele mostra.</p>
+        </div>
+        <div class="campo-form">
+          <label for="codigo-totp" id="rotulo-totp">Código do aplicativo</label>
+          <input id="codigo-totp" name="codigo" class="campo-codigo" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="16" aria-describedby="dica-totp erro-totp" required>
+        </div>
+        <p class="alerta" id="erro-totp" role="alert" hidden></p>
+        <button class="botao botao-primario" id="confirmar-totp" type="submit">Confirmar</button>
+        <div class="etapa-acoes">
+          <button class="botao botao-fantasma" id="alternar-recuperacao" type="button">Usar código de recuperação</button>
+          <button class="botao botao-fantasma" id="voltar-login" type="button">Voltar</button>
+        </div>
+      </form>
       <p class="rodape-login">Acesso restrito. As tentativas são registradas.</p>
     </section>
   </main>

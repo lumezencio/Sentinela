@@ -322,7 +322,7 @@ erDiagram
     AUDITORIA { int id; int usuario_id; text acao; text alvo; json antes; json depois; text ip; datetime em }
 ```
 
-Tabelas auxiliares: `sub_rede` (cidr, permite_varredura), `config` (chave/valor tipado; a Fase 4A usa as chaves `telegram`, `telegram_status` e `paredes_http`), `amostra_5min` (agregado), `sessao` (refresh com `jti`, revogável).
+Tabelas auxiliares: `sub_rede` (cidr, permite_varredura), `config` (chave/valor tipado; a Fase 4A usa as chaves `telegram`, `telegram_status` e `paredes_http`, a 4B a chave `seguranca`), `amostra_5min` (agregado), `sessao` (refresh com `jti`, revogável).
 
 Tabelas da Fase 4A (migração Alembic `0004`, reversível):
 
@@ -334,6 +334,17 @@ Tabelas da Fase 4A (migração Alembic `0004`, reversível):
 | `parede_pedido` | pedido de pareamento: hash do código, hash do segredo de consulta, IP, validade de 10 min, aprovação e consumo |
 
 O `downgrade` converte `inalcancavel` em `offline` (equipamento e eventos), remove as tabelas e apaga as chaves de `config` da fase. O banco continua em UTC; o fuso (`SENTINELA_FUSO`) só vale para textos e atalhos de silêncio.
+
+Tabelas e colunas da Fase 4B (migração Alembic `0005`, reversível):
+
+| Item | Conteúdo |
+|---|---|
+| `usuario.totp_cifrado` | segredo TOTP cifrado no cofre (Fernet, `SENTINELA_CHAVE_CREDENCIAIS`); nulo = sem segundo fator. Ninguém tem TOTP ao atualizar |
+| `usuario.totp_ultimo_contador` | último contador de 30 s aceito; um código só vale se o contador for maior (recusa reuso e replay) |
+| `codigo_recuperacao` | `usuario_id`, `hash_codigo` (argon2id), `criado_em`, `usado_em`; 10 por ativação, cada um vale uma vez (consumo atômico `WHERE usado_em IS NULL`) |
+| `config` chave `seguranca` | `{"exigir_totp_admin": bool}`, padrão desligado |
+
+O `downgrade` remove a tabela, as duas colunas (`DROP COLUMN` nativo, sem recriar `usuario`, para não acionar as chaves estrangeiras `ON DELETE` do SQLite) e a chave `seguranca`, sem tocar nos usuários. Os backups ficam fora do banco, em `/dados/backups/` no volume (não são tabela): arquivos `.tar.gz` com o banco e um manifesto (esquema Alembic, versão, data, sha256).
 
 **Retenção:** `amostra` 48 h; `amostra_5min` 30 dias; `evento` 1 ano; `auditoria` 1 ano. Limpeza diária às 03:00.
 **Escrita:** amostras acumulam em memória e gravam em lote a cada 60 s (uma transação). Eventos de estado gravam na hora.
@@ -440,7 +451,7 @@ O layout por força roda alguns segundos e **congela** (`cooldownTicks`). Posiç
 
 | Ameaça | Exemplo | Controle |
 |---|---|---|
-| Acesso indevido ao painel | vizinho na LAN tenta logar | argon2id; bloqueio progressivo por login e IP; TOTP opcional para admin; erro genérico |
+| Acesso indevido ao painel | vizinho na LAN tenta logar | argon2id; bloqueio progressivo por login e IP; TOTP opcional por usuário e exigível dos administradores (sessão restrita até ativar); erro genérico |
 | Vazamento de credenciais de rede | dump do banco expõe senha do MikroTik | credenciais cifradas (Fernet); chave em `.env` (600) fora do volume do banco; mascaradas na API e nos logs |
 | Escalada por credencial forte demais | usuário MikroTik com escrita | assistente exige e testa usuário de grupo `read`; avisa se tiver permissão de escrita |
 | Sentinela usado como scanner | invasor com login força varredura na internet | guarda de rede: só sub-redes privadas declaradas; varredura só para admin, com auditoria |
@@ -450,6 +461,10 @@ O layout por força roda alguns segundos e **congela** (`cooldownTicks`). Posiç
 | Saída para a internet (Telegram) | token do bot vazado ou destino trocado | **única exceção** à Guarda: `DestinoExterno("telegram")` = `api.telegram.org:443`, HTTPS com verificação normal de certificado, IP resolvido sem broadcast/multicast/loopback/link-local; sem Telegram configurado nenhum pacote sai (nem DNS); token cifrado, nunca em log, auditoria ou erro; mensagens com dado mínimo (IP só se ligado) |
 | Cadeia de suprimentos | dependência comprometida | versões fixadas com hash (`uv lock`); `pip-audit` e `trivy` no CI; poucas dependências |
 | Dado de cliente no repositório público | print ou CSV real commitado | `gitleaks` em pre-commit e CI; `.gitignore` de `*.csv`, `dados/`, `*.sqlite`; exemplos só com `10.99.0.0/16` e MACs fictícios |
+| Senha roubada ou adivinhada | senha vazada de um administrador | segundo fator TOTP (RFC 6238, tolerância ±1 janela, contador anterior recusado); a etapa do código usa um **token intermediário** de 5 min, uso único por `jti` e invalidado após 5 erros, que só serve a essa etapa; os erros de código contam no bloqueio progressivo (5 falhas = 1 min, dobrando até 30 min; 20 por IP em 10 min) e o contador só zera depois do código aceito; 10 códigos de recuperação com argon2id, cada um vale uma vez |
+| Administrador sem segundo fator | política "exigir TOTP" ligada | sessão **restrita**, calculada a cada requisição (`GET /auth/eu`, `POST /auth/logout` e as rotas de ativação; o resto, inclusive o WebSocket, recusa); zerar o TOTP de outro usuário é só admin, exige a senha, é auditado e revoga as sessões dele; CLI `totp-zerar` para emergência no servidor |
+| Backup vazado ou hostil | arquivo de backup trocado ou lido por outro usuário do host | diretório `0700` e arquivos `0600`; manifesto com sha256; a restauração recusa membro `../x`, caminho absoluto, link, membro extra, tamanho diferente do declarado e esquema mais novo que o código; **o `.env` nunca entra** (sem a chave, as credenciais não abrem) |
+| Imagem adulterada | imagem do GHCR trocada | assinatura `cosign` sem chave com a identidade exata do `release.yml` na tag `vX.Y.Z` (emissor do GitHub) conferida pelo `install.sh` e pelo `update.sh`; sem `cosign`, o `digests.txt` do release; SBOM SPDX anexado |
 | Interrupção da rede | bug gera rajada | limitador global obrigatório; teste de carga confere o teto |
 
 Cabeçalhos no nginx: HSTS, CSP restritiva, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `frame-ancestors 'none'`. OpenAPI desligado em produção. Logs JSON sem senha, token nem comunidade SNMP.
@@ -458,7 +473,7 @@ Cabeçalhos no nginx: HSTS, CSP restritiva, `X-Content-Type-Options: nosniff`, `
 
 ### 14.1 Requisitos do host
 
-Linux com Docker (Debian/Ubuntu, Raspberry Pi OS 64 bits) ou Windows com Docker Desktop; 1 GB de RAM livre; 2 GB de disco; IP fixo na LAN; rota até as sub-redes/VLANs a monitorar.
+Linux com Docker (Debian/Ubuntu, Raspberry Pi OS 64 bits) ou Windows com Docker Desktop; Docker Engine 25+ e Compose 2.24.4+; 1 GB de RAM livre (Raspberry Pi 4/5 com 2 GB ou mais); 2 GB de disco livres para atualizar; IP fixo na LAN; rota até as sub-redes/VLANs a monitorar. Imagens publicadas só para `amd64` e `arm64`: Raspberry Pi OS de 32 bits (armv7/armv6) é recusado pelo `install.sh`.
 
 ### 14.2 Compose (essencial)
 
@@ -506,10 +521,11 @@ As portas 443/80 ficam publicadas **na LAN**, nunca no roteador de borda. Se o h
 
 | Ação | Comando |
 |---|---|
-| Instalar | `./install.sh` → gera `.env` (chave Fernet, segredo de sessão), CA local + certificado, sobe o compose e imprime a URL |
-| Atualizar | `./update.sh` → backup do SQLite (`sqlite3 .backup`) → `git pull` → `docker compose up -d --build` → migrações → checagem de saúde → rollback automático para a imagem anterior se falhar |
-| Backup | diário, local, 7 cópias rotativas; opcionalmente para pasta de rede |
-| Restaurar | `./restore.sh <arquivo>` |
+| Instalar | `./install.sh` → gera `.env` (chave Fernet, segredo de sessão, `IMAGENS` e `VERSAO`), CA local + certificado, baixa e verifica as imagens publicadas (ou constrói com `--build`), sobe o compose e imprime a URL. Recusa armv7 |
+| Atualizar | `./update.sh [vX.Y.Z]` → verificações sem mudar nada → marca as imagens em uso `pre_<data>` e copia o `.env` → checkout da tag e imagens novas (pull + `cosign verify` ou `digests.txt`; ou build) → backup `atualizacao` → troca o `core` (saúde por até 120 s) e depois o `web`. Falha depois do backup → **volta sozinho**: para o core, restaura o backup, devolve checkout, `.env` e imagens `pre_*` e confere a saúde. Nunca faz `alembic downgrade`; as 3 marcações `pre_*` mais recentes ficam e só as criadas pelo script são apagadas |
+| Backup | dentro do core, **03:00** no fuso `SENTINELA_FUSO`, pela API de backup do SQLite, compactado em `/dados/backups/` (`0700`/`0600`); **7 diários + 4 semanais**, mais `manual`, `atualizacao` e `pre-restore` rotacionados por tipo; a rotação só roda depois de o novo backup estar completo, com a cópia do banco verificada (`integrity_check`) antes de empacotar. `./backup.sh` (manual) e `./backup.sh --exportar PASTA` (copia para fora do volume). **Nunca inclui o `.env`** |
+| Restaurar | `./restore.sh <arquivo.tar.gz>` ou `./restore.sh --do-volume <nome>` → confere o arquivo → para só o `core` → guarda o banco atual como `pre-restore` → restaura num contêiner avulso (descarta `-wal`/`-shm` velhos) → sobe o core e espera a saúde; sem saúde, devolve o `pre-restore` |
+| Publicar versão | tag `vX.Y.Z` na `main` → `release.yml` (ver ADR 016) |
 
 ## 15. Estrutura do repositório
 
@@ -524,7 +540,8 @@ Sentinela/
 │   │   ├── config.py           # pydantic-settings (extra="forbid")
 │   │   ├── db/                 # modelos, sessão, repositórios
 │   │   ├── api/                # routers v1 + ws.py
-│   │   ├── seguranca/          # senhas, sessões, csrf, totp, cripto
+│   │   ├── seguranca/          # senhas, sessões, csrf, totp (etapa, recuperação, política), cofre
+│   │   ├── backup/             # arquivo (tar seguro), serviço, porta
 │   │   ├── rede/guarda.py      # 🛑 único ponto de validação de destino
 │   │   ├── descoberta/
 │   │   │   ├── orquestrador.py
@@ -545,10 +562,11 @@ Sentinela/
 ├── docs/
 │   ├── arquitetura/ARQUITETURA.md   # este documento
 │   └── superpowers/specs/           # requisitos
-├── install.sh, update.sh, restore.sh
+├── install.sh, update.sh, backup.sh, restore.sh
+├── testes-operacao/            # testes dos scripts (shims) e prova real da volta automática
 ├── docker-compose.yml, .env.example
 ├── .gitignore, .gitleaks.toml, .pre-commit-config.yaml
-├── .github/workflows/ci.yml
+├── .github/workflows/{ci,codeql,release}.yml, .github/dependabot.yml
 ├── LICENSE                      # AGPL-3.0
 └── README.md
 ```
@@ -583,6 +601,10 @@ Sentinela/
 | 011 | Classificação passiva; sondagem só com autorização | sondar todo achado novo (portas/título) | sondar um IP inédito faz o sistema operacional emitir ARP (broadcast); a sondagem só acontece em sub-rede com varredura ligada, no clique "Sondar" (auditado) ou após a aprovação, e o teste de captura aceita ARP só para esses IPs |
 | 012 | Telegram por destino externo nomeado na Guarda | liberar saída HTTPS genérica; webhook de entrada; bot local | a Guarda segue o único ponto de saída e a exceção é uma só, fixa no código (`api.telegram.org:443`), com verificação de certificado; só há saída (sem webhook, sem porta aberta) e, sem token, nenhum pacote sai |
 | 013 | Código mostrado na TV e aprovado no painel | digitar código/URL na TV; QR; token na URL | TV sem teclado prático: ela exibe um código curto e o admin autenticado o aprova; uso único, 10 min, hash no banco, sem sessão na TV nem rota de escrita |
+| 014 | TOTP com token intermediário sem estado de sessão e sessão restrita **calculada** | gravar a etapa 1 numa sessão parcial; marcar a sessão restrita no banco | a senha certa não cria sessão: devolve um token de 5 min só para a etapa do código, de uso único por `jti` (estado mínimo no servidor, invalidado após 5 erros, o que impede reuso por 5 min). A restrição do administrador sem TOTP vem da política + estado atual do usuário a cada requisição, então ligar/desligar "exigir" ou ativar o TOTP vale na hora, sem sessão velha com permissão errada. Custo: um único worker (limites em memória), garantido por guarda na subida |
+| 015 | Rollback restaura o **backup**, nunca `alembic downgrade` | `downgrade` das migrações | o `downgrade` da 0002 recria `equipamento` com chaves estrangeiras ligadas e pode apagar dados em cascata; o banco do backup, feito logo antes da troca, é o único caminho comprovado. Custo: dados gravados entre o backup e a falha são descartados (a janela é de segundos) |
+| 016 | Imagens: candidata → trivy → promoção → cosign sem chave; `IMAGENS=publicadas\|locais` | publicar direto com `latest`; chave de assinatura própria | só a candidata `rc-<run>` é construída; ela passa pelo `trivy` (HIGH/CRITICAL corrigíveis) nas duas arquiteturas **antes** de receber `X.Y.Z`/`latest` (mesmo digest do índice, nada é reconstruído); a assinatura vem do OIDC do GitHub (sem segredo para vazar) com identidade exata do `release.yml` numa tag `vX.Y.Z` da `main`; o smoke arm64 (QEMU, `install.sh` real, imagem baixada pelo digest aprovado) roda sobre a candidata **antes** de promover, então uma versão que não sobe em arm64 nunca vira `X.Y.Z` nem é assinada; o `latest` anda por último. `.env` sem `IMAGENS` (Fases 1 a 3) = `locais`, então ninguém é migrado sem pedir (`--imagens-publicadas`) |
+| 017 | Limpeza das marcações `pre_*` por manifesto | apagar por padrão de nome | o `update.sh` registra em `.sentinela-pre-tags` as tags que ele mesmo criou e só apaga essas (3 mais recentes ficam), para nunca tocar em imagem alheia |
 
 ## 18. Roteiro de entrega
 
@@ -592,7 +614,7 @@ Sentinela/
 | **2. Visual** (concluída em 2026-11-17: Teia 3D com 5 estilos e Organograma; ver nota de desempenho no README. Lighthouse 13.6.0, preset desktop, perfil limpo, logado, contra a demo: Lista e Organograma com desempenho 100, acessibilidade 100, boas práticas 100 e SEO 100; CLS 0,014/0,017. Nota para o upstream: o Alpine CSP lê todas as globais do `window` ao carregar e dispara o aviso de depreciação da API Fenced Frame; o `tema.js` remove a global `fence` antes dele, até o Alpine passar a ignorar "fence" como já faz com "styleMedia" e "sharedStorage") | Teia 3D, Organograma, painel lateral, tema quântico, fallback | teia com 1.000 nós a 60 fps; organograma no celular; Lighthouse ≥ 90 |
 | **3. Descoberta** (concluída em 2026-11-17: fontes MikroTik por api-ssl com impressão confiada, SNMP v2c/v3, gravadores Hikvision/Dahua com estado das câmeras filhas; classificador TOML por pontos com 39 regras e base OUI embutida; abas Novos e Configurações; varredura lenta opcional; credenciais cifradas. Núcleo com 897 testes (`pytest -W error`), front com 151 testes de unidade, smoke Playwright verde 3×; primeira tela 83,2 KB gzip (teto 150 KB); Lighthouse 100 nas quatro categorias em Novos e Configurações (Lighthouse 13.6.0, preset desktop). Prova de captura no Docker Desktop 29.6.2 (rodada final): 584 quadros, 373 do Sentinela, 132 ARP request todos para IPs autorizados (18 IPs: 3 fontes, 1 aprovado, 1 sondado, 13 da faixa varrida), 0 broadcast/multicast proibido. A prova cobre IPv4: o IPv6 fica desligado na rede de teste; a ausência de multicast IPv6 é garantida pela Guarda (`ff00::/8`) e pelos testes estáticos. Demo com 3 fontes simuladas e 40 descobertas pendentes) | MikroTik v6/v7, SNMP, gravadores Hikvision/Dahua, classificador, tela de Novos, varredura opcional | descoberta contra simuladores; teste de captura sem broadcast |
 | **4A. Alertas e telão** (concluída em 2026-11-18: núcleo com 1.219 testes (`pytest -W error`), front com 251 testes de unidade, smoke Playwright verde 3× (103 testes); primeira tela 115,1 KB gzip (teto 150 KB); Lighthouse 13.6.0 desktop contra o compose (nginx real) com 100 nas quatro categorias em Alertas, Configurações, Teia, Organograma, Lista e `/parede`; `pip-audit` limpo e `trivy` 0 HIGH/CRITICAL corrigíveis nas duas imagens. Prova de captura no Docker Desktop: 829 quadros, 517 do Sentinela, 164 ARP request todos para 20 IPs autorizados, 0 broadcast/multicast proibido, com Telegram falso e telão na cena. Demo com switch pai e 14 filhos, queda correlacionada programada a cada 10 min e 2 alertas semeados. Aceite pendente do dono: abrir `/parede` na Samsung UN65RU7100 (Tizen 5.0)) | alertas com correlação pai/filho e estado `inalcancavel`, silêncio/manutenção, Telegram, `/parede` com emparelhamento, IP nas bolinhas e cartões de alerta | demo com queda correlacionada ao vivo; captura sem broadcast cobrindo Telegram e telão |
-| **4B. Operação** | TOTP, backup/restore/update, imagens multi-arquitetura | instalação limpa num Raspberry Pi em < 10 min; pipeline de segurança verde |
+| **4B. Operação** (concluída em 2026-11-19, versão 0.4.0: TOTP com códigos de recuperação e política "exigir para administradores"; backup diário 03:00 (7 diários + 4 semanais), `backup.sh`, `restore.sh`; `update.sh` com volta automática por backup; `install.sh` com imagens publicadas e `--build`; `release.yml` com imagens `amd64`/`arm64`, `trivy`, SBOM e `cosign` sem chave; CI com `npm audit`, CodeQL e Dependabot. Verificação final: núcleo com 1.377 testes (`pytest -W error`, 1 ignorado), front com 274 testes de unidade, smoke Playwright verde 3× (111 testes), `testes-operacao` 40/40 (restore), 48/48 (update), 17/17 (install), 11/11 (release) e 7/7 (pipeline), `ruff`, `mypy`, `bandit -ll` (0 médio/alto), `pip-audit` e `npm audit --omit=dev` sem vulnerabilidades, `shellcheck` e `actionlint` limpos; `trivy` (HIGH/CRITICAL corrigíveis) 0 nas duas imagens (a imagem web precisou subir o nginx de 1.30.6 para 1.30.7, removendo os módulos dinâmicos não usados que o prendiam); primeira tela da Lista 93 KB gzip (teto 150 KB); Lighthouse 13.6.0 contra o compose real (nginx) com 100 nas quatro categorias, desktop e celular, em `login.html`, `seguranca.html` e `#configuracoes`. Prova de captura no Docker Desktop: 833 quadros, 524 do Sentinela, 164 ARP request para 20 IPs autorizados, 0 broadcast/multicast proibido. **A medir pelo dono:** o tempo "Docker instalado → tela de login" num Raspberry Pi real e o primeiro `release.yml` numa tag) | TOTP, backup/restore/update, imagens multi-arquitetura | instalação limpa num Raspberry Pi em < 10 min (a medir); pipeline de segurança verde |
 
 ## 19. Riscos
 
