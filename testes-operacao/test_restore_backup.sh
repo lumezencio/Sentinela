@@ -214,6 +214,52 @@ test_restore_sinal_subindo_com_o_banco_restaurado_relata_o_original() {
     _falhou "deveria dar o comando exato para voltar"
 }
 
+test_restore_sinal_ao_listar_os_pre_restore_nao_cita_pre_restore_antigos() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  # o sinal chega enquanto os pre-restore existentes ainda estão sendo listados (ANTES vazio)
+  sinal_durante "*ls -1 -- sentinela-*-pre-restore*" TERM "pre-restore.tar.gz"
+  if grep -q "20260101T000000Z" "$TMP_OP/saida-restore"; then _falhou "citou um pre-restore que já existia"; fi
+  if grep -qF "criados nesta execução" "$TMP_OP/saida-restore"; then _falhou "não devia relatar pre-restore ainda"; fi
+  [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "a trava deveria ser liberada"
+  afirmar_log_nao_contem " stop"
+  afirmar_log_nao_contem "cat >" # nada foi enviado ao volume ainda
+}
+
+test_restore_comandos_de_volta_levam_o_projeto_compose() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  export SENTINELA_PROJETO="projeto-descartavel"
+  sinal_durante "*up -d --no-deps --wait*" TERM "up -d --no-deps --wait"
+  local s="$TMP_OP/saida-restore"
+  grep -qF "SENTINELA_PROJETO=projeto-descartavel ./restore.sh --do-volume sentinela-20261118T030100Z-pre-restore.tar.gz --sim" "$s" ||
+    _falhou "o comando de volta perdeu o projeto: $(cat "$s")"
+  grep -qF "docker compose -p projeto-descartavel ps core" "$s" || _falhou "a dica de saúde perdeu o projeto"
+  if grep -qE "docker compose (ps|logs)" "$s"; then _falhou "dica de docker compose sem -p"; fi
+}
+
+test_restore_raiz_so_vale_com_trava_pai_e_pasta_do_projeto() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  mkdir "$TMP_OP/outra"
+  # sem SENTINELA_TRAVA_PAI: ignorada com aviso (o script age na própria pasta)
+  SENTINELA_RAIZ="$TMP_OP/outra" bash restore.sh backup.tar.gz --sim >"$TMP_OP/s1" 2>&1 || _falhou "deveria rodar na própria pasta: $(cat "$TMP_OP/s1")"
+  grep -qF "SENTINELA_RAIZ ignorada" "$TMP_OP/s1" || _falhou "faltou o aviso"
+  [[ ! -e "$TMP_OP/outra/.operacao.lock" ]] || _falhou "não podia agir na outra pasta"
+  # com a trava do pai, mas a pasta não é do projeto: recusa sem tocar em nada
+  : >"$SHIM_LOG"
+  if SENTINELA_RAIZ="$TMP_OP/outra" SENTINELA_TRAVA_PAI="$$" bash restore.sh backup.tar.gz --sim >"$TMP_OP/s2" 2>&1; then
+    _falhou "deveria recusar uma pasta que não é do projeto"
+  fi
+  grep -qF "não aponta para uma pasta do Sentinela" "$TMP_OP/s2" || _falhou "mensagem: $(cat "$TMP_OP/s2")"
+  afirmar_igual "$(wc -c <"$SHIM_LOG" | tr -d ' ')" "0"
+  # só docker-compose.yml, sem restore.sh: também recusa
+  : >"$TMP_OP/outra/docker-compose.yml"
+  if SENTINELA_RAIZ="$TMP_OP/outra" SENTINELA_TRAVA_PAI="$$" bash restore.sh backup.tar.gz --sim >/dev/null 2>&1; then
+    _falhou "faltava o restore.sh"
+  fi
+}
+
 test_restore_comando_de_volta_do_relatorio_funciona() {
   rodar_em_diretorio_temporario
   fixture_backup

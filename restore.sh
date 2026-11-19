@@ -19,8 +19,20 @@ export MSYS_NO_PATHCONV=1
 
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # SENTINELA_RAIZ: o update.sh roda uma CÓPIA deste script (tirada antes de qualquer checkout) e
-# aponta aqui a pasta do projeto; sem isso, a pasta do próprio script
-RAIZ="${SENTINELA_RAIZ:-$AQUI}"
+# aponta aqui a pasta do projeto; sem isso, a pasta do próprio script. Só vale quando o update.sh a
+# passa (SENTINELA_TRAVA_PAI definida) e a pasta é mesmo de um projeto (docker-compose.yml e
+# restore.sh nela): uma sobra no ambiente do shell não faz o script agir em outra pasta.
+RAIZ="$AQUI"
+if [[ -n "${SENTINELA_RAIZ:-}" ]]; then
+  if [[ -z "${SENTINELA_TRAVA_PAI:-}" ]]; then
+    echo "aviso: SENTINELA_RAIZ ignorada (só o update.sh a define, junto com SENTINELA_TRAVA_PAI)" >&2
+  elif [[ -f "$SENTINELA_RAIZ/docker-compose.yml" && -f "$SENTINELA_RAIZ/restore.sh" ]]; then
+    RAIZ="$SENTINELA_RAIZ"
+  else
+    echo "erro: SENTINELA_RAIZ não aponta para uma pasta do Sentinela (faltam docker-compose.yml e restore.sh); nada foi alterado" >&2
+    exit 1
+  fi
+fi
 cd "$RAIZ"
 # shellcheck source=scripts/operacao-comum.sh
 source "$AQUI/scripts/operacao-comum.sh"
@@ -147,7 +159,7 @@ estado_core() {
   local estado
   if ! estado="$(compose ps -a --format '{{.Service}}: {{.Status}}' core 2>/dev/null)"; then
     # compose antigo sem --format de modelo
-    estado="$(compose ps -a core 2>/dev/null)" || estado="(não foi possível consultar; use: docker compose ps core)"
+    estado="$(compose ps -a core 2>/dev/null)" || estado="(não foi possível consultar; use: $(dc_dica) ps core)"
   fi
   [[ -n "$estado" ]] || estado="core: sem contêiner"
   recuar <<<"$estado"
@@ -175,7 +187,7 @@ interrompido() {
       "$FASE_PARANDO")
         echo "Este script ainda não tinha escrito no banco. Subindo o core de novo..."
         compose up -d --no-deps core >/dev/null 2>&1 ||
-          echo "erro: não foi possível subir o core; suba com: docker compose up -d --no-deps core"
+          echo "erro: não foi possível subir o core; suba com: $(dc_dica) up -d --no-deps core"
         ;;
       *)
         echo "Os contêineres foram deixados como estão: nada foi subido nem parado depois da interrupção."
@@ -187,9 +199,9 @@ interrompido() {
   relatar_pre_restore
   {
     if [[ -n "$PRE_ORIGINAL" ]]; then
-      echo "O banco original está em /dados/backups/$PRE_ORIGINAL. Para voltar a ele: ./restore.sh --do-volume $PRE_ORIGINAL --sim"
+      echo "O banco original está em /dados/backups/$PRE_ORIGINAL. Para voltar a ele: $(prefixo_projeto)./restore.sh --do-volume $PRE_ORIGINAL --sim"
     fi
-    echo "Verifique a saúde antes de usar (docker compose ps core; docker compose logs core)."
+    echo "Verifique a saúde antes de usar ($(dc_dica) ps core; $(dc_dica) logs core)."
   } >&2
   exit 130
 }
@@ -204,12 +216,14 @@ fi
 # A trava vem antes de qualquer escrita (inclusive a cópia de trabalho no volume)
 FASE="$FASE_VERIFICANDO"
 trava_adquirir
-trap finalizar EXIT
-trap interrompido INT TERM HUP
+trap finalizar EXIT # a trava e a cópia de trabalho são liberadas mesmo se algo falhar daqui em diante
 
-# Os pre-restore que já existem: o relatório só cita os criados por esta execução
+# Os pre-restore que já existem: o relatório só cita os criados por esta execução. O tratamento de
+# interrupção só entra depois de ANTES estar preenchido: senão um Ctrl-C aqui listaria como "criados
+# nesta execução" os pre-restore que já existiam.
 ANTES="$(lista_pre_restore)" ||
   falhar "não foi possível listar /dados/backups (nada foi alterado)"
+trap interrompido INT TERM HUP
 
 # Cópias de trabalho de execuções que morreram (SIGKILL, queda de energia) guardam um banco
 # de cliente: varre com padrão fixo, sem nenhuma entrada do usuário.
@@ -250,7 +264,7 @@ if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ALVO")"; then
   if compose up -d --no-deps --wait --wait-timeout 120 core; then
     falhar "a restauração não foi concluída; o core subiu e respondeu saudável. Confira os dados antes de usar."
   fi
-  falhar "a restauração não foi concluída e o core não ficou saudável; veja 'docker compose logs core'"
+  falhar "a restauração não foi concluída e o core não ficou saudável; veja '$(dc_dica) logs core'"
 fi
 PRE="$(printf '%s\n' "$PRE" | head -n 1)"
 PRE="${PRE%$'\r'}"
@@ -277,8 +291,8 @@ fi
 echo "erro: o core não ficou saudável com o banco restaurado." >&2
 if [[ -z "$PRE_ORIGINAL" ]]; then
   [[ -n "$PRE" ]] ||
-    falhar "não havia banco anterior para devolver; verifique 'docker compose logs core'"
-  falhar "o banco anterior não virou um backup em /dados/backups (o core o guardou como '$PRE'); não há volta automática. Verifique 'docker compose logs core'"
+    falhar "não havia banco anterior para devolver; verifique '$(dc_dica) logs core'"
+  falhar "o banco anterior não virou um backup em /dados/backups (o core o guardou como '$PRE'); não há volta automática. Verifique '$(dc_dica) logs core'"
 fi
 FASE="devolvendo o banco original"
 echo "Devolvendo o banco original ($PRE_ORIGINAL)..." >&2
@@ -288,6 +302,6 @@ if compose stop core &&
   if compose up -d --no-deps --wait --wait-timeout 120 core; then
     falhar "a restauração foi desfeita: o banco original está de volta e o core saudável"
   fi
-  falhar "o banco original foi devolvido, mas o core não ficou saudável; veja 'docker compose logs core'. O original continua em /dados/backups/$PRE_ORIGINAL"
+  falhar "o banco original foi devolvido, mas o core não ficou saudável; veja '$(dc_dica) logs core'. O original continua em /dados/backups/$PRE_ORIGINAL"
 fi
-falhar "não foi possível devolver o banco original automaticamente; ele está em /dados/backups/$PRE_ORIGINAL. Para tentar de novo: ./restore.sh --do-volume $PRE_ORIGINAL --sim"
+falhar "não foi possível devolver o banco original automaticamente; ele está em /dados/backups/$PRE_ORIGINAL. Para tentar de novo: $(prefixo_projeto)./restore.sh --do-volume $PRE_ORIGINAL --sim"

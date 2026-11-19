@@ -13,7 +13,7 @@
 #   SHIM_SEM_BACKUP_CLI=1          "sentinela.cli --help" não lista backup-criar (core antigo)
 #   SHIM_IMAGENS="repo:tag ..."    saída de "docker image ls" (uma por linha)
 #   SHIM_ARCH                      arquitetura do servidor (docker version --format {{.Server.Arch}}; padrão amd64)
-#   SHIM_SEM_IMAGEM=1              "image inspect" sem formato (a tag existe?) falha: a tag ainda não existia
+#   SHIM_SEM_IMAGEM=1              "image inspect" de tag (ID) falha até o primeiro pull: a tag ainda não existia
 #   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
 #   SHIM_DORMIR="padrão"           chamadas que casam esperam 2 s (testes de sinal)
 #   "compose ps" responde "core: <estado>" com o estado deixado pelo último stop/up do core
@@ -68,6 +68,9 @@ if falha_pedida; then
   echo "shim: falha simulada para: $linha" >&2
   exit 1
 fi
+
+# primeiro pull (docker pull ou compose pull): a partir daí a imagem "existe" (SHIM_SEM_IMAGEM)
+if [[ "$linha" =~ ^(compose( -[^ ]+ [^ ]+)* )?pull[[:space:]] ]]; then : >"$SHIM_DIR/.baixou"; fi
 
 # restaurar criou o pre-restore (marca antes de qualquer espera, como o banco trocado)
 if [[ "$linha" == *"sentinela.cli restaurar "* ]]; then
@@ -134,7 +137,7 @@ case "$1" in
           esac
           ;;
         *)
-          [[ "${SHIM_SEM_IMAGEM:-}" == "1" && "$linha" != *"--format"* ]] && exit 1
+          [[ "${SHIM_SEM_IMAGEM:-}" == "1" && ! -e "$SHIM_DIR/.baixou" ]] && exit 1
           # ID local da imagem: SHIM_IGUAL=1 = a mesma que já roda
           servico=web
           [[ "$ref" == *sentinela-core* ]] && servico=core

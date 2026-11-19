@@ -79,6 +79,8 @@ TAG_ALVO=""
 VERSAO_ALVO=""
 MODO="locais"
 TAGS_ALVO_BAIXADAS=0
+ID_ALVO_CORE_ANTES=""
+ID_ALVO_WEB_ANTES=""
 
 recuar() {
   local l
@@ -114,7 +116,7 @@ comandos_de_volta() {
     fi
     echo "  docker run --rm --env-file .env -v ${VOLUME_DADOS:-<volume de dados>}:/dados $img python -m sentinela.cli restaurar /dados/backups/$BACKUP"
   else
-    echo "  ./restore.sh --do-volume $BACKUP --sim --sem-subir"
+    echo "  $(prefixo_projeto)./restore.sh --do-volume $BACKUP --sim --sem-subir"
   fi
   if [[ $ARQUIVOS_REVERTIDOS -eq 0 ]]; then
     if [[ -n "$RAMO_ANTERIOR" ]]; then
@@ -147,8 +149,25 @@ reverter_arquivos() {
   docker tag "$IMG_REPO_WEB:$TS_PRE" "$IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR" || ok=1
   if [[ "$(git rev-parse HEAD 2>/dev/null)" != "$SHA_ANTERIOR" ]]; then ok=1; fi
   [[ "$ok" -ne 0 ]] || ARQUIVOS_REVERTIDOS=1
-  if [[ $TAGS_ALVO_BAIXADAS -eq 1 && $ALVO_VERIFICADO -eq 0 ]]; then
-    docker rmi "$IMG_REPO_CORE:$VERSAO_ALVO" "$IMG_REPO_WEB:$VERSAO_ALVO" >/dev/null 2>&1 || true
+  # Tag da versão alvo que não chegou a ser verificada: sai se foi criada pelo pull; se já existia,
+  # volta para a imagem que apontava antes. Se a versão alvo é a que já rodava (VERSAO_ANTERIOR), a
+  # tag acabou de ser restaurada acima pelo pre_: não se mexe nela.
+  if [[ $TAGS_ALVO_BAIXADAS -eq 1 && $ALVO_VERIFICADO -eq 0 && "$VERSAO_ALVO" != "$TAG_COMPOSE_ANTERIOR" ]]; then
+    local repo antes
+    for repo in core web; do
+      if [[ $repo == core ]]; then
+        repo="$IMG_REPO_CORE"
+        antes="$ID_ALVO_CORE_ANTES"
+      else
+        repo="$IMG_REPO_WEB"
+        antes="$ID_ALVO_WEB_ANTES"
+      fi
+      if [[ -z "$antes" ]]; then
+        docker rmi "$repo:$VERSAO_ALVO" >/dev/null 2>&1 || true
+      else
+        docker tag "$antes" "$repo:$VERSAO_ALVO" >/dev/null 2>&1 || true
+      fi
+    done
   fi
   return "$ok"
 }
@@ -289,7 +308,7 @@ interrompido() {
     [[ -z "$BACKUP" ]] || echo "Backup desta atualização (em /dados/backups): $BACKUP"
     [[ $PROTEGIDO -eq 0 ]] || echo "Marcações das imagens anteriores: $IMG_REPO_CORE:$TS_PRE e $IMG_REPO_WEB:$TS_PRE"
     if [[ $TOCOU -eq 1 ]]; then comandos_de_volta; fi
-    echo "Verifique a saúde antes de usar (docker compose ps; docker compose logs core)."
+    echo "Verifique a saúde antes de usar ($(dc_dica) ps; $(dc_dica) logs core)."
   } >&2
   exit 130
 }
@@ -555,6 +574,9 @@ main() {
     FASE="baixando e verificando as imagens publicadas"
     definir_env IMAGENS publicadas
     definir_env VERSAO "$VERSAO_ALVO"
+    # o que as tags da versão alvo eram antes do pull: a volta só remove o que não existia
+    ID_ALVO_CORE_ANTES="$(id_da_tag "$IMG_REPO_CORE:$VERSAO_ALVO")"
+    ID_ALVO_WEB_ANTES="$(id_da_tag "$IMG_REPO_WEB:$VERSAO_ALVO")"
     TAGS_ALVO_BAIXADAS=1
     compose pull core web ||
       falhar "não consegui baixar as imagens da versão $VERSAO_ALVO (rede, ghcr.io ou versão não publicada); nenhum contêiner foi trocado"

@@ -19,6 +19,18 @@ compose() {
   docker compose ${args[@]+"${args[@]}"} "$@"
 }
 
+# dc_dica: "docker compose" (com -p PROJETO se SENTINELA_PROJETO) para os comandos que os scripts sugerem
+dc_dica() {
+  local p="docker compose"
+  [[ -z "${SENTINELA_PROJETO:-}" ]] || p="$p -p $SENTINELA_PROJETO"
+  printf '%s' "$p"
+}
+
+# prefixo_projeto: "SENTINELA_PROJETO=X " antes de um script sugerido (vazio sem a variável)
+prefixo_projeto() {
+  [[ -z "${SENTINELA_PROJETO:-}" ]] || printf 'SENTINELA_PROJETO=%s ' "$SENTINELA_PROJETO"
+}
+
 falhar() {
   echo "erro: $*" >&2
   exit 1

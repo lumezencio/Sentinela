@@ -458,9 +458,37 @@ test_assinatura_ou_digest_ruim_remove_a_marcacao_da_versao_alvo() {
   digests_ok
   SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})"
   export SHIM_DIGEST_WEB
+  export SHIM_SEM_IMAGEM=1 # as tags 0.5.0 não existiam antes do pull
   if atualizar v0.5.0; then _falhou "deveria abortar"; fi
-  afirmar_log_contem "docker rmi ghcr.io/lumezencio/sentinela-core:0.5.0 ghcr.io/lumezencio/sentinela-web:0.5.0"
+  afirmar_log_contem "docker rmi ghcr.io/lumezencio/sentinela-core:0.5.0"
+  afirmar_log_contem "docker rmi ghcr.io/lumezencio/sentinela-web:0.5.0"
   afirmar_log_nao_contem "rmi -f"
+}
+
+test_tag_da_versao_alvo_que_ja_existia_volta_ao_que_era_em_vez_de_ser_apagada() {
+  ambiente
+  modo_publicadas
+  digests_ok
+  SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})"
+  export SHIM_DIGEST_WEB
+  if atualizar v0.5.0; then _falhou "deveria abortar"; fi
+  afirmar_log_nao_contem "docker rmi ghcr.io/lumezencio/sentinela-core:0.5.0"
+  afirmar_log_nao_contem "docker rmi ghcr.io/lumezencio/sentinela-web:0.5.0"
+  afirmar_log_contem "docker tag sha256:novo-core ghcr.io/lumezencio/sentinela-core:0.5.0"
+  afirmar_log_contem "docker tag sha256:novo-web ghcr.io/lumezencio/sentinela-web:0.5.0"
+}
+
+test_mesma_versao_com_ids_diferentes_nao_apaga_a_tag_restaurada_na_volta() {
+  ambiente
+  modo_publicadas # VERSAO=0.4.0 e o checkout está em v0.4.0
+  digests_ok
+  SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})"
+  export SHIM_DIGEST_WEB SHIM_SEM_IMAGEM=1
+  if atualizar v0.4.0; then _falhou "deveria abortar (digest ruim)"; fi
+  # a tag 0.4.0 acabou de ser restaurada a partir do pre_: apagá-la deixaria o compose sem imagem local
+  afirmar_log_nao_contem "docker rmi ghcr.io/lumezencio/sentinela-core:0.4.0"
+  afirmar_log_nao_contem "docker rmi ghcr.io/lumezencio/sentinela-web:0.4.0"
+  afirmar_log_contem "docker tag ghcr.io/lumezencio/sentinela-core:pre_"
 }
 
 test_falha_ao_baixar_da_mensagem_clara() {
@@ -525,6 +553,23 @@ sinal_durante() {
 # log_depois_de TEXTO: linhas do log depois da última que casa com TEXTO
 log_depois_de() {
   awk -v t="$1" '{ l[NR] = $0 } index($0, t) { n = NR } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$SHIM_LOG"
+}
+
+test_volta_manual_leva_o_projeto_compose_no_restore_e_nas_dicas() {
+  ambiente
+  if [[ "$(bash -c 'kill -INT $$; echo vivo' 2>/dev/null)" == "vivo" ]]; then
+    [[ "${CI:-}" != "true" ]] || _falhou "no CI o SIGINT tem de chegar ao script"
+    echo "    (SIGINT ignorado neste shell: teste dispensado)"
+    return 0
+  fi
+  export SENTINELA_PROJETO="projeto-descartavel"
+  sinal_durante "*--wait-timeout 120 core" INT "--wait-timeout 120 core"
+  local s="$TMP_OP/saida-update"
+  grep -qF "SENTINELA_PROJETO=projeto-descartavel ./restore.sh --do-volume sentinela-20261118T030000Z-atualizacao.tar.gz --sim" "$s" ||
+    _falhou "a linha do restore.sh perdeu o projeto: $(cat "$s")"
+  grep -qF "docker compose -p projeto-descartavel ps; docker compose -p projeto-descartavel logs core" "$s" ||
+    _falhou "a dica de saúde perdeu o projeto"
+  if grep -qE "docker compose (ps|logs)" "$s"; then _falhou "dica de docker compose sem -p"; fi
 }
 
 test_sigint_no_meio_so_relata_fatos_sem_agir() {
