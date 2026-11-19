@@ -23,12 +23,13 @@ test_restore_recusa_arquivo_inexistente_ou_diretorio() {
   afirmar_log_nao_contem "compose"
 }
 
-test_restore_recusa_caminho_com_dois_pontos() {
+test_restore_aceita_caminho_com_dois_pontos_pois_nao_chega_ao_compose() {
   rodar_em_diretorio_temporario
   mkdir "$TMP_OP/a:b"
-  : >"$TMP_OP/a:b/x.tar.gz"
-  if bash restore.sh "a:b/x.tar.gz" --sim >/dev/null 2>&1; then _falhou "aceitou ':'"; fi
-  afirmar_log_nao_contem "compose"
+  printf 'x' >"$TMP_OP/a:b/x.tar.gz"
+  bash restore.sh "a:b/x.tar.gz" --sim >/dev/null 2>&1 || _falhou "o ':' não deveria importar aqui"
+  afirmar_igual "$(cat "$SHIM_DIR/stdin.recebido")" "x"
+  afirmar_log_nao_contem "a:b"
 }
 
 test_restore_arquivo_comecando_com_hifen_vira_caminho_relativo() {
@@ -54,7 +55,7 @@ test_restore_ordem_verificar_parar_trocar_subir() {
   fixture_backup
   bash restore.sh backup.tar.gz --sim >/dev/null 2>&1 || _falhou "restore deveria funcionar"
   afirmar_ordem "cat >" "backup-verificar" "compose stop core" "sentinela.cli restaurar" \
-    "compose up -d --no-deps --wait --wait-timeout 120 core" "rm -f /dados/backups/.entrada-"
+    "compose up -d --no-deps --wait --wait-timeout 120 core" "core rm -f /dados/backups/.entrada-2"
 }
 
 test_restore_envia_o_arquivo_por_stdin_sem_bind_mount() {
@@ -79,6 +80,8 @@ test_restore_usa_run_avulso_e_nunca_exec() {
   while IFS= read -r l; do
     [[ "$l" == "docker compose run --rm --no-deps -T "* ]] || _falhou "chamada sem run --rm --no-deps: $l"
   done < <(grep -E 'sentinela.cli (restaurar|backup-verificar)|cat >|rm -f' "$SHIM_LOG")
+  [[ "$(grep -cE 'sentinela.cli (restaurar|backup-verificar)|cat >|rm -f' "$SHIM_LOG")" -ge 5 ]] ||
+    _falhou "o grep não achou as chamadas esperadas (teste vazio)"
   afirmar_log_nao_contem " exec "
 }
 
@@ -88,7 +91,7 @@ test_restore_falha_de_saude_restaura_o_pre_restore() {
   export SHIM_FALHAR="1x:compose up*"
   if bash restore.sh backup.tar.gz --sim >/dev/null 2>&1; then _falhou "deveria sair com erro"; fi
   [[ "$(grep -c 'sentinela.cli restaurar' "$SHIM_LOG")" -eq 2 ]] || _falhou "esperava 2 restaurações"
-  afirmar_log_contem "restaurar /dados/backups/pre-restore-20261118T030100Z.tar.gz"
+  afirmar_log_contem "restaurar /dados/backups/sentinela-20261118T030100Z-pre-restore.tar.gz"
   [[ "$(grep -c 'compose up' "$SHIM_LOG")" -eq 2 ]] || _falhou "esperava 2 subidas do core"
 }
 
@@ -98,7 +101,7 @@ test_restore_falha_de_saude_sem_volta_sai_com_erro() {
   export SHIM_FALHAR="compose up*"
   local saida
   saida="$(bash restore.sh backup.tar.gz --sim 2>&1)" && _falhou "deveria sair com erro"
-  grep -q "pre-restore-20261118T030100Z" <<<"$saida" || _falhou "a mensagem deveria citar o pre-restore"
+  grep -q "sentinela-20261118T030100Z-pre-restore" <<<"$saida" || _falhou "a mensagem deveria citar o pre-restore"
 }
 
 test_restore_falha_da_restauracao_depois_do_stop_sobe_o_core() {
@@ -111,19 +114,73 @@ test_restore_falha_da_restauracao_depois_do_stop_sobe_o_core() {
   [[ "$(grep -c 'sentinela.cli restaurar' "$SHIM_LOG")" -eq 1 ]] || _falhou "não deveria tentar a volta do pre-restore"
 }
 
+# sinal_durante PADRAO_DORMIR SINAL: roda o restore.sh e manda o sinal quando a chamada que
+# casa com PADRAO_DORMIR começar; deixa a saída em $TMP_OP/saida-restore e o código em RC_SINAL
+sinal_durante() {
+  export SHIM_DORMIR="$1"
+  bash restore.sh backup.tar.gz --sim >"$TMP_OP/saida-restore" 2>&1 &
+  local pid=$! i
+  for ((i = 0; i < 100; i++)); do
+    grep -qF -- "${3:-$1}" "$SHIM_LOG" && break
+    sleep 0.1
+  done
+  kill -"$2" "$pid"
+  RC_SINAL=0
+  wait "$pid" || RC_SINAL=$?
+}
+
 test_restore_sinal_entre_stop_e_up_sobe_o_core() {
   rodar_em_diretorio_temporario
   fixture_backup
-  export SHIM_DORMIR="*sentinela.cli restaurar*"
-  bash restore.sh backup.tar.gz --sim >/dev/null 2>&1 &
-  local pid=$! i
-  for ((i = 0; i < 100; i++)); do
-    grep -q 'sentinela.cli restaurar' "$SHIM_LOG" && break
-    sleep 0.1
+  local sinal
+  for sinal in TERM HUP; do
+    : >"$SHIM_LOG"
+    sinal_durante "*sentinela.cli restaurar*" "$sinal" "sentinela.cli restaurar"
+    [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro após $sinal"
+    afirmar_ordem "compose stop core" "sentinela.cli restaurar" "compose up -d --no-deps core" "core rm -f /dados/backups/.entrada-2"
+    [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "a trava deveria ser liberada após $sinal"
   done
-  kill -TERM "$pid"
-  if wait "$pid"; then _falhou "deveria sair com erro após o sinal"; fi
-  afirmar_ordem "compose stop core" "sentinela.cli restaurar" "compose up -d --no-deps core" "rm -f /dados/backups/.entrada-"
+}
+
+test_restore_sinal_depois_de_restaurar_informa_o_pre_restore() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  sinal_durante "*compose up -d --no-deps --wait*" TERM "compose up -d --no-deps --wait"
+  [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro (saúde não confirmada)"
+  grep -q "já tinha sido concluída.*sentinela-20261118T030100Z-pre-restore" "$TMP_OP/saida-restore" ||
+    _falhou "deveria informar a restauração concluída e o pre-restore"
+  afirmar_log_contem "rm -f /dados/backups/.entrada-"
+}
+
+test_restore_falha_no_stop_tenta_subir_o_core() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  export SHIM_FALHAR="*compose stop*"
+  if bash restore.sh backup.tar.gz --sim >/dev/null 2>&1; then _falhou "deveria sair com erro"; fi
+  afirmar_ordem "compose stop core" "compose up -d --no-deps core"
+  afirmar_log_nao_contem "sentinela.cli restaurar"
+}
+
+test_restore_varre_orfaos_depois_da_trava_e_antes_de_gravar() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  bash restore.sh backup.tar.gz --sim >/dev/null 2>&1 || _falhou "restore deveria funcionar"
+  afirmar_ordem "sh -c rm -f /dados/backups/.entrada-*" "cat >" "backup-verificar"
+  # a trava recusa antes da varredura
+  rmdir "$TMP_OP/.operacao.lock" 2>/dev/null || true
+  : >"$SHIM_LOG"
+  mkdir "$TMP_OP/.operacao.lock"
+  if bash restore.sh backup.tar.gz --sim >/dev/null 2>&1; then _falhou "deveria recusar"; fi
+  afirmar_log_nao_contem ".entrada-"
+}
+
+test_restore_falha_na_varredura_nao_grava_nada() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  export SHIM_FALHAR="*rm -f /dados/backups/.entrada-\**"
+  if bash restore.sh backup.tar.gz --sim >/dev/null 2>&1; then _falhou "deveria sair com erro"; fi
+  afirmar_log_nao_contem "cat >"
+  afirmar_log_nao_contem " stop"
 }
 
 test_restore_para_so_o_core() {
@@ -131,7 +188,9 @@ test_restore_para_so_o_core() {
   fixture_backup
   bash restore.sh backup.tar.gz --sim >/dev/null 2>&1 || _falhou "restore deveria funcionar"
   afirmar_log_contem "compose stop core"
-  if grep -E 'compose.* (stop|kill|restart)( |$)' "$SHIM_LOG" | grep -vE ' stop core$'; then
+  [[ "$(grep -cE 'compose.* stop core$' "$SHIM_LOG")" -ge 1 ]] || _falhou "não parou o core"
+  if grep -E 'compose.* (stop|kill|restart|rm)( |$)' "$SHIM_LOG" |
+    grep -vE ' stop core$| core (sh -c )?rm -f /dados/backups/\.entrada-'; then
     _falhou "mexeu em serviço além do core"
   fi
   if grep -E 'compose.* up ' "$SHIM_LOG" | grep -v -- '--no-deps'; then
@@ -144,7 +203,11 @@ test_restore_sem_sim_exige_confirmacao() {
   rodar_em_diretorio_temporario
   fixture_backup
   if echo "nao" | bash restore.sh backup.tar.gz >/dev/null 2>&1; then _falhou "deveria cancelar"; fi
+  # cancelou antes de qualquer escrita: nem trava, nem varredura, nem cópia
   afirmar_log_nao_contem " stop"
+  afirmar_log_nao_contem "cat >"
+  afirmar_log_nao_contem "rm -f"
+  [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "não deveria deixar trava"
   echo "sim" | bash restore.sh backup.tar.gz >/dev/null 2>&1 || _falhou "com 'sim' deveria restaurar"
   afirmar_log_contem "compose stop core"
 }
@@ -156,6 +219,7 @@ test_restore_recusa_com_trava_de_outra_operacao() {
   if bash restore.sh backup.tar.gz --sim >/dev/null 2>&1; then _falhou "deveria recusar com a trava"; fi
   afirmar_log_nao_contem " stop"
   afirmar_log_nao_contem "cat >"
+  afirmar_log_nao_contem "rm -f"
   [[ -d "$TMP_OP/.operacao.lock" ]] || _falhou "não pode apagar a trava de outra operação"
   rmdir "$TMP_OP/.operacao.lock"
   bash restore.sh backup.tar.gz --sim >/dev/null 2>&1 || _falhou "sem trava deveria restaurar"
@@ -166,9 +230,9 @@ test_backup_exportar_copia_e_avisa_do_env() {
   rodar_em_diretorio_temporario
   local saida aviso
   saida="$(bash backup.sh --exportar "$TMP_OP/saida" 2>&1)" || _falhou "backup --exportar falhou"
-  [[ -f "$TMP_OP/saida/manual-20261118T030000Z.tar.gz" ]] || _falhou "arquivo não foi copiado"
+  [[ -f "$TMP_OP/saida/sentinela-20261118T030000Z-manual.tar.gz" ]] || _falhou "arquivo não foi copiado"
   if fs_suporta_modo; then
-    afirmar_igual "$(stat -c %a "$TMP_OP/saida/manual-20261118T030000Z.tar.gz")" "600"
+    afirmar_igual "$(stat -c %a "$TMP_OP/saida/sentinela-20261118T030000Z-manual.tar.gz")" "600"
     afirmar_igual "$(stat -c %a "$TMP_OP/saida")" "700"
   else
     echo "    (modos de arquivo não verificáveis neste sistema de arquivos; o CI Linux confere)"
@@ -176,6 +240,10 @@ test_backup_exportar_copia_e_avisa_do_env() {
   aviso="$(bash -c 'source scripts/operacao-comum.sh; printf %s "$AVISO_ENV"')"
   grep -qF -- "$aviso" <<<"$saida" || _falhou "faltou o aviso do .env"
   afirmar_log_contem "cp core:/dados/backups/."
+  # arquivo de trabalho (nome com ponto) nunca sai do volume; nenhuma pasta de trabalho sobra
+  [[ ! -e "$TMP_OP/saida/.entrada-1-2.tar.gz" ]] || _falhou "exportou um .entrada-*"
+  [[ -z "$(find "$TMP_OP/saida" -name '.exportando.*')" ]] || _falhou "sobrou pasta de trabalho"
+  [[ -z "$(find "$TMP_OP/saida" -name '.entrada-*')" ]] || _falhou "sobrou .entrada-*"
 }
 
 test_backup_exportar_em_pasta_existente_nao_muda_o_modo() {
@@ -217,7 +285,7 @@ test_backup_sem_argumento_chama_backup_criar_manual() {
   saida="$(bash backup.sh 2>&1)" || _falhou "backup.sh falhou"
   afirmar_log_contem "compose exec -T core python -m sentinela.cli backup-criar --origem manual"
   afirmar_log_nao_contem " cp "
-  grep -q "manual-20261118T030000Z.tar.gz" <<<"$saida" || _falhou "deveria imprimir o nome"
+  grep -q "sentinela-20261118T030000Z-manual.tar.gz" <<<"$saida" || _falhou "deveria imprimir o nome"
   grep -q "SENTINELA_CHAVE_CREDENCIAIS" <<<"$saida" || _falhou "deveria avisar do .env"
 }
 
@@ -242,11 +310,17 @@ test_nenhum_script_usa_down_prune_volume_nem_rmi_forcado() {
   bash restore.sh backup.tar.gz --sim >/dev/null 2>&1 || true
   SHIM_FALHAR="1x:compose up*" bash restore.sh backup.tar.gz --sim >/dev/null 2>&1 || true
   local proibido
-  for proibido in " down" "prune" "volume rm" "rmi -f" "docker rm" " rm -f" " --rmi" "-v sentinela"; do
-    # "rm -f" só é aceito dentro do contêiner avulso, na cópia temporária de entrada
-    [[ "$proibido" == " rm -f" ]] && continue
+  for proibido in " down" "prune" "volume rm" "rmi -f" "docker rm" " --rmi" "-v sentinela"; do
     afirmar_log_nao_contem "$proibido"
   done
+  # "rm -f" só existe na limpeza explícita de /dados/backups/.entrada-* dentro do contêiner avulso
+  if grep -F " rm -f" "$SHIM_LOG" | grep -vE 'rm -f /dados/backups/\.entrada-'; then
+    _falhou "rm -f fora da limpeza da cópia temporária"
+  fi
+  # shellcheck disable=SC2016  # o $ENTRADA é texto a procurar, não expansão
+  if texto_dos_scripts | grep -F "rm -f" | grep -vE '\.entrada-|"\$ENTRADA"'; then
+    _falhou "rm -f no texto dos scripts fora da limpeza da cópia temporária"
+  fi
   if texto_dos_scripts | grep -E '(^|[^[:alnum:]_-])(down|prune)([^[:alnum:]_-]|$)|volume rm|rmi -f|docker rm|system prune|[[:space:]]-v[[:space:]]+["$./~][^[:space:]]*:'; then
     _falhou "texto dos scripts usa comando proibido (down, prune, volume rm, rmi -f, -v)"
   fi

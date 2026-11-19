@@ -19,6 +19,7 @@ source "$RAIZ/scripts/operacao-comum.sh"
 
 DESTINO=""
 EXPORTAR=0
+UNIDADE_WINDOWS='^[A-Za-z]:[/\][^:]*$'
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --exportar)
@@ -45,8 +46,11 @@ command -v docker >/dev/null 2>&1 || falhar "'docker' não encontrado no PATH"
 
 if [[ $EXPORTAR -eq 1 ]]; then
   [[ -n "$DESTINO" ]] || falhar "pasta de exportação vazia"
-  # ':' faria o "compose cp" tratar parte do caminho como serviço
-  [[ "$DESTINO" != *:* ]] || falhar "a pasta de exportação não pode conter ':' (use outro caminho)"
+  # ':' faria o "compose cp" tratar parte do caminho como serviço; só a letra de unidade do
+  # Windows (C:/pasta ou C:\pasta) é aceita
+  if [[ "$DESTINO" == *:* && ! "$DESTINO" =~ $UNIDADE_WINDOWS ]]; then
+    falhar "a pasta de exportação não pode conter ':' (use outro caminho)"
+  fi
   [[ "$DESTINO" != -* ]] || DESTINO="./$DESTINO"
 fi
 
@@ -67,10 +71,22 @@ if [[ $EXPORTAR -eq 1 ]]; then
     chmod 700 "$DESTINO" 2>/dev/null ||
       echo "aviso: não foi possível restringir as permissões de $DESTINO (vfat/exFAT?); proteja a pasta por outros meios" >&2
   fi
-  (umask 077 && compose cp core:/dados/backups/. "$DESTINO") ||
+  # Copia para uma pasta de trabalho dentro do destino e só move os backups de verdade
+  # (sentinela-*.tar.gz): arquivos de trabalho com nome iniciado por '.' nunca saem do volume.
+  ETAPA="$(umask 077 && mktemp -d "${DESTINO%/}/.exportando.XXXXXX")" ||
+    falhar "não foi possível criar a pasta de trabalho em $DESTINO"
+  (umask 077 && compose cp core:/dados/backups/. "$ETAPA") || {
+    find "$ETAPA" -mindepth 1 -delete 2>/dev/null
+    rmdir "$ETAPA" 2>/dev/null
     falhar "não foi possível copiar os backups do volume"
-  # o cp pode devolver permissões do contêiner: deixa os backups restritos ao dono
-  find "$DESTINO" -maxdepth 1 -type f -name '*.tar.gz' -exec chmod 600 {} + 2>/dev/null ||
-    echo "aviso: não foi possível restringir as permissões dos arquivos exportados (vfat/exFAT?)" >&2
+  }
+  for f in "$ETAPA"/sentinela-*.tar.gz; do
+    [[ -f "$f" ]] || continue
+    chmod 600 "$f" 2>/dev/null ||
+      echo "aviso: não foi possível restringir as permissões de $f (vfat/exFAT?)" >&2
+    mv -f "$f" "${DESTINO%/}/"
+  done
+  find "$ETAPA" -mindepth 1 -delete 2>/dev/null
+  rmdir "$ETAPA" 2>/dev/null || echo "aviso: sobrou a pasta de trabalho $ETAPA; apague-a" >&2
   echo "backups exportados para: $DESTINO"
 fi

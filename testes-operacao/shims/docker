@@ -66,14 +66,15 @@ case "$1" in
     shift
     case "$linha" in
       "compose version"*) exit 0 ;;
-      *" backup-criar"*) echo "manual-20261118T030000Z.tar.gz" ;;
+      *" backup-criar"*) echo "sentinela-20261118T030000Z-manual.tar.gz" ;;
       *" backup-verificar"*) echo "backup válido: esquema 0005, Sentinela 0.4.0" ;;
-      *" restaurar "*) echo "pre-restore-20261118T030100Z.tar.gz" ;;
+      *" restaurar "*) echo "sentinela-20261118T030100Z-pre-restore.tar.gz" ;;
       *" cp "*)
         destino="${*: -1}"
         mkdir -p "$destino"
-        echo "conteudo-ficticio" >"$destino/manual-20261118T030000Z.tar.gz"
-        chmod 644 "$destino/manual-20261118T030000Z.tar.gz"
+        echo "conteudo-ficticio" >"$destino/sentinela-20261118T030000Z-manual.tar.gz"
+        echo "orfao-ficticio" >"$destino/.entrada-1-2.tar.gz"
+        chmod 644 "$destino/sentinela-20261118T030000Z-manual.tar.gz"
         ;;
     esac
     exit 0

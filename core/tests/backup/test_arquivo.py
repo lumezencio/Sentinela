@@ -457,3 +457,24 @@ def test_backup_de_banco_maior_com_escritor_termina_e_e_integro(
         parar.set()
         t.join()
     verificar_backup(caminho, CONHECIDAS)
+
+
+def test_gzip_corrompido_no_meio_vira_erro_backup_fixo(tmp_path: Path, banco: Path) -> None:
+    """Bytes trocados dentro do fluxo deflate (não truncado) levantam zlib.error, que não é
+    OSError: tem de virar ErroBackup com texto fixo, nunca escapar."""
+    original = _tar_valido(tmp_path, banco).read_bytes()
+    recusados = 0
+    for deslocamento in range(12, len(original) - 8, 5):
+        dados = bytearray(original)
+        dados[deslocamento] ^= 0xFF
+        ruim = tmp_path / "ruim.tar.gz"
+        ruim.write_bytes(bytes(dados))
+        # bytes no fim do fluxo, que ninguém lê, podem passar; qualquer outra coisa tem de ser
+        # ErroBackup (nunca zlib.error, que não é OSError)
+        for funcao in (verificar_backup, lambda p, _r: ler_manifesto(p)):
+            try:
+                funcao(ruim, CONHECIDAS)
+            except ErroBackup as e:
+                recusados += 1
+                assert "zlib" not in str(e).lower()
+    assert recusados > 10

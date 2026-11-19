@@ -21,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -377,7 +378,7 @@ def _abrir(arquivo: Path) -> tarfile.TarFile:
         if arquivo.is_symlink() or not arquivo.is_file():
             raise ErroBackup(MSG_INVALIDO)
         return tarfile.open(arquivo, "r:gz")
-    except (tarfile.TarError, OSError, EOFError):
+    except (tarfile.TarError, OSError, EOFError, zlib.error):
         raise ErroBackup(MSG_INVALIDO) from None
 
 
@@ -414,7 +415,7 @@ def ler_manifesto(arquivo: Path) -> Manifesto:
         with _abrir(arquivo) as tar:
             membros = _membros(tar)
             return _manifesto_de(_dados_do_manifesto(tar, membros))
-    except (tarfile.TarError, OSError, EOFError):
+    except (tarfile.TarError, OSError, EOFError, zlib.error):
         raise ErroBackup(MSG_INVALIDO) from None
 
 
@@ -454,7 +455,7 @@ def _extrair_verificando(
     except ErroBackup:
         saida.unlink(missing_ok=True)
         raise
-    except (tarfile.TarError, OSError, EOFError, sqlite3.Error):
+    except (tarfile.TarError, OSError, EOFError, sqlite3.Error, zlib.error):
         saida.unlink(missing_ok=True)
         raise ErroBackup(MSG_INVALIDO) from None
     return manifesto

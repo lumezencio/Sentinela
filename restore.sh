@@ -54,7 +54,6 @@ done
   exit 2
 }
 [[ "$ARQUIVO" != -* ]] || ARQUIVO="./$ARQUIVO"
-[[ "$ARQUIVO" != *:* ]] || falhar "o caminho do arquivo não pode conter ':' (use outro caminho ou entre na pasta dele)"
 
 [[ -f "$ARQUIVO" ]] || falhar "'$ARQUIVO' não é um arquivo existente (nada foi alterado)"
 [[ -r "$ARQUIVO" ]] || falhar "'$ARQUIVO' não pode ser lido por este usuário (nada foi alterado)"
@@ -65,31 +64,50 @@ cli_avulsa() {
   compose run --rm --no-deps -T "$@"
 }
 
-trava_adquirir
 CORE_PARADO=0
+RESTAURADO=0
 ENTRADA=""
+PRE=""
 
 # shellcheck disable=SC2329  # chamada pelos traps abaixo
 finalizar() {
   # o arquivo enviado ao volume é só uma cópia de trabalho: some ao fim, com ou sem erro
   if [[ -n "$ENTRADA" ]]; then
     cli_avulsa core rm -f "$ENTRADA" >/dev/null 2>&1 ||
-      echo "aviso: não foi possível apagar a cópia temporária $ENTRADA do volume" >&2
+      echo "aviso: não foi possível apagar a cópia temporária $ENTRADA do volume (a próxima execução a varre)" >&2
   fi
   trava_liberar
 }
-# shellcheck disable=SC2329  # chamada pelo trap abaixo
+# shellcheck disable=SC2329  # chamada pelos traps abaixo
 interrompido() {
-  trap - INT TERM
+  trap - INT TERM HUP
   echo "interrompido." >&2
   if [[ $CORE_PARADO -eq 1 ]]; then
     echo "Subindo o core de novo..." >&2
     compose up -d --no-deps core >/dev/null 2>&1 || echo "erro: suba o core com: docker compose up -d core" >&2
   fi
+  if [[ $RESTAURADO -eq 1 ]]; then
+    echo "A restauração já tinha sido concluída antes da interrupção; o banco anterior ficou guardado como: ${PRE:-(não havia)}. Confira a saúde do core." >&2
+  fi
   exit 130
 }
+
+if [[ $SIM -ne 1 ]]; then
+  echo "Isto substitui o banco atual pelo do backup (o atual fica guardado como pre-restore)."
+  echo "O arquivo será verificado antes de qualquer mudança."
+  read -r -p "Digite 'sim' para continuar: " resp || resp=""
+  [[ "$resp" == "sim" ]] || falhar "cancelado; nada foi alterado"
+fi
+
+# A trava vem antes de qualquer escrita (inclusive a cópia de trabalho no volume)
+trava_adquirir
 trap finalizar EXIT
-trap interrompido INT TERM
+trap interrompido INT TERM HUP
+
+# Cópias de trabalho de execuções que morreram (SIGKILL, queda de energia) guardam um banco
+# de cliente: varre com padrão fixo, sem nenhuma entrada do usuário.
+cli_avulsa core sh -c 'rm -f /dados/backups/.entrada-*' ||
+  falhar "não foi possível varrer cópias temporárias antigas do volume (nada foi alterado)"
 
 # O volume pertence a outro usuário (10001): um arquivo 0600 do host não seria legível por
 # bind mount. Por isso ele entra no volume pela entrada padrão de um contêiner avulso.
@@ -103,18 +121,13 @@ echo "Verificando o backup..."
 cli_avulsa core python -m sentinela.cli backup-verificar "$ENTRADA" ||
   falhar "backup inválido ou de versão mais nova; o core não foi parado e nada foi alterado"
 
-if [[ $SIM -ne 1 ]]; then
-  echo "Isto substitui o banco atual pelo do backup (o atual fica guardado como pre-restore)."
-  read -r -p "Digite 'sim' para continuar: " resp || resp=""
-  [[ "$resp" == "sim" ]] || falhar "cancelado; nada foi alterado"
-fi
-
 echo "Parando só o serviço core..."
 CORE_PARADO=1
-compose stop core || {
-  CORE_PARADO=0
-  falhar "não foi possível parar o core"
-}
+if ! compose stop core; then
+  echo "erro: não foi possível parar o core; tentando subi-lo de novo..." >&2
+  compose up -d --no-deps core >/dev/null 2>&1 || true
+  falhar "não foi possível parar o core (nada foi alterado)"
+fi
 
 echo "Restaurando..."
 if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ENTRADA")"; then
@@ -124,6 +137,7 @@ if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ENTRADA")"; then
   exit 1
 fi
 PRE="$(printf '%s\n' "$PRE" | head -n 1)"
+RESTAURADO=1
 
 echo "Subindo o core e esperando a saúde..."
 if compose up -d --no-deps --wait --wait-timeout 120 core; then
@@ -138,6 +152,7 @@ echo "erro: o core não ficou saudável com o banco restaurado." >&2
 if [[ -z "$PRE" ]]; then
   falhar "não havia banco anterior para devolver; verifique 'docker compose logs core'"
 fi
+RESTAURADO=0
 echo "Devolvendo o banco anterior ($PRE)..." >&2
 compose stop core || true
 if cli_avulsa core python -m sentinela.cli restaurar "/dados/backups/$PRE" >/dev/null &&
