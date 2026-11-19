@@ -1943,7 +1943,9 @@ def test_silenciar_1h_aparece_e_encerrar(page: Page, alvo: Alvo, alertas_semeado
         item = secao.locator("li.al-silencio").filter(has_text=nome)
         expect(item).to_be_visible(timeout=10_000)
         expect(item.locator(".al-tipo")).to_have_text("Silêncio")
-        expect(item).to_contain_text(re.compile(r"Até \d{2}:\d{2}"))
+        # "Até 14:32" no mesmo dia; "Até 19/11 00:10" quando 1 h depois cruza a meia-noite
+        # (formato certo do app: horaNoFuso põe a data se o dia mudou). Aceita os dois.
+        expect(item).to_contain_text(re.compile(r"Até (\d{2}/\d{2} )?\d{2}:\d{2}"))
         expect(item).to_contain_text("troca do nobreak")
         item.get_by_role("button", name=re.compile("^Encerrar")).click()
         expect(item).to_have_count(0, timeout=10_000)
@@ -3097,6 +3099,11 @@ def test_cartao_backup_mostra_aviso_do_env_e_botao_fazer_backup_agora(
     # o cartão Segurança vem junto e lista os usuários
     expect(page.locator("#cfg-seguranca")).to_be_visible()
     expect(page.locator("#seg-usuarios li").first).to_be_visible()
+    # com a lista na tela o aviso de lista vazia não pode ficar preso (regressão: o x-show do Alpine
+    # adia o "mostrar" e vencia o "esconder" quando "carregando" caía antes de a lista chegar)
+    page.wait_for_timeout(500)
+    expect(page.get_by_text("Nenhum usuário encontrado.")).to_be_hidden()
+    expect(page.get_by_text("Nenhuma cópia guardada ainda.")).to_be_hidden()
     assert erros == [], erros
 
 

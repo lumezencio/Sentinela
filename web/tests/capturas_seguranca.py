@@ -202,7 +202,10 @@ def _abrir_config(page: Page, cartao: str) -> None:
     )
     page.goto("/index.html#configuracoes")
     expect(page.locator(cartao)).to_be_visible(timeout=20_000)
+    # os cartões carregam só ao entrar na tela (quandoVisivel): rolar até cada um antes de esperar
+    page.locator("#cfg-seguranca").scroll_into_view_if_needed()
     expect(page.locator("#seg-usuarios li").first).to_be_visible(timeout=20_000)
+    page.locator("#cfg-backup").scroll_into_view_if_needed()
     expect(page.locator("#bk-lista li").first).to_be_visible(timeout=20_000)
     page.wait_for_timeout(900)
     page.evaluate("document.querySelector('.topo').style.position = 'static'")

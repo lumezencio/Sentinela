@@ -73,9 +73,11 @@ class Api:
             cab["X-CSRF"] = self._cookies["sentinela_csrf"]
         return cab
 
-    def pedir(self, metodo: str, caminho: str, esperado: int, **kw: Any) -> Any:
+    def pedir(
+        self, metodo: str, caminho: str, esperado: int, tambem: tuple[int, ...] = (), **kw: Any
+    ) -> Any:
         r = self._http.request(metodo, f"/api/v1{caminho}", headers=self._cabecalhos(), **kw)
-        if r.status_code != esperado:
+        if r.status_code != esperado and r.status_code not in tambem:
             # só o status e o detalhe genérico do núcleo (que nunca ecoa credenciais)
             raise SystemExit(f"[cena] {metodo} {caminho}: {r.status_code} {r.text[:300]}")
         return r.json() if r.content else None
@@ -252,7 +254,9 @@ def main() -> int:
             passo(f"{tipo}: teste ok")
 
     for fonte in fontes.values():
-        api.pedir("POST", f"/fontes/{fonte['id']}/coletar", 202)
+        # o núcleo já coleta a fonte logo depois de criada; se essa coleta caiu há menos de 30 s, o
+        # "coletar agora" responde 429 (limite normal): a coleta existe e a espera abaixo a confere
+        api.pedir("POST", f"/fontes/{fonte['id']}/coletar", 202, tambem=(429,))
 
     def coletadas() -> list[dict[str, Any]] | None:
         lista: list[dict[str, Any]] = api.pedir("GET", "/fontes", 200)

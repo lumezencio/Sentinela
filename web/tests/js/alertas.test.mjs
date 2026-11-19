@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  abertosDaMensagem, aplicarMensagemAlerta, ATALHOS, contarAbertos, filtrarAlertas,
+  abertosDaMensagem, aplicarMensagemAlerta, ATALHOS, contarAbertos, filtrarAlertas, horaNoFuso,
   instanteNoFuso, linhaDoAlerta, montarSilencio, reaplicarMensagens, rotuloEnvio, validarSilencio,
 } from "../../src/js/alertas.js";
 import { ABAS } from "../../src/js/visoes.js";
@@ -224,4 +224,10 @@ test("reaplicarMensagens: mensagem velha não reabre alerta que o GET já trouxe
   const fecha = { tipo: "alerta", acao: "fechado", id: 1, alerta: alerta({ id: 1, fechado_em: "2026-11-18T17:39:30Z" }) };
   assert.equal(reaplicarMensagens([alerta({ id: 1 })], [fecha])[0].fechado_em, "2026-11-18T17:39:30Z");
   assert.deepEqual(reaplicarMensagens(doGet, []), doGet);
+});
+
+test("horaNoFuso: no mesmo dia só a hora; 1 h depois da meia-noite traz a data (smoke de silêncio)", () => {
+  const quase = Date.parse("2026-11-19T02:40:00Z"); // 23:40 em São Paulo
+  assert.equal(horaNoFuso(quase + 600e3, quase, FUSO), "23:50");
+  assert.equal(horaNoFuso(quase + 3600e3, quase, FUSO), "19/11 00:40");
 });

@@ -664,19 +664,26 @@ export function segurancaDoPainel() {
         api.listarUsuarios(),
         api.eu(),
       ]);
-      this.segCarregando = false;
       if (!politica.ok || !usuarios.ok || !eu.ok) {
+        this.segCarregando = false;
         this.segErroGeral = (!politica.ok ? politica : !usuarios.ok ? usuarios : eu).erro || MSG_FALHA;
         return false;
       }
       this.segErroGeral = "";
       this.segExigir = Boolean(politica.dados && politica.dados.exigir_totp_admin);
       this.segMeuTotp = Boolean(eu.dados && eu.dados.totp_ativo);
-      formatar = await carregarFormatadores.seguranca();
-      this.segUsuarios = (Array.isArray(usuarios.dados) ? usuarios.dados : []).map((u) => ({
-        ...formatar.linhaDoUsuario(u),
-        rotuloZerar: `Zerar o segundo fator de ${textoSeguro(u.login, 64)}`,
-      }));
+      try {
+        formatar = await carregarFormatadores.seguranca();
+        this.segUsuarios = (Array.isArray(usuarios.dados) ? usuarios.dados : []).map((u) => ({
+          ...formatar.linhaDoUsuario(u),
+          rotuloZerar: `Zerar o segundo fator de ${textoSeguro(u.login, 64)}`,
+        }));
+      } finally {
+        // só depois da lista: com "carregando" falso e a lista ainda vazia, o aviso "Nenhum usuário"
+        // aparece por um instante e o Alpine (x-show adia o "mostrar" para o próximo quadro) o deixa
+        // preso na tela depois que a lista chega
+        this.segCarregando = false;
+      }
       return true;
     },
 
@@ -801,13 +808,17 @@ export function backupDoPainel() {
     async carregarBackup(comAviso = true) {
       this.bkCarregando = comAviso;
       const r = await api.verBackup();
-      this.bkCarregando = false;
       if (!r.ok || !r.dados) {
+        this.bkCarregando = false;
         this.bkErro = r.erro || MSG_FALHA;
         return false;
       }
       this.bkErro = "";
-      await this.aplicarBackup(r.dados);
+      try {
+        await this.aplicarBackup(r.dados);
+      } finally {
+        this.bkCarregando = false; // só depois da lista (mesmo motivo do carregarSeguranca)
+      }
       return true;
     },
 
