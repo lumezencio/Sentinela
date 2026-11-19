@@ -23,7 +23,7 @@ from sentinela.api.auth import (
 )
 from sentinela.api.comum import auditar
 from sentinela.api.deps import SessaoDB, UsuarioAtual, agora_utc, permite_restrita
-from sentinela.db.modelos import Usuario
+from sentinela.db.modelos import Sessao, Usuario
 from sentinela.seguranca import recuperacao, totp
 from sentinela.seguranca.bloqueio import LimitadorIP
 from sentinela.seguranca.senhas import SENHA_MAXIMA
@@ -157,6 +157,14 @@ async def confirmar(
             await db.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, detail=MSG_JA_ATIVO)
         await recuperacao.gravar(db, usuario.id, hashes, agora)
+        # quem ativa o segundo fator pode estar desconfiando da senha: as sessões abertas em outro
+        # lugar caem (a atual é trocada logo abaixo); tudo na mesma transação da ativação
+        await db.execute(
+            update(Sessao)
+            .where(Sessao.usuario_id == usuario.id)
+            .values(revogada=True)
+            .execution_options(synchronize_session=False)
+        )
         auditar(db, request, usuario, "totp.ativar", f"usuario:{usuario.id}")
         await db.commit()
     except HTTPException:

@@ -478,3 +478,34 @@ def test_gzip_corrompido_no_meio_vira_erro_backup_fixo(tmp_path: Path, banco: Pa
                 recusados += 1
                 assert "zlib" not in str(e).lower()
     assert recusados > 10
+
+
+def test_restaurar_revoga_as_sessoes_do_banco_restaurado(
+    tmp_path: Path, banco: Path, destino: Path
+) -> None:
+    """Sessão revogada depois do backup não pode voltar a valer por causa do restore."""
+    con = sqlite3.connect(banco)
+    con.execute("CREATE TABLE sessao (jti TEXT PRIMARY KEY, revogada BOOLEAN NOT NULL)")
+    con.executemany("INSERT INTO sessao VALUES (?, 0)", [("a",), ("b",)])
+    con.commit()
+    con.close()
+    copia = criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    vivo = criar_banco(tmp_path / "vivo.db", linhas=3)
+    restaurar_backup(copia, vivo, AGORA + timedelta(minutes=1), "0.4.0")
+    con = sqlite3.connect(vivo)
+    try:
+        assert con.execute("SELECT count(*) FROM sessao WHERE revogada = 0").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM sessao").fetchone()[0] == 2
+    finally:
+        con.close()
+    assert not vivo.with_name("vivo.db-wal").exists()
+    assert contar(vivo) == 50  # o resto do banco restaurado fica igual
+
+
+def test_restaurar_backup_sem_tabela_de_sessao_segue(
+    tmp_path: Path, banco: Path, destino: Path
+) -> None:
+    copia = criar_backup(banco, destino, "manual", AGORA, "0.4.0")
+    vivo = criar_banco(tmp_path / "vivo.db", linhas=3)
+    restaurar_backup(copia, vivo, AGORA + timedelta(minutes=1), "0.4.0")
+    assert contar(vivo) == 50

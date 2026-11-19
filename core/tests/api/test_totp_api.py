@@ -15,7 +15,7 @@ from sentinela.db.modelos import Auditoria, CodigoRecuperacao, Sessao, Usuario
 from sentinela.seguranca import etapa, recuperacao
 from sentinela.seguranca.bloqueio import LimitadorIP
 from sentinela.seguranca.etapa import COOKIE_ETAPA
-from sentinela.seguranca.sessoes import hash_token
+from sentinela.seguranca.sessoes import criar_sessao, hash_token
 from sentinela.seguranca.totp import contador_de, decifrar_segredo, totp_ativo
 from tests.apoio_totp import Tempo, codigo_em, dar_totp, sessoes_do, usuario_de
 from tests.conftest import SENHA_TESTE, CriarUsuario
@@ -643,6 +643,32 @@ async def test_confirmar_rotaciona_a_sessao(
     async with httpx.AsyncClient(transport=transporte, base_url="https://teste") as outro:
         outro.cookies.set("sentinela_sessao", antiga)
         assert (await outro.get("/api/v1/auth/eu")).status_code == 401
+
+
+async def test_confirmar_derruba_as_outras_sessoes_do_usuario_e_so_dele(
+    app: FastAPI,
+    cliente_visualizador: httpx.AsyncClient,
+    criar_usuario: CriarUsuario,
+    tempo: Tempo,
+) -> None:
+    c = cliente_visualizador
+    await criar_usuario("outra-pessoa", SENHA_TESTE, "visualizador")
+    outro_usuario = await usuario_de(app, "outra-pessoa")
+    dono = await usuario_de(app, "visual-teste")
+    async with sessoes_do(app)() as db:
+        em_outro_lugar = await criar_sessao(db, dono.id, tempo())
+        de_outra_pessoa = await criar_sessao(db, outro_usuario.id, tempo())
+    segredo = (await c.post(INICIAR, json={"senha": SENHA_TESTE})).json()["chave"].replace(" ", "")
+    assert (
+        await c.post(CONFIRMAR, json={"codigo": codigo_em(segredo, tempo())})
+    ).status_code == 200
+    transporte = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transporte, base_url="https://teste") as outro:
+        outro.cookies.set("sentinela_sessao", em_outro_lugar)
+        assert (await outro.get("/api/v1/auth/eu")).status_code == 401
+        outro.cookies.set("sentinela_sessao", de_outra_pessoa)
+        assert (await outro.get("/api/v1/auth/eu")).status_code == 200
+    assert (await c.get("/api/v1/auth/eu")).status_code == 200  # a sessão nova segue valendo
 
 
 async def test_limite_de_5_tentativas_por_etapa_e_atomico_sob_concorrencia(

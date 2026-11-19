@@ -502,14 +502,31 @@ def _exigir_banco_livre(banco: Path) -> None:
             con.close()
 
 
+def _revogar_sessoes(banco: Path) -> None:
+    """Marca todas as sessões do banco restaurado como revogadas (todos entram de novo).
+
+    O backup traz as sessões de quando foi feito; se depois dele alguém revogou sessões (TOTP
+    zerado, suspeita de invasão), restaurar não pode ressuscitá-las. Feito no ``.novo``, antes da
+    troca: ou o banco restaurado já nasce com as sessões revogadas, ou nada é trocado."""
+    con = sqlite3.connect(banco, timeout=5.0)
+    try:
+        con.execute("UPDATE sessao SET revogada = 1")
+        con.commit()
+    except sqlite3.OperationalError as e:
+        if "no such table" not in str(e).lower():  # backup antigo sem a tabela: nada a revogar
+            raise ErroBackup(MSG_INVALIDO) from None
+    finally:
+        con.close()
+
+
 def restaurar_backup(arquivo: Path, banco: Path, agora: datetime, versao: str) -> Path | None:
     """Restaura ``arquivo`` sobre ``banco`` (o core deve estar parado).
 
     Verifica, extrai por fluxo para ``<banco>.novo``, guarda o banco atual como backup
     ``pre-restore`` em ``<pasta do banco>/backups`` (se o banco atual estiver corrompido ou sem
-    espaço, ele é só movido para o lado, sem apagar nada), apaga ``-wal``/``-shm`` do antigo
-    (nunca reaplicados) e troca por ``os.replace``. Devolve o ``pre-restore`` (ou ``None`` se não
-    havia banco).
+    espaço, ele é só movido para o lado, sem apagar nada), revoga as sessões do banco restaurado,
+    apaga ``-wal``/``-shm`` do antigo (nunca reaplicados) e troca por ``os.replace``. Devolve o
+    ``pre-restore`` (ou ``None`` se não havia banco).
     """
     novo = banco.with_name(banco.name + ".novo")
     _extrair_verificando(arquivo, revisoes_do_codigo(), novo)
@@ -530,6 +547,7 @@ def restaurar_backup(arquivo: Path, banco: Path, agora: datetime, versao: str) -
                         os.replace(lateral, guardado.with_name(guardado.name + sufixo))
         for sufixo in ("-wal", "-shm"):
             banco.with_name(banco.name + sufixo).unlink(missing_ok=True)
+        _revogar_sessoes(novo)
         os.replace(novo, banco)
         banco.chmod(0o600)
         return guardado
