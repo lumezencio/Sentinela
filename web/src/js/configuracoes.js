@@ -709,8 +709,9 @@ export function segurancaDoPainel() {
         const ok = await this.confirmar({
           titulo: "Exigir o segundo fator?",
           texto:
-            "Sua conta ainda não tem o segundo fator. Se você exigir agora, o seu próximo acesso " +
-            "só poderá ativá-lo. Ative o seu antes em “Proteger minha conta”, ou continue sabendo disso.",
+            "Sua conta ainda não tem o segundo fator. Se você exigir agora, a política vale na hora: " +
+            "esta sessão fica restrita e você será levado à página Segurança para ativá-lo antes de " +
+            "voltar ao painel. Prefere ativar o seu antes? Cancele e use “Proteger minha conta”.",
           botao: "Exigir mesmo assim",
           perigo: true,
         });
@@ -726,6 +727,11 @@ export function segurancaDoPainel() {
         return;
       }
       this.segExigir = Boolean(r.dados && r.dados.exigir_totp_admin);
+      if (this.segExigir && !this.segMeuTotp) {
+        // a política vale na hora e a sessão passa a ser restrita: o painel inteiro daria 403
+        window.location.replace("seguranca.html");
+        return;
+      }
       this.segAviso = this.segExigir
         ? "Agora todo administrador precisa do segundo fator."
         : "O segundo fator deixou de ser obrigatório para administradores.";

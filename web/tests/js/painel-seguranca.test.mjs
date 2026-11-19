@@ -59,6 +59,44 @@ test("alternarExigirTotp: sem o meu fator pede confirmação e respeita o 'não'
   assert.equal(c.segExigir, false);
 });
 
+test("alternarExigirTotp: sem o meu fator, depois de confirmar e salvar, vai para seguranca.html", async () => {
+  const c = segurancaDoPainel();
+  c.segMeuTotp = false;
+  let textoDoAviso = "";
+  c.confirmar = async ({ texto }) => ((textoDoAviso = texto), true);
+  const destinos = [];
+  const antes = globalThis.window;
+  globalThis.window = { location: { replace: (u) => destinos.push(u) } };
+  try {
+    await com({ definirSeguranca: async (v) => ok({ exigir_totp_admin: v }) }, () => c.alternarExigirTotp());
+  } finally {
+    globalThis.window = antes;
+  }
+  assert.deepEqual(destinos, ["seguranca.html"]);
+  assert.equal(c.segExigir, true);
+  assert.doesNotMatch(textoDoAviso, /próximo acesso/);
+  assert.match(textoDoAviso, /na hora/);
+});
+
+test("alternarExigirTotp: com o meu fator ativo não redireciona; desligar também não", async () => {
+  const destinos = [];
+  const antes = globalThis.window;
+  globalThis.window = { location: { replace: (u) => destinos.push(u) } };
+  try {
+    const c = segurancaDoPainel();
+    c.segMeuTotp = true;
+    await com({ definirSeguranca: async (v) => ok({ exigir_totp_admin: v }) }, () => c.alternarExigirTotp());
+    const d = segurancaDoPainel();
+    d.segMeuTotp = false;
+    d.segExigir = true;
+    await com({ definirSeguranca: async (v) => ok({ exigir_totp_admin: v }) }, () => d.alternarExigirTotp());
+    assert.equal(d.segExigir, false);
+  } finally {
+    globalThis.window = antes;
+  }
+  assert.deepEqual(destinos, []);
+});
+
 test("backup: sem cópias diz que ainda não houve; com cópias usa o fuso e não trunca", async () => {
   const c = backupDoPainel();
   c.fuso = "UTC";
