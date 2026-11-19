@@ -28,6 +28,7 @@ valor_env() {
   if [[ -f .env ]]; then
     linha="$(grep -E "^${nome}=" .env | tail -n 1 || true)"
     valor="${linha#*=}"
+    valor="${valor%$'\r'}"
     valor="${valor%\"}"
     valor="${valor#\"}"
   fi

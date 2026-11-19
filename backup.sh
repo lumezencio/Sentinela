@@ -43,18 +43,34 @@ done
 
 command -v docker >/dev/null 2>&1 || falhar "'docker' não encontrado no PATH"
 
+if [[ $EXPORTAR -eq 1 ]]; then
+  [[ -n "$DESTINO" ]] || falhar "pasta de exportação vazia"
+  # ':' faria o "compose cp" tratar parte do caminho como serviço
+  [[ "$DESTINO" != *:* ]] || falhar "a pasta de exportação não pode conter ':' (use outro caminho)"
+  [[ "$DESTINO" != -* ]] || DESTINO="./$DESTINO"
+fi
+
 NOME="$(compose exec -T core python -m sentinela.cli backup-criar --origem manual)" ||
   falhar "não foi possível criar o backup (o core está no ar?)"
 echo "backup criado: $NOME"
+echo "aviso: $AVISO_ENV"
 
 if [[ $EXPORTAR -eq 1 ]]; then
-  [[ -n "$DESTINO" ]] || falhar "pasta de exportação vazia"
-  (umask 077 && mkdir -p "$DESTINO") || falhar "não foi possível criar $DESTINO"
-  chmod 700 "$DESTINO"
-  compose cp core:/dados/backups/. "$DESTINO" || falhar "não foi possível copiar os backups do volume"
-  # o cp pode devolver permissões do contêiner: deixa tudo restrito ao dono
-  find "$DESTINO" -type f -exec chmod 600 {} +
+  CRIADA=0
+  if [[ ! -e "$DESTINO" ]]; then
+    (umask 077 && mkdir -p "$DESTINO") || falhar "não foi possível criar $DESTINO"
+    CRIADA=1
+  fi
+  [[ -d "$DESTINO" ]] || falhar "$DESTINO existe e não é uma pasta"
+  # só uma pasta criada por este script é restringida; uma existente fica como está
+  if [[ $CRIADA -eq 1 ]]; then
+    chmod 700 "$DESTINO" 2>/dev/null ||
+      echo "aviso: não foi possível restringir as permissões de $DESTINO (vfat/exFAT?); proteja a pasta por outros meios" >&2
+  fi
+  (umask 077 && compose cp core:/dados/backups/. "$DESTINO") ||
+    falhar "não foi possível copiar os backups do volume"
+  # o cp pode devolver permissões do contêiner: deixa os backups restritos ao dono
+  find "$DESTINO" -maxdepth 1 -type f -name '*.tar.gz' -exec chmod 600 {} + 2>/dev/null ||
+    echo "aviso: não foi possível restringir as permissões dos arquivos exportados (vfat/exFAT?)" >&2
   echo "backups exportados para: $DESTINO"
 fi
-
-echo "aviso: $AVISO_ENV"

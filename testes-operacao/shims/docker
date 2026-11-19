@@ -15,8 +15,9 @@ printf 'docker %s\n' "$linha" >>"$SHIM_LOG"
 
 falha_pedida() {
   local padrao uma marca
-  local IFS='|'
-  for padrao in ${SHIM_FALHAR:-}; do
+  local -a padroes=()
+  IFS='|' read -r -a padroes <<<"${SHIM_FALHAR:-}"
+  for padrao in "${padroes[@]}"; do
     [[ -n "$padrao" ]] || continue
     uma=0
     if [[ "$padrao" == 1x:* ]]; then
@@ -39,6 +40,17 @@ falha_pedida() {
 if falha_pedida; then
   echo "shim: falha simulada para: $linha" >&2
   exit 1
+fi
+
+# SHIM_DORMIR="padrão": chamadas que casam esperam 2 s (para testes de sinal)
+# shellcheck disable=SC2053
+if [[ -n "${SHIM_DORMIR:-}" && "$linha" == $SHIM_DORMIR ]]; then
+  sleep 2
+fi
+
+# entrada padrão enviada ao volume: guarda para o teste conferir o conteúdo
+if [[ "$linha" == *"sh -c"*"cat >"* ]]; then
+  cat >"$SHIM_DIR/stdin.recebido"
 fi
 
 case "$1" in

@@ -27,6 +27,8 @@ rodar_em_diretorio_temporario() {
   unset SHIM_FALHAR SHIM_IMAGENS SENTINELA_PROJETO
   PATH="$LIB_DIR/shims:$PATH"
   export PATH
+  # o teste roda em subshell: o EXIT limpa mesmo quando uma asserção encerra o teste
+  trap limpar_temporario EXIT
   cd "$TMP_OP" || return 1
 }
 
