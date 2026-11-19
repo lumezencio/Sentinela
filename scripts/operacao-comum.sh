@@ -73,13 +73,65 @@ esperar_saude() {
   return 1
 }
 
-# Trava entre execuções (mkdir é atômico; flock falta no macOS)
+# Trava entre execuções (mkdir é atômico; flock falta no macOS).
+# update.sh chama restore.sh já com a trava: ele exporta SENTINELA_TRAVA_PAI=<seu PID> e o filho,
+# cujo PPID é esse PID, reaproveita a trava sem adquiri-la nem soltá-la.
 TRAVA_DIR=".operacao.lock"
+TRAVA_MINHA=0
 trava_adquirir() {
+  if [[ "${SENTINELA_TRAVA_PAI:-}" == "$PPID" && -d "$TRAVA_DIR" ]]; then
+    return 0
+  fi
   if ! mkdir "$TRAVA_DIR" 2>/dev/null; then
     falhar "outra operação (backup, restauração ou atualização) está em curso; se não houver, apague a pasta $TRAVA_DIR"
   fi
+  TRAVA_MINHA=1
 }
 trava_liberar() {
-  rmdir "$TRAVA_DIR" 2>/dev/null || true
+  if [[ "$TRAVA_MINHA" -eq 1 ]]; then
+    rmdir "$TRAVA_DIR" 2>/dev/null || true
+    TRAVA_MINHA=0
+  fi
+}
+
+# --- Imagens (usadas por update.sh) -------------------------------------------------------
+IMG_REPO_CORE="ghcr.io/lumezencio/sentinela-core"
+IMG_REPO_WEB="ghcr.io/lumezencio/sentinela-web"
+
+# imagens_do_env: publicadas|locais. Sem IMAGENS ou sem VERSAO no .env (Fases 1-3) = locais.
+# Valor inválido de IMAGENS: recusa (chame com "|| exit 1" fora de if, pois falhar sai só do subshell).
+imagens_do_env() {
+  local imagens versao
+  imagens="$(valor_env IMAGENS "")"
+  versao="$(valor_env VERSAO "")"
+  case "$imagens" in
+    "" | locais | publicadas) ;;
+    *) falhar "IMAGENS no .env deve ser 'publicadas' ou 'locais' (achei '$imagens')" ;;
+  esac
+  if [[ -z "$imagens" || -z "$versao" ]]; then
+    echo locais
+  else
+    echo "$imagens"
+  fi
+}
+
+# tag_pre: marcação das imagens de antes da atualização (UTC, ordenável como texto)
+tag_pre() {
+  date -u +pre_%Y%m%dT%H%M%SZ
+}
+
+# limpar_pre: apaga só as marcações pre_* do Sentinela além das 3 mais recentes de cada imagem.
+# Nunca -f (imagem em uso ou com outra marcação fica), nunca outra imagem.
+limpar_pre() {
+  local lista ref repo
+  lista="$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)" || return 0
+  for repo in "$IMG_REPO_CORE" "$IMG_REPO_WEB"; do
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      docker rmi "$ref" >/dev/null 2>&1 || echo "aviso: não consegui remover a marcação $ref" >&2
+    done < <(
+      printf '%s\n' "$lista" | tr -d '\r' |
+        grep -E "^${repo//./\.}:pre_[0-9]{8}T[0-9]{6}Z$" | sort -r | tail -n +4
+    )
+  done
 }

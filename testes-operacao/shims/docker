@@ -3,7 +3,9 @@
 # Registra cada chamada (uma linha) em $SHIM_LOG e responde por caso.
 #
 #   SHIM_FALHAR="padrão1|padrão2"  chamadas cuja linha casa com o padrão (glob) saem com 1;
-#                                  prefixo "1x:" faz falhar só na primeira vez
+#                                  prefixo "1x:" faz falhar só na primeira vez; "A-B:" só nas
+#                                  chamadas de número A a B que casam com o padrão
+#   SHIM_DIGEST_CORE / SHIM_DIGEST_WEB  digest que "image inspect" devolve (padrão: aaaa.../bbbb...)
 #   SHIM_IMAGENS="repo:tag ..."    saída de "docker image ls" (uma por linha)
 #   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
 #   SHIM_DORMIR="padrão"           chamadas que casam esperam 2 s (testes de sinal)
@@ -16,18 +18,30 @@ linha="$*"
 printf 'docker %s\n' "$linha" >>"$SHIM_LOG"
 
 falha_pedida() {
-  local padrao uma marca
+  local padrao uma marca janela n de ate
   local -a padroes=()
   IFS='|' read -r -a padroes <<<"${SHIM_FALHAR:-}"
   for padrao in "${padroes[@]}"; do
     [[ -n "$padrao" ]] || continue
     uma=0
+    janela=""
     if [[ "$padrao" == 1x:* ]]; then
       uma=1
       padrao="${padrao#1x:}"
+    elif [[ "$padrao" =~ ^([0-9]+)-([0-9]+):(.*)$ ]]; then
+      janela="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+      padrao="${BASH_REMATCH[3]}"
     fi
     # shellcheck disable=SC2053
     if [[ "$linha" == $padrao ]]; then
+      if [[ -n "$janela" ]]; then
+        marca="$SHIM_DIR/.conta-$(printf '%s' "$padrao" | cksum | cut -d' ' -f1)"
+        n=$(($(cat "$marca" 2>/dev/null || echo 0) + 1))
+        echo "$n" >"$marca"
+        read -r de ate <<<"$janela"
+        ((n >= de && n <= ate)) && return 0
+        continue
+      fi
       if ((uma)); then
         marca="$SHIM_DIR/.falhou-$(printf '%s' "$padrao" | cksum | cut -d' ' -f1)"
         [[ -e "$marca" ]] && continue
@@ -62,10 +76,21 @@ if [[ "$linha" == *"sh -c"*"cat >"* ]]; then
 fi
 
 case "$1" in
-  version | info | tag | rmi | inspect | pull | build) exit 0 ;;
+  inspect)
+    # imagem em uso pelo contêiner (id fictício derivado do id do contêiner)
+    echo "sha256:img-${*: -1}"
+    exit 0
+    ;;
+  version | info | tag | rmi | pull | build) exit 0 ;;
   image)
     if [[ "${2:-}" == "ls" ]]; then
       for img in ${SHIM_IMAGENS:-}; do echo "$img"; done
+    elif [[ "${2:-}" == "inspect" ]]; then
+      ref="${*: -1}"
+      case "$ref" in
+        *sentinela-core*) echo "${ref%%:*}@${SHIM_DIGEST_CORE:-sha256:$(printf 'a%.0s' {1..64})}" ;;
+        *) echo "${ref%%:*}@${SHIM_DIGEST_WEB:-sha256:$(printf 'b%.0s' {1..64})}" ;;
+      esac
     fi
     exit 0
     ;;
@@ -86,7 +111,9 @@ case "$1" in
           printf '%s\n' "sentinela-20261118T030000Z-manual.tar.gz" "sentinela-20261117T030000Z-diario.tar.gz"
         fi
         ;;
+      *" backup-criar --origem atualizacao"*) echo "sentinela-20261118T030000Z-atualizacao.tar.gz" ;;
       *" backup-criar"*) echo "sentinela-20261118T030000Z-manual.tar.gz" ;;
+      *" ps -q "*) echo "cid-${*: -1}" ;;
       *" backup-verificar"*) echo "backup válido: esquema 0005, Sentinela 0.4.0" ;;
       *" restaurar "*) echo "sentinela-20261118T030100Z-pre-restore.tar.gz" ;;
       # estado do core (gravado depois de qualquer espera: é o estado ao fim da chamada)

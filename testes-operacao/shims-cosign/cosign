@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# cosign de teste (só entra no PATH nos testes que o querem): registra e falha se pedido por SHIM_FALHAR.
+linha="$*"
+printf 'cosign %s\n' "$linha" >>"${SHIM_LOG:?}"
+# shellcheck disable=SC2053
+[[ -n "${SHIM_FALHAR_COSIGN:-}" && "$linha" == $SHIM_FALHAR_COSIGN ]] && exit 1
+exit 0

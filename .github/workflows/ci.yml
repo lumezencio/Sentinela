@@ -113,3 +113,23 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+
+  operacao:
+    # scripts de operação: testes com docker falso (todos os ramos) e a volta automática do
+    # update.sh com docker de verdade, forçando uma migração que quebra a saúde do core
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck -x backup.sh restore.sh update.sh scripts/operacao-comum.sh \
+            testes-operacao/lib.sh testes-operacao/rodar.sh testes-operacao/test_*.sh \
+            testes-operacao/shims/docker testes-operacao/shims/git testes-operacao/shims/curl \
+            testes-operacao/shims-cosign/cosign
+      - name: testes com docker falso
+        run: |
+          bash testes-operacao/test_restore_backup.sh
+          bash testes-operacao/test_update.sh
+      - name: volta automática com docker de verdade
+        run: bash testes-operacao/rodar.sh

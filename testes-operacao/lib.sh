@@ -24,12 +24,35 @@ rodar_em_diretorio_temporario() {
   export SHIM_LOG="$TMP_OP/shim-estado/docker.log"
   export SHIM_DIR="$TMP_OP/shim-estado"
   : >"$SHIM_LOG"
-  unset SHIM_FALHAR SHIM_IMAGENS SHIM_LISTA SHIM_DORMIR SENTINELA_PROJETO
+  unset SHIM_FALHAR SHIM_IMAGENS SHIM_LISTA SHIM_DORMIR SENTINELA_PROJETO SHIM_DIGEST_CORE SHIM_DIGEST_WEB SHIM_DIGESTS_TXT SHIM_FALHAR_COSIGN
   PATH="$LIB_DIR/shims:$PATH"
   export PATH
   # o teste roda em subshell: o EXIT limpa mesmo quando uma asserção encerra o teste
   trap limpar_temporario EXIT
   cd "$TMP_OP" || return 1
+}
+
+# git_real ARGS...: git de verdade, sem passar pelo shim (não entra no log)
+git_real() {
+  PATH="${PATH#"$LIB_DIR/shims:"}" git -c user.name=teste -c user.email=teste@exemplo.invalid -c init.defaultBranch=main "$@"
+}
+
+# preparar_repositorio_git: o diretório de teste vira um clone em v0.4.0 (ramo main); o remoto
+# já tem a tag v0.5.0 (um commit à frente), que o clone ainda não conhece.
+preparar_repositorio_git() {
+  local origem="$SHIM_DIR/origem.git" outro="$SHIM_DIR/outro"
+  git_real init -q --bare "$origem"
+  git_real init -q .
+  git_real add update.sh restore.sh backup.sh scripts docker-compose.yml
+  git_real commit -q -m "v0.4.0"
+  git_real tag v0.4.0
+  git_real remote add origin "$origem"
+  git_real push -q origin main v0.4.0
+  git_real clone -q "$origem" "$outro"
+  echo "# v0.5.0" >>"$outro/docker-compose.yml"
+  git_real -C "$outro" commit -q -am "v0.5.0"
+  git_real -C "$outro" tag v0.5.0
+  git_real -C "$outro" push -q origin v0.5.0
 }
 
 limpar_temporario() {
