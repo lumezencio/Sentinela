@@ -17,10 +17,13 @@ set -euo pipefail
 # Git Bash no Windows: não converter caminhos
 export MSYS_NO_PATHCONV=1
 
-RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SENTINELA_RAIZ: o update.sh roda uma CÓPIA deste script (tirada antes de qualquer checkout) e
+# aponta aqui a pasta do projeto; sem isso, a pasta do próprio script
+RAIZ="${SENTINELA_RAIZ:-$AQUI}"
 cd "$RAIZ"
 # shellcheck source=scripts/operacao-comum.sh
-source "$RAIZ/scripts/operacao-comum.sh"
+source "$AQUI/scripts/operacao-comum.sh"
 
 USO="uso: ./restore.sh ARQUIVO.tar.gz [--sim]  |  ./restore.sh --do-volume NOME [--sim]"
 erro_de_uso() {

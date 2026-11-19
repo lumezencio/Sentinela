@@ -301,21 +301,47 @@ test_restore_falha_nas_duas_imagens_mantem_conteineres_parados_e_comandos_do_est
   afirmar_log_nao_contem "$VOLTA_UP"
   grep -qF "foram deixados parados" "$TMP_OP/saida-update" || _falhou "deveria dizer que ficaram parados"
   local out="$TMP_OP/saida-update"
-  # restore preso à imagem candidata (ID) e ao volume real
-  grep -qE "docker run --rm --env-file .env -v sentinela_dados_teste:/dados sha256:novo-core python -m sentinela.cli restaurar /dados/backups/sentinela-20261118T030000Z-atualizacao.tar.gz" "$out" ||
+  # restore preso à imagem anterior (tem "restaurar"), pelo ID, e ao volume real
+  grep -qE "docker run --rm --env-file .env -v sentinela_dados_teste:/dados sha256:rodando-core python -m sentinela.cli restaurar /dados/backups/sentinela-20261118T030000Z-atualizacao.tar.gz" "$out" ||
     _falhou "faltou o restore preso à imagem e ao volume: $(cat "$out")"
   # os arquivos já foram devolvidos: os passos de arquivo não são repetidos
   if sed -n '/Volta manual/,$p' "$out" | grep -qE "git checkout|cp .env.pre|docker tag"; then _falhou "repetiu passos de arquivo já feitos"; fi
   afirmar_igual "$(versao_atual)" "v0.4.0"
 }
 
-test_imagem_antiga_sem_restaurar_nao_tenta_de_novo() {
+test_imagem_antiga_sem_restaurar_nao_tenta_de_novo_e_explica_sem_enganar() {
   ambiente
   export SHIM_SEM_BACKUP_CLI=1
   export SHIM_FALHAR="*--wait-timeout 120 core|*sentinela.cli restaurar*"
   if atualizar v0.5.0; then _falhou "deveria falhar"; fi
   [[ "$(linhas_de 'sentinela.cli restaurar')" -eq 1 ]] || _falhou "não deveria tentar na imagem sem o comando"
-  grep -qF "não tem o comando 'restaurar'" "$TMP_OP/saida-update" || _falhou "deveria explicar"
+  local out="$TMP_OP/saida-update"
+  grep -qF "não tem o comando 'restaurar'" "$out" || _falhou "deveria explicar"
+  grep -qF "a CLI dela já falhou" "$out" || _falhou "deveria dizer que a CLI da imagem nova já falhou"
+  grep -qF "backup ou no volume" "$out" || _falhou "deveria apontar a causa possível"
+  grep -qF "shim: falha simulada" "$out" || _falhou "deveria mostrar o fim do erro"
+  # não oferece a imagem candidata (que já falhou): oferece uma publicada conhecida
+  grep -qE "docker run --rm --env-file .env -v sentinela_dados_teste:/dados ghcr.io/lumezencio/sentinela-core:" "$out" || _falhou "faltou o comando com imagem publicada"
+  if grep -q "sha256:novo-core python" "$out"; then _falhou "ofereceu a imagem candidata que já falhou"; fi
+}
+
+test_restore_usa_a_copia_do_inicio_mesmo_se_o_restore_da_tag_candidata_for_inutil() {
+  ambiente
+  # a tag candidata traz um restore.sh quebrado (sem --sem-subir): a volta não pode usá-lo
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "restore da candidata (nao use)" >&2' 'exit 97' >"$SHIM_DIR/outro/restore.sh"
+  git_real -C "$SHIM_DIR/outro" commit -q -am "restore quebrado"
+  git_real -C "$SHIM_DIR/outro" tag -f v0.5.0 >/dev/null
+  git_real -C "$SHIM_DIR/outro" push -q -f origin v0.5.0
+  mkdir "$TMP_OP/tmpdir"
+  export TMPDIR="$TMP_OP/tmpdir"
+  export SHIM_FALHAR="1x:*--wait-timeout 120 core|1x:*sentinela.cli restaurar*"
+  if atualizar v0.5.0; then _falhou "deveria falhar"; fi
+  if grep -qF "nao use" "$TMP_OP/saida-update"; then _falhou "usou o restore.sh da candidata"; fi
+  # 1a restauração falhou (simulada), a 2a, depois do checkout de volta, funcionou com a cópia
+  [[ "$(linhas_de 'sentinela.cli restaurar')" -eq 2 ]] || _falhou "esperava 2 restaurações"
+  grep -qF "Volta concluída" "$TMP_OP/saida-update" || _falhou "deveria concluir a volta: $(cat "$TMP_OP/saida-update")"
+  # a pasta privada some ao fim
+  [[ -z "$(find "$TMP_OP/tmpdir" -mindepth 1 -maxdepth 1)" ]] || _falhou "a pasta temporária deveria ser removida"
 }
 
 test_sem_rotulo_dos_arquivos_compose_recusa_sem_alterar() {
@@ -506,6 +532,7 @@ test_sigint_no_meio_so_relata_fatos_sem_agir() {
   # se este teste roda num shell em segundo plano, o SIGINT já vem ignorado e não pode ser tratado:
   # nada a provar aqui (o CI e o terminal rodam em primeiro plano)
   if [[ "$(bash -c 'kill -INT $$; echo vivo' 2>/dev/null)" == "vivo" ]]; then
+    [[ "${CI:-}" != "true" ]] || _falhou "no CI o SIGINT tem de chegar ao script (shell em segundo plano?)"
     echo "    (SIGINT ignorado neste shell: teste dispensado)"
     return 0
   fi

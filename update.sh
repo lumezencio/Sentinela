@@ -73,9 +73,10 @@ IMAGENS_ANTERIOR=""
 TAG_COMPOSE_ANTERIOR="latest"
 ID_CORE_ANTES=""
 ID_WEB_ANTES=""
-ID_CORE_ALVO=""
 VOLUME_DADOS=""
 ARQUIVOS_REVERTIDOS=0
+PRIV=""          # pasta privada (0700) com a cópia do restore.sh e do log das restaurações
+CLI_ANTIGA_TEM=""  # 1/0: a imagem anterior tem "restaurar" (só depois de uma restauração que falhou)
 TAG_ALVO=""
 VERSAO_ALVO=""
 MODO="locais"
@@ -106,8 +107,15 @@ comandos_de_volta() {
   echo "Volta manual (execute na pasta do projeto, nesta ordem; os contêineres continuam parados):"
   echo "  $p stop core"
   if [[ "${1:-}" == preso ]]; then
-    # a restauração automática já falhou: preso à imagem candidata (ID) e ao volume real
-    echo "  docker run --rm --env-file .env -v ${VOLUME_DADOS:-<volume de dados>}:/dados ${ID_CORE_ALVO:-$IMG_REPO_CORE:$VERSAO_ALVO} python -m sentinela.cli restaurar /dados/backups/$BACKUP"
+    # a restauração automática já falhou: preso a uma imagem e ao volume real. A candidata já
+    # falhou; usa a anterior (se tem "restaurar") ou uma imagem publicada conhecida como boa.
+    local img
+    if [[ "$CLI_ANTIGA_TEM" == 1 && -n "$ID_CORE_ANTES" ]]; then
+      img="$ID_CORE_ANTES"
+    else
+      img="$IMG_REPO_CORE:${VERSAO_ANTERIOR:-<tag publicada conhecida>}"
+    fi
+    echo "  docker run --rm --env-file .env -v ${VOLUME_DADOS:-<volume de dados>}:/dados $img python -m sentinela.cli restaurar /dados/backups/$BACKUP"
   else
     echo "  ./restore.sh --do-volume $BACKUP --sim --sem-subir"
   fi
@@ -163,9 +171,29 @@ cli_tem_restaurar() {
   [[ "$ajuda" == *restaurar* ]]
 }
 
-# restaurar_backup: restore.sh só restaura (core fica parado); usa a imagem que o compose usa agora
+# restaurar_backup: restore.sh só restaura (core fica parado); usa a imagem que o compose usa agora.
+# Roda a CÓPIA tirada no início (o restore.sh do checkout pode ser o da versão candidata, quebrado,
+# ou o de um checkout antigo, sem --sem-subir); a saída também vai para o log, usado no relatório.
 restaurar_backup() {
-  SENTINELA_TRAVA_PAI="$$" bash "$RAIZ/restore.sh" --do-volume "$BACKUP" --sim --sem-subir >&2
+  local rc
+  # sem pipe: o PPID do restore.sh tem de ser este processo (a trava herdada confere o PID)
+  SENTINELA_RAIZ="$RAIZ" SENTINELA_TRAVA_PAI="$$" bash "$PRIV/restore.sh" --do-volume "$BACKUP" --sim --sem-subir >"$PRIV/restore.log" 2>&1
+  rc=$?
+  cat "$PRIV/restore.log" >&2
+  return "$rc"
+}
+
+# explicar_restore_sem_saida: as duas restaurações falharam; fatos e o que fazer
+explicar_restore_sem_saida() {
+  echo "A restauração falhou com a imagem nova e com a anterior (ou a anterior não tem o comando)." >&2
+  echo "Últimas linhas do erro da última tentativa:" >&2
+  tail -n 5 "$PRIV/restore.log" 2>/dev/null | recuar >&2
+  if [[ "$CLI_ANTIGA_TEM" == 1 ]]; then
+    echo "A imagem anterior (ID ${ID_CORE_ANTES:-desconhecido}) tem o comando 'restaurar' e também falhou: a causa pode estar no backup ou no volume." >&2
+  else
+    echo "Só a imagem nova tinha o comando 'restaurar' e a CLI dela já falhou (acima). A causa pode estar no backup ou no volume, não só na imagem." >&2
+    echo "Uma imagem publicada e conhecida como boa serve para restaurar: ${IMG_REPO_CORE}:<tag publicada>." >&2
+  fi
 }
 
 # voltar: falha depois da proteção. Cada passo é relatado pelo que foi de fato conferido.
@@ -189,9 +217,11 @@ voltar() {
       reverter_arquivos
       arquivos=$?
       if cli_tem_restaurar; then
+        CLI_ANTIGA_TEM=1
         restaurar_backup
         restaurou=$?
       else
+        CLI_ANTIGA_TEM=0
         echo "A imagem anterior não tem o comando 'restaurar'; não há como tentar de novo automaticamente." >&2
       fi
     fi
@@ -218,6 +248,7 @@ voltar() {
       fi
     else
       echo "ERRO: a volta automática não terminou; os contêineres foram deixados parados." >&2
+      if [[ $restaurou -ne 0 ]]; then explicar_restore_sem_saida; fi
       comandos_de_volta preso >&2
     fi
   else
@@ -274,6 +305,7 @@ finalizar() {
     rc=1
   fi
   trava_liberar
+  if [[ -n "$PRIV" && -d "$PRIV" ]]; then rm -rf -- "$PRIV"; fi
   exit "$rc"
 }
 
@@ -480,6 +512,12 @@ main() {
   docker compose version >/dev/null 2>&1 || falhar "'docker compose' indisponível"
   trava_adquirir
   trap finalizar EXIT
+  # cópia privada do restore.sh (e da lib), antes de qualquer checkout: a volta usa SEMPRE esta
+  PRIV="$(mktemp -d "${TMPDIR:-/tmp}/sentinela-update.XXXXXX")" || falhar "não consegui criar a pasta temporária"
+  chmod 700 "$PRIV"
+  mkdir "$PRIV/scripts"
+  cp "$RAIZ/restore.sh" "$PRIV/restore.sh"
+  cp "$RAIZ/scripts/operacao-comum.sh" "$PRIV/scripts/operacao-comum.sh"
   trap interrompido INT TERM HUP
   [[ -d .git ]] || falhar "esta pasta não é um clone git; update.sh só atualiza instalações feitas por git clone"
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] ||
@@ -549,11 +587,9 @@ main() {
     verificar_imagem core "$IMG_REPO_CORE"
     verificar_imagem web "$IMG_REPO_WEB"
     ALVO_VERIFICADO=1
-    ID_CORE_ALVO="$(id_da_tag "$IMG_REPO_CORE:$VERSAO_ALVO")"
   else
     FASE="construindo as imagens locais"
     compose build core web
-    ID_CORE_ALVO="$(id_da_tag "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR")"
     # imagens idênticas às que rodam: nada a trocar (a versão que RODA, não o checkout)
     if [[ -n "$ID_CORE_ANTES" && "$(id_da_tag "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR")" == "$ID_CORE_ANTES" &&
       "$(id_da_tag "$IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR")" == "$ID_WEB_ANTES" ]]; then
