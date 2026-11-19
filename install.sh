@@ -3,8 +3,10 @@
 #
 #   ./install.sh          instalação real (banco no volume sentinela_dados)
 #   ./install.sh --demo   demonstração com 300 equipamentos simulados (volume próprio)
+#   ./install.sh --build  constrói as imagens neste computador em vez de baixar as publicadas
 #
-# Gera .env (só se não existir; nunca sobrescreve), uma CA local e o certificado do
+# Por padrão baixa e verifica (cosign, ou digests.txt do release) as imagens publicadas no ghcr.io
+# (amd64 e arm64). Raspberry Pi OS de 32 bits (armv7) não é suportado. Gera .env (só se não existir; nunca sobrescreve), uma CA local e o certificado do
 # host em certs/, sobe o compose e imprime a URL e o caminho da CA para instalar nos
 # dispositivos. Variáveis opcionais: SENTINELA_PORTA_HTTPS, SENTINELA_PORTA_HTTP (gravadas
 # no .env na criação), SENTINELA_IPS (IPs extras para o certificado, separados por espaço)
@@ -18,29 +20,29 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$RAIZ"
 
 DEMO=0
+BUILD=0
 for arg in "$@"; do
   case "$arg" in
     --demo) DEMO=1 ;;
+    --build) BUILD=1 ;;
     -h | --help)
-      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
-      echo "opção desconhecida: $arg (use --demo ou --help)" >&2
+      echo "opção desconhecida: $arg (use --demo, --build ou --help)" >&2
       exit 2
       ;;
   esac
 done
 
+# shellcheck source=scripts/operacao-comum.sh
+source "$RAIZ/scripts/operacao-comum.sh"
+
 COMPOSE=(docker compose -f docker-compose.yml)
 if [[ $DEMO -eq 1 ]]; then
   COMPOSE+=(-f docker-compose.demo.yml)
 fi
-
-falhar() {
-  echo "erro: $*" >&2
-  exit 1
-}
 
 for cmd in docker openssl; do
   command -v "$cmd" >/dev/null 2>&1 || falhar "'$cmd' não encontrado no PATH"
@@ -73,6 +75,70 @@ versao_ok "$V_ENGINE" "$MIN_ENGINE" ||
 versao_ok "$V_COMPOSE" "$MIN_COMPOSE" ||
   falhar "Docker Compose ${V_COMPOSE:-desconhecido} é antigo demais; o Sentinela exige $MIN_COMPOSE ou mais novo"
 
+# ---------------------------------------------------------------- arquitetura e imagens
+# detectar_arquitetura: amd64 | arm64 | outra (exige --build). 32 bits (armv6/armv7) é recusado.
+detectar_arquitetura() {
+  local srv maq a
+  srv="$(docker version --format '{{.Server.Arch}}' 2>/dev/null | tr -d '\r' || true)"
+  maq="$(uname -m 2>/dev/null || true)"
+  for a in "$srv" "$maq"; do
+    case "$a" in
+      arm | armv6l | armv7l | armhf)
+        falhar "Raspberry Pi OS de 32 bits (armv7) não é suportado: instale o Raspberry Pi OS de 64 bits."
+        ;;
+    esac
+  done
+  for a in "$srv" "$maq"; do
+    case "$a" in
+      amd64 | x86_64) ARQUITETURA=amd64; return 0 ;;
+      arm64 | aarch64) ARQUITETURA=arm64; return 0 ;;
+    esac
+  done
+  ARQUITETURA="${srv:-${maq:-desconhecida}}"
+}
+
+# versao_pretendida: "version" do core/pyproject.toml (a versão que este código instala)
+versao_pretendida() {
+  local v
+  v="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' core/pyproject.toml 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || falhar "não consegui ler a versão (X.Y.Z) de core/pyproject.toml"
+  printf '%s\n' "$v"
+}
+
+ARQUITETURA=""
+detectar_arquitetura
+if [[ "$ARQUITETURA" != amd64 && "$ARQUITETURA" != arm64 && $BUILD -eq 0 ]]; then
+  falhar "arquitetura '$ARQUITETURA' sem imagem publicada (só amd64 e arm64); use ./install.sh --build"
+fi
+
+# modo: --build força locais; .env existente decide (sem IMAGENS = instalação das Fases 1-3 = locais);
+# instalação nova usa as publicadas. Nada é criado antes de a arquitetura e a verificação passarem.
+ENV_ANTIGO_SEM_IMAGENS=0
+if [[ $BUILD -eq 1 ]]; then
+  MODO=locais
+elif [[ -f .env ]]; then
+  MODO="$(valor_env IMAGENS "")"
+  case "$MODO" in
+    publicadas | locais) ;;
+    "")
+      MODO=locais
+      ENV_ANTIGO_SEM_IMAGENS=1
+      ;;
+    *) falhar "IMAGENS no .env deve ser 'publicadas' ou 'locais' (achei '$MODO')" ;;
+  esac
+else
+  MODO=publicadas
+fi
+
+VERSAO_ALVO=""
+if [[ "$MODO" == publicadas ]]; then
+  VERSAO_ALVO="$(valor_env VERSAO "")"
+  [[ -n "$VERSAO_ALVO" ]] || VERSAO_ALVO="$(versao_pretendida)"
+  [[ "$VERSAO_ALVO" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || falhar "VERSAO no .env deve ser X.Y.Z (achei '$VERSAO_ALVO')"
+  TAG_ALVO="v$VERSAO_ALVO"
+  obter_digests_sem_cosign
+fi
+
 # ---------------------------------------------------------------- .env
 criar_env() {
   [[ -f .env.example ]] || falhar ".env.example não encontrado"
@@ -89,6 +155,8 @@ criar_env() {
       SENTINELA_CHAVE_CREDENCIAIS=*) linha="SENTINELA_CHAVE_CREDENCIAIS=$chave_cred" ;;
       SENTINELA_PORTA_HTTPS=*) linha="SENTINELA_PORTA_HTTPS=${SENTINELA_PORTA_HTTPS:-443}" ;;
       SENTINELA_PORTA_HTTP=*) linha="SENTINELA_PORTA_HTTP=${SENTINELA_PORTA_HTTP:-80}" ;;
+      IMAGENS=*) linha="IMAGENS=$MODO" ;;
+      VERSAO=*) linha="VERSAO=$VERSAO_ALVO" ;;
     esac
     printf '%s\n' "$linha"
   done <.env.example >"$tmp"
@@ -124,8 +192,20 @@ fi
 chmod 600 .env
 garantir_chave_credenciais
 
+# Instalação anterior (sem IMAGENS): só acrescenta a chave; as demais linhas ficam como estão.
+if [[ $ENV_ANTIGO_SEM_IMAGENS -eq 1 ]]; then
+  [[ -z "$(tail -c1 .env)" ]] || printf '\n' >>.env
+  printf 'IMAGENS=locais\n' >>.env
+  echo "[!] instalação anterior: continua construindo aqui; use ./update.sh --imagens-publicadas para migrar"
+elif [[ "$MODO" == publicadas && -z "$(valor_env VERSAO "")" ]]; then
+  definir_env VERSAO "$VERSAO_ALVO"
+fi
+if [[ $BUILD -eq 1 && "$(valor_env IMAGENS "")" == publicadas ]]; then
+  echo "[!] o .env declara IMAGENS=publicadas; --build constrói agora, mas o ./update.sh seguirá usando as publicadas"
+fi
+
 # valor efetivo de uma variável: ambiente do shell > .env > padrão
-valor_env() {
+valor_efetivo() {
   local nome="$1" padrao="$2" v
   if [[ -n "${!nome:-}" ]]; then
     printf '%s' "${!nome}"
@@ -134,7 +214,7 @@ valor_env() {
   v="$(grep -E "^${nome}=" .env | tail -n 1 | cut -d= -f2- || true)"
   printf '%s' "${v:-$padrao}"
 }
-PORTA_HTTPS="$(valor_env SENTINELA_PORTA_HTTPS 443)"
+PORTA_HTTPS="$(valor_efetivo SENTINELA_PORTA_HTTPS 443)"
 grep -qE '^SENTINELA_CHAVE_SESSAO=.+' .env || falhar "SENTINELA_CHAVE_SESSAO vazia no .env"
 grep -qE '^SENTINELA_CHAVE_CREDENCIAIS=.+' .env || falhar "SENTINELA_CHAVE_CREDENCIAIS vazia no .env"
 
@@ -296,9 +376,20 @@ EOF
 fi
 
 # ---------------------------------------------------------------- subir
-echo "[..] construindo e subindo os containers (pode levar alguns minutos)"
 WEB_EXISTIA="$("${COMPOSE[@]}" ps -q web 2>/dev/null || true)"
-"${COMPOSE[@]}" up -d --build --wait --wait-timeout 300
+if [[ "$MODO" == publicadas ]]; then
+  echo "[..] baixando as imagens publicadas (versão $VERSAO_ALVO, $ARQUITETURA)"
+  "${COMPOSE[@]}" pull core web ||
+    falhar "imagem ghcr.io/lumezencio/sentinela-core:$VERSAO_ALVO (ou -web) não encontrada no GHCR; use ./install.sh --build"
+  verificar_imagem core "$IMG_REPO_CORE"
+  verificar_imagem web "$IMG_REPO_WEB"
+  echo "[ok] imagens verificadas"
+  echo "[..] subindo os containers"
+  "${COMPOSE[@]}" up -d --no-build --pull never --wait --wait-timeout 300
+else
+  echo "[..] construindo e subindo os containers (pode levar alguns minutos)"
+  "${COMPOSE[@]}" up -d --build --wait --wait-timeout 300
+fi
 if [[ $CERT_NOVO -eq 1 && -n "$WEB_EXISTIA" ]]; then
   # o nginx só lê o certificado ao iniciar
   "${COMPOSE[@]}" restart web

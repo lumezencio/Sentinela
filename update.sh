@@ -52,8 +52,6 @@ cd "$RAIZ"
 # shellcheck source=scripts/operacao-comum.sh
 source "$RAIZ/scripts/operacao-comum.sh"
 
-EMISSOR_COSIGN='https://token.actions.githubusercontent.com'
-URL_RELEASE="https://github.com/lumezencio/sentinela/releases/download"
 ESPACO_MIN_KB=$((2 * 1024 * 1024))
 
 # Estado da execução: uma só variável de fase, mais os fatos que a volta e o relatório usam
@@ -80,7 +78,6 @@ CLI_ANTIGA_TEM=""  # 1/0: a imagem anterior tem "restaurar" (só depois de uma r
 TAG_ALVO=""
 VERSAO_ALVO=""
 MODO="locais"
-DIGESTS_TXT=""
 TAGS_ALVO_BAIXADAS=0
 
 recuar() {
@@ -424,25 +421,6 @@ id_da_tag() {
   docker image inspect --format '{{.Id}}' "$1" 2>/dev/null | tr -d '\r' || true
 }
 
-# verificar_imagem SERVICO REPO: assinatura (cosign) ou digest do release; fecha por padrão
-verificar_imagem() {
-  local servico="$1" repo="$2" ref d esperado
-  ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:$VERSAO_ALVO" | tr -d '\r' | grep -F "$repo@" | head -n 1)" ||
-    ref=""
-  d="${ref#*@}"
-  [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || falhar "não consegui ler o digest da imagem baixada de '$servico'; nenhum contêiner foi trocado"
-  if command -v cosign >/dev/null 2>&1; then
-    cosign verify \
-      --certificate-identity "https://github.com/lumezencio/sentinela/.github/workflows/release.yml@refs/tags/$TAG_ALVO" \
-      --certificate-oidc-issuer "$EMISSOR_COSIGN" "$repo@$d" >/dev/null ||
-      falhar "a assinatura da imagem de '$servico' não confere com o workflow de release de $TAG_ALVO; nenhum contêiner foi trocado"
-  else
-    esperado="$(awk -v s="$servico" '$1 == s { print $2 }' <<<"$DIGESTS_TXT" | head -n 1)"
-    [[ -n "$esperado" && "$esperado" == "$d" ]] ||
-      falhar "o digest baixado de '$servico' difere do digests.txt do release; imagem recusada, nenhum contêiner foi trocado"
-  fi
-}
-
 # fazer_backup: backup do banco (tipo atualizacao) e BACKUP = nome do arquivo
 fazer_backup() {
   local ajuda saida
@@ -552,11 +530,7 @@ main() {
         return 0
       fi
     fi
-    if ! command -v cosign >/dev/null 2>&1; then
-      echo "aviso: 'cosign' não encontrado; vou conferir o digest das imagens com o digests.txt do release (instale o cosign para verificar a assinatura)." >&2
-      DIGESTS_TXT="$(curl -fsSL --proto '=https' --max-time 30 "$URL_RELEASE/$TAG_ALVO/digests.txt")" ||
-        falhar "sem 'cosign' e sem o digests.txt do release $TAG_ALVO não dá para verificar as imagens; instale o cosign. Nada foi alterado"
-    fi
+    obter_digests_sem_cosign
   fi
 
   # --- 2. proteção: marcações pre_ e cópia do .env (ainda sem backup e sem trocar nada) ---

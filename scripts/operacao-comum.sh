@@ -167,3 +167,37 @@ limpar_pre() {
   mv "$tmp" "$MANIFESTO_PRE"
 }
 
+
+# --- Verificação das imagens publicadas (update.sh e install.sh) ----------------------------
+# Contrato: o chamador define TAG_ALVO (vX.Y.Z) e VERSAO_ALVO (X.Y.Z). Fecha por padrão: sem
+# cosign e sem digests.txt do release, não há como verificar e a operação aborta.
+EMISSOR_COSIGN='https://token.actions.githubusercontent.com'
+URL_RELEASE="https://github.com/lumezencio/sentinela/releases/download"
+DIGESTS_TXT=""
+
+# obter_digests_sem_cosign: sem cosign instalado, baixa o digests.txt do release (HTTPS) para DIGESTS_TXT
+obter_digests_sem_cosign() {
+  command -v cosign >/dev/null 2>&1 && return 0
+  echo "aviso: 'cosign' não encontrado; vou conferir o digest das imagens com o digests.txt do release (instale o cosign para verificar a assinatura)." >&2
+  DIGESTS_TXT="$(curl -fsSL --proto '=https' --max-time 30 "$URL_RELEASE/$TAG_ALVO/digests.txt")" ||
+    falhar "sem 'cosign' e sem o digests.txt do release $TAG_ALVO não dá para verificar as imagens; instale o cosign. Nada foi alterado"
+}
+
+# verificar_imagem SERVICO REPO: assinatura (cosign) ou digest do release; fecha por padrão
+verificar_imagem() {
+  local servico="$1" repo="$2" ref d esperado
+  ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:$VERSAO_ALVO" | tr -d '\r' | grep -F "$repo@" | head -n 1)" ||
+    ref=""
+  d="${ref#*@}"
+  [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || falhar "não consegui ler o digest da imagem baixada de '$servico'; nenhum contêiner foi trocado"
+  if command -v cosign >/dev/null 2>&1; then
+    cosign verify \
+      --certificate-identity "https://github.com/lumezencio/sentinela/.github/workflows/release.yml@refs/tags/$TAG_ALVO" \
+      --certificate-oidc-issuer "$EMISSOR_COSIGN" "$repo@$d" >/dev/null ||
+      falhar "a assinatura da imagem de '$servico' não confere com o workflow de release de $TAG_ALVO; nenhum contêiner foi trocado"
+  else
+    esperado="$(awk -v s="$servico" '$1 == s { print $2 }' <<<"$DIGESTS_TXT" | head -n 1)"
+    [[ -n "$esperado" && "$esperado" == "$d" ]] ||
+      falhar "o digest baixado de '$servico' difere do digests.txt do release; imagem recusada, nenhum contêiner foi trocado"
+  fi
+}
