@@ -129,8 +129,7 @@ semanais**; os backups `manual`, `atualizacao` e `pre-restore` são rotacionados
 
 O `restore.sh` confere o arquivo (sha256, integridade e esquema; backup de esquema mais novo que o
 código instalado é recusado), para **só** o `core`, guarda o banco atual como `pre-restore`, restaura,
-sobe o core e espera a saúde; se a saúde falhar, devolve o banco anterior. Para **copiar a pasta
-para fora** (outro disco, NAS), use `--exportar`.
+sobe o core e espera a saúde; se a saúde falhar, devolve o banco anterior.
 
 ## Atualização
 

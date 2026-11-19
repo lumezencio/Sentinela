@@ -33,6 +33,8 @@ USER root
 # os módulos dinâmicos do nginx (geoip, image-filter, njs, xslt) não são carregados por nenhuma
 # configuração nossa e, fixados na versão da base, impedem o apk de subir o nginx para a correção
 # (CVE-2026-113425 e outras); sem eles, `apk add --upgrade nginx` leva à versão corrigida
+# (a versão do nginx é a que o Alpine publica na hora do build, como no `apk upgrade` abaixo; trocar o
+# FROM para a base 1.30.7 quando ela existir e então este passo deixa de ser necessário)
 RUN apk del --no-cache nginx-module-geoip nginx-module-image-filter nginx-module-njs nginx-module-xslt \
     && apk add --no-cache --upgrade nginx \
     && apk upgrade --no-cache \
