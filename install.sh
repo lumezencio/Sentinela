@@ -4,6 +4,7 @@
 #   ./install.sh          instalação real (banco no volume sentinela_dados)
 #   ./install.sh --demo   demonstração com 300 equipamentos simulados (volume próprio)
 #   ./install.sh --build  constrói as imagens neste computador em vez de baixar as publicadas
+#                         (grava IMAGENS=locais no .env)
 #
 # Por padrão baixa e verifica (cosign, ou digests.txt do release) as imagens publicadas no ghcr.io
 # (amd64 e arm64). Raspberry Pi OS de 32 bits (armv7) não é suportado. Gera .env (só se não existir; nunca sobrescreve), uma CA local e o certificado do
@@ -26,7 +27,7 @@ for arg in "$@"; do
     --demo) DEMO=1 ;;
     --build) BUILD=1 ;;
     -h | --help)
-      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+      awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
       exit 0
       ;;
     *)
@@ -136,7 +137,16 @@ if [[ "$MODO" == publicadas ]]; then
   [[ -n "$VERSAO_ALVO" ]] || VERSAO_ALVO="$(versao_pretendida)"
   [[ "$VERSAO_ALVO" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || falhar "VERSAO no .env deve ser X.Y.Z (achei '$VERSAO_ALVO')"
   TAG_ALVO="v$VERSAO_ALVO"
-  obter_digests_sem_cosign
+  # Uso interno do release.yml: SENTINELA_CANDIDATA_CORE/WEB = digest (sha256:...) de uma candidata ainda
+  # sem assinatura; a imagem é baixada por esse digest exato e conferida por ele (sem cosign).
+  CANDIDATA=0
+  if [[ -n "${SENTINELA_CANDIDATA_CORE:-}${SENTINELA_CANDIDATA_WEB:-}" ]]; then
+    [[ "${SENTINELA_CANDIDATA_CORE:-}" =~ ^sha256:[0-9a-f]{64}$ && "${SENTINELA_CANDIDATA_WEB:-}" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+      falhar "SENTINELA_CANDIDATA_CORE e SENTINELA_CANDIDATA_WEB devem ser digests sha256:<64 hex>"
+    CANDIDATA=1
+  else
+    obter_digests_sem_cosign
+  fi
 fi
 
 # ---------------------------------------------------------------- .env
@@ -201,7 +211,8 @@ elif [[ "$MODO" == publicadas && -z "$(valor_env VERSAO "")" ]]; then
   definir_env VERSAO "$VERSAO_ALVO"
 fi
 if [[ $BUILD -eq 1 && "$(valor_env IMAGENS "")" == publicadas ]]; then
-  echo "[!] o .env declara IMAGENS=publicadas; --build constrói agora, mas o ./update.sh seguirá usando as publicadas"
+  definir_env IMAGENS locais
+  echo "[!] --build: o .env passou de IMAGENS=publicadas para IMAGENS=locais; o ./update.sh seguirá construindo aqui (use ./update.sh --imagens-publicadas para voltar às publicadas)"
 fi
 
 # valor efetivo de uma variável: ambiente do shell > .env > padrão
@@ -378,11 +389,42 @@ fi
 # ---------------------------------------------------------------- subir
 WEB_EXISTIA="$("${COMPOSE[@]}" ps -q web 2>/dev/null || true)"
 if [[ "$MODO" == publicadas ]]; then
-  echo "[..] baixando as imagens publicadas (versão $VERSAO_ALVO, $ARQUITETURA)"
-  "${COMPOSE[@]}" pull core web ||
-    falhar "imagem ghcr.io/lumezencio/sentinela-core:$VERSAO_ALVO (ou -web) não encontrada no GHCR; use ./install.sh --build"
-  verificar_imagem core "$IMG_REPO_CORE"
-  verificar_imagem web "$IMG_REPO_WEB"
+  # só descarta o que esta execução baixou (sem -f): uma tag que já existia fica como está
+  BAIXADAS=()
+  for repo in "$IMG_REPO_CORE" "$IMG_REPO_WEB"; do
+    docker image inspect "$repo:$VERSAO_ALVO" >/dev/null 2>&1 || BAIXADAS+=("$repo:$VERSAO_ALVO")
+  done
+  descartar_baixadas() {
+    local ref
+    for ref in ${BAIXADAS[@]+"${BAIXADAS[@]}"}; do docker rmi "$ref" >/dev/null 2>&1 || true; done
+  }
+  if [[ $CANDIDATA -eq 1 ]]; then
+    echo "[..] baixando a candidata por digest (versão $VERSAO_ALVO, $ARQUITETURA)"
+    { docker pull "$IMG_REPO_CORE@$SENTINELA_CANDIDATA_CORE" && docker pull "$IMG_REPO_WEB@$SENTINELA_CANDIDATA_WEB"; } ||
+      falhar "não consegui baixar a candidata pelo digest"
+    docker tag "$IMG_REPO_CORE@$SENTINELA_CANDIDATA_CORE" "$IMG_REPO_CORE:$VERSAO_ALVO"
+    docker tag "$IMG_REPO_WEB@$SENTINELA_CANDIDATA_WEB" "$IMG_REPO_WEB:$VERSAO_ALVO"
+    if ! (
+      verificar_imagem_por_digest core "$IMG_REPO_CORE" "$SENTINELA_CANDIDATA_CORE" &&
+        verificar_imagem_por_digest web "$IMG_REPO_WEB" "$SENTINELA_CANDIDATA_WEB"
+    ); then
+      descartar_baixadas
+      exit 1
+    fi
+  else
+    echo "[..] baixando as imagens publicadas (versão $VERSAO_ALVO, $ARQUITETURA)"
+    "${COMPOSE[@]}" pull core web || {
+      descartar_baixadas
+      falhar "imagem ghcr.io/lumezencio/sentinela-core:$VERSAO_ALVO (ou -web) não encontrada no GHCR; use ./install.sh --build"
+    }
+    if ! (
+      verificar_imagem core "$IMG_REPO_CORE" &&
+        verificar_imagem web "$IMG_REPO_WEB"
+    ); then
+      descartar_baixadas
+      exit 1
+    fi
+  fi
   echo "[ok] imagens verificadas"
   echo "[..] subindo os containers"
   "${COMPOSE[@]}" up -d --no-build --pull never --wait --wait-timeout 300

@@ -3,5 +3,6 @@
 linha="$*"
 printf 'cosign %s\n' "$linha" >>"${SHIM_LOG:?}"
 # shellcheck disable=SC2053
+[[ "$1" == version ]] && { echo "GitVersion:    ${SHIM_COSIGN_VERSAO:-v3.1.3}"; exit 0; }
 [[ -n "${SHIM_FALHAR_COSIGN:-}" && "$linha" == $SHIM_FALHAR_COSIGN ]] && exit 1
 exit 0

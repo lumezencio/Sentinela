@@ -193,6 +193,96 @@ test_help_lista_build() {
   afirmar_igual "$(wc -c <"$SHIM_LOG" | tr -d ' ')" "0"
 }
 
+test_help_nao_imprime_codigo_do_script() {
+  ambiente novo
+  instalar --help || _falhou "help"
+  if grep -qF "set -euo pipefail" "$TMP_OP/saida-install"; then _falhou "o --help vazou código do script"; fi
+  grep -qF "./install.sh --build" "$TMP_OP/saida-install" || _falhou "o --help perdeu o conteúdo"
+}
+
+test_build_sobre_env_publicadas_grava_locais() {
+  ambiente
+  printf 'IMAGENS=publicadas
+VERSAO=0.3.9
+' >>"$TMP_OP/.env"
+  instalar --build || _falhou "$(cat "$TMP_OP/saida-install")"
+  grep -qx 'IMAGENS=locais' "$TMP_OP/.env" || _falhou "IMAGENS deveria virar locais"
+  afirmar_igual "$(grep -c '^IMAGENS=' "$TMP_OP/.env")" "1"
+  grep -qx 'VERSAO=0.3.9' "$TMP_OP/.env" || _falhou "VERSAO deve ficar como estava"
+  afirmar_log_contem "compose up -d --build --wait"
+}
+
+test_verificacao_falha_descarta_so_as_tags_baixadas_agora() {
+  ambiente novo
+  com_cosign
+  export SHIM_SEM_IMAGEM=1 SHIM_FALHAR_COSIGN="verify *"
+  if instalar; then _falhou "deveria recusar"; fi
+  afirmar_log_contem "docker rmi ghcr.io/lumezencio/sentinela-core:0.4.0"
+  afirmar_log_contem "docker rmi ghcr.io/lumezencio/sentinela-web:0.4.0"
+  afirmar_log_nao_contem "rmi -f"
+  afirmar_log_nao_contem " up "
+}
+
+test_verificacao_falha_nao_remove_tag_que_ja_existia() {
+  ambiente novo
+  com_cosign
+  export SHIM_FALHAR_COSIGN="verify *"
+  if instalar; then _falhou "deveria recusar"; fi
+  afirmar_log_nao_contem "rmi"
+  afirmar_log_nao_contem " up "
+}
+
+test_cosign_antigo_orienta_a_atualizar() {
+  ambiente novo
+  com_cosign
+  export SHIM_FALHAR_COSIGN="verify *" SHIM_COSIGN_VERSAO=v2.4.1
+  if instalar; then _falhou "deveria recusar"; fi
+  grep -qF "atualize o cosign (3.x ou mais novo)" "$TMP_OP/saida-install" || _falhou "mensagem: $(cat "$TMP_OP/saida-install")"
+  if grep -qF "não confere com o workflow" "$TMP_OP/saida-install"; then _falhou "mensagem enganosa de adulteração"; fi
+}
+
+test_cosign_novo_que_falha_diz_que_nao_confere() {
+  ambiente novo
+  com_cosign
+  export SHIM_FALHAR_COSIGN="verify *"
+  if instalar; then _falhou "deveria recusar"; fi
+  grep -qF "não confere com o workflow de release de v0.4.0" "$TMP_OP/saida-install" || _falhou "mensagem: $(cat "$TMP_OP/saida-install")"
+}
+
+CAND_CORE="sha256:$(printf 'a%.0s' {1..64})"
+CAND_WEB="sha256:$(printf 'b%.0s' {1..64})"
+
+test_candidata_por_digest_sobe_sem_cosign_nem_digests_txt() {
+  ambiente novo
+  export SENTINELA_CANDIDATA_CORE="$CAND_CORE" SENTINELA_CANDIDATA_WEB="$CAND_WEB"
+  instalar || _falhou "$(cat "$TMP_OP/saida-install")"
+  afirmar_log_contem "docker pull ghcr.io/lumezencio/sentinela-core@$CAND_CORE"
+  afirmar_log_contem "docker pull ghcr.io/lumezencio/sentinela-web@$CAND_WEB"
+  afirmar_log_contem "docker tag ghcr.io/lumezencio/sentinela-core@$CAND_CORE ghcr.io/lumezencio/sentinela-core:0.4.0"
+  afirmar_log_nao_contem "compose pull"
+  afirmar_log_nao_contem "curl"
+  afirmar_ordem "docker pull ghcr.io/lumezencio/sentinela-core@" "docker tag" "compose up -d --no-build --pull never"
+}
+
+test_candidata_com_digest_diferente_nao_sobe_e_descarta() {
+  ambiente novo
+  export SENTINELA_CANDIDATA_CORE="$CAND_CORE" SENTINELA_CANDIDATA_WEB="$CAND_WEB"
+  export SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})" SHIM_SEM_IMAGEM=1
+  if instalar; then _falhou "deveria recusar"; fi
+  grep -qF "difere do digest aprovado" "$TMP_OP/saida-install" || _falhou "mensagem: $(cat "$TMP_OP/saida-install")"
+  afirmar_log_contem "docker rmi ghcr.io/lumezencio/sentinela-web:0.4.0"
+  afirmar_log_nao_contem " up "
+}
+
+test_candidata_exige_os_dois_digests_validos() {
+  ambiente novo
+  export SENTINELA_CANDIDATA_CORE="$CAND_CORE"
+  if instalar; then _falhou "deveria recusar (falta o digest do web)"; fi
+  export SENTINELA_CANDIDATA_WEB="latest"
+  if instalar; then _falhou "deveria recusar (digest inválido)"; fi
+  nada_criado
+}
+
 test_demo_continua_funcionando_em_modo_locais() {
   ambiente
   instalar --demo || _falhou "$(cat "$TMP_OP/saida-install")"

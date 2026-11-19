@@ -126,10 +126,45 @@ test_so_publica_tag_que_esta_na_main() {
   grep -qF 'merge-base --is-ancestor "$GITHUB_SHA" origin/main' <<<"$m" || _falhou "meta não confere se a tag está na main"
 }
 
-test_latest_so_depois_do_smoke() {
+test_smoke_roda_na_candidata_antes_de_a_versao_existir() {
+  local s p
+  s="$(trecho_job smoke-arm64)"
+  p="$(trecho_job promover)"
+  # o smoke depende da construção (candidata aprovada no trivy) e NÃO da promoção
+  grep -qE 'needs: \[.*construir.*\]' <<<"$s" || _falhou "smoke tem de depender de construir"
+  if grep -qE 'needs: \[.*promover.*\]' <<<"$s"; then _falhou "smoke não pode esperar a promoção: a versão X.Y.Z só existe depois dele"; fi
+  # ele instala a candidata pelo digest aprovado, sem criar tag nem assinar
+  grep -qF 'candidata-*' <<<"$s" || _falhou "smoke não baixa o digest da candidata"
+  grep -qF 'SENTINELA_CANDIDATA_' <<<"$s" || _falhou "smoke não passa o digest da candidata ao install.sh"
+  if grep -qE 'imagetools|cosign (sign|attest)' <<<"$s"; then _falhou "o smoke não pode promover nem assinar"; fi
+  # a promoção (tag X.Y.Z + assinatura) só depois do smoke
+  grep -qE 'needs: \[.*smoke-arm64.*\]' <<<"$p" || _falhou "promover tem de depender do smoke-arm64"
+  grep -qE 'needs: \[.*construir.*\]' <<<"$p" || _falhou "promover tem de depender de construir (trivy)"
+  grep -qF "github.event_name == 'push'" <<<"$p" || _falhou "promover só em tag"
+  # só o job promover cria a tag X.Y.Z e assina
+  [[ "$(grep -c 'imagetools create -t "\$IMG:\$VERSAO"' "$WF")" -eq 1 ]] || _falhou "a tag X.Y.Z deve ser criada uma única vez, em promover"
+  grep -qF 'imagetools create -t "$IMG:$VERSAO"' <<<"$p" || _falhou "a tag X.Y.Z não é criada em promover"
+  grep -qF 'cosign sign --yes' <<<"$p" || _falhou "a assinatura não está em promover"
+}
+
+test_install_do_smoke_na_candidata_nao_usa_assinatura() {
+  local s passo
+  s="$(trecho_job smoke-arm64)"
+  # o passo do install.sh sobre a candidata roda só em push; o do cosign/instalação assinada só no manual
+  passo="$(grep -n 'install.sh com a candidata' <<<"$s" | head -n 1)"
+  [[ -n "$passo" ]] || _falhou "passo do install.sh sobre a candidata ausente"
+  grep -A1 'install.sh com a candidata' <<<"$s" | grep -qF "github.event_name == 'push'" || _falhou "passo da candidata sem if de push"
+  grep -B2 'cosign-release' <<<"$s" | grep -qF "github.event_name == 'workflow_dispatch'" || _falhou "cosign do smoke só no manual"
+}
+
+test_latest_so_depois_de_smoke_e_promocao() {
+  local m
+  m="$(trecho_job marcar-latest)"
   if grep -qE -- '-t "?\$IMG:latest' "$WF"; then _falhou "promover não pode mover o latest"; fi
-  grep -qE 'needs: \[.*smoke-arm64.*\]' <(trecho_job marcar-latest) || _falhou "marcar-latest tem de depender do smoke"
-  grep -qF 'sentinela-$s:latest' <(trecho_job marcar-latest) || grep -qF '$img:latest' <(trecho_job marcar-latest) || _falhou "marcar-latest sem o latest"
+  # marcar-latest depende de promover, que depende do smoke: o latest anda por último
+  grep -qE 'needs: \[.*promover.*\]' <<<"$m" || _falhou "marcar-latest tem de depender de promover"
+  grep -qF '$img:latest' <<<"$m" || _falhou "marcar-latest sem o latest"
+  grep -qE 'needs: \[.*marcar-latest.*\]' <(trecho_job lancamento) || _falhou "o release só depois do latest"
 }
 
 executar_testes

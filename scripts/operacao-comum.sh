@@ -183,6 +183,24 @@ obter_digests_sem_cosign() {
     falhar "sem 'cosign' e sem o digests.txt do release $TAG_ALVO não dá para verificar as imagens; instale o cosign. Nada foi alterado"
 }
 
+# cosign_antigo: 0 se o cosign instalado é de versão principal menor que 3
+cosign_antigo() {
+  local maior
+  maior="$(cosign version 2>/dev/null | tr -d '\r' | sed -n 's/^GitVersion:[[:space:]]*v\{0,1\}\([0-9][0-9]*\)\..*/\1/p' | head -n 1)"
+  [[ "$maior" =~ ^[0-9]+$ ]] && ((maior < 3))
+}
+
+# verificar_imagem_por_digest SERVICO REPO DIGEST: a imagem baixada tem de ter exatamente esse digest
+# (uso do smoke do release.yml sobre a candidata, que ainda não tem assinatura)
+verificar_imagem_por_digest() {
+  local servico="$1" repo="$2" esperado="$3" ref d
+  ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:$VERSAO_ALVO" | tr -d '\r' | grep -F "$repo@" | head -n 1)" ||
+    ref=""
+  d="${ref#*@}"
+  [[ "$d" == "$esperado" ]] ||
+    falhar "o digest baixado de '$servico' difere do digest aprovado da candidata; imagem recusada, nenhum contêiner foi trocado"
+}
+
 # verificar_imagem SERVICO REPO: assinatura (cosign) ou digest do release; fecha por padrão
 verificar_imagem() {
   local servico="$1" repo="$2" ref d esperado
@@ -193,8 +211,10 @@ verificar_imagem() {
   if command -v cosign >/dev/null 2>&1; then
     cosign verify \
       --certificate-identity "https://github.com/lumezencio/Sentinela/.github/workflows/release.yml@refs/tags/$TAG_ALVO" \
-      --certificate-oidc-issuer "$EMISSOR_COSIGN" "$repo@$d" >/dev/null ||
+      --certificate-oidc-issuer "$EMISSOR_COSIGN" "$repo@$d" >/dev/null || {
+      cosign_antigo && falhar "o cosign instalado é anterior à 3.x e pode não ler o formato novo de assinatura; atualize o cosign (3.x ou mais novo) e tente de novo. Nenhum contêiner foi trocado"
       falhar "a assinatura da imagem de '$servico' não confere com o workflow de release de $TAG_ALVO; nenhum contêiner foi trocado"
+    }
   else
     esperado="$(awk -v s="$servico" '$1 == s { print $2 }' <<<"$DIGESTS_TXT" | head -n 1)"
     [[ -n "$esperado" && "$esperado" == "$d" ]] ||

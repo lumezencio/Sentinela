@@ -157,10 +157,12 @@ primeira troca, ele só relata o estado e imprime o comando exato da volta manua
 ## Imagens e verificação
 
 Cada versão publica duas imagens multi-arquitetura (`linux/amd64` e `linux/arm64`) no GHCR, com as tags
-`X.Y.Z` (sem o `v`) e `latest`. Antes de ganhar essas tags, a imagem candidata passa pelo `trivy`
-(HIGH e CRITICAL corrigíveis reprovam) nas duas arquiteturas; depois recebe o SBOM (SPDX) e a
-assinatura **sem chave** do `cosign` (identidade OIDC do GitHub), e um teste de subida em arm64 roda
-com o `install.sh` real antes de o `latest` andar.
+`X.Y.Z` (sem o `v`) e `latest`. Antes de ganhar essas tags, a imagem candidata (`rc-<run>`) passa
+pelo `trivy` (HIGH e CRITICAL corrigíveis reprovam) nas duas arquiteturas e por um teste de subida em
+arm64 (emulado) com o `install.sh` real, pelo digest aprovado. **Só se os dois passarem** nasce a tag
+`X.Y.Z`, com o SBOM (SPDX) e a assinatura **sem chave** do `cosign` (identidade OIDC do GitHub); o
+`latest` anda por último. Se o `trivy` ou o teste arm64 falharem, não existe `X.Y.Z` nem assinatura:
+sobra só a candidata `rc-<run>` no GHCR (a limpeza dela é manual).
 
 ```bash
 cosign verify ghcr.io/lumezencio/sentinela-core:0.4.0 \
