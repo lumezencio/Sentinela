@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Restaura um backup do Sentinela.
 #
-#   ./restore.sh ARQUIVO.tar.gz [--sim]
+#   ./restore.sh ARQUIVO.tar.gz [--sim]          arquivo do host
+#   ./restore.sh --do-volume NOME [--sim]        arquivo que já está em /dados/backups
 #
 # Verifica o arquivo (sha256, integridade, esquema), pede confirmação (--sim pula), para
 # SÓ o serviço core, restaura num contêiner avulso sobre o mesmo volume (o banco atual é
 # guardado antes como "pre-restore"), sobe o core e espera a saúde. Se a saúde falhar,
 # devolve o pre-restore e avisa. Sai com 0 somente se o core terminar saudável.
+# Interrompido (Ctrl+C), só relata os fatos: a fase, o estado do core e os pre-restore criados.
 # O backup não contém o .env: sem a chave original, as fontes pedem as senhas de novo.
 # Variável opcional: SENTINELA_PROJETO (nome do projeto compose; padrão: o desta pasta).
 set -euo pipefail
@@ -19,10 +21,20 @@ cd "$RAIZ"
 # shellcheck source=scripts/operacao-comum.sh
 source "$RAIZ/scripts/operacao-comum.sh"
 
+USO="uso: ./restore.sh ARQUIVO.tar.gz [--sim]  |  ./restore.sh --do-volume NOME [--sim]"
+erro_de_uso() {
+  echo "$1" >&2
+  exit 2
+}
+
 ARQUIVO=""
+NOME_VOLUME=""
+DO_VOLUME=0
 SIM=0
 FIM_OPCOES=0
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  shift
   if [[ $FIM_OPCOES -eq 0 ]]; then
     case "$arg" in
       --)
@@ -33,30 +45,40 @@ for arg in "$@"; do
         SIM=1
         continue
         ;;
+      --do-volume)
+        [[ $# -gt 0 ]] || erro_de_uso "--do-volume exige o NOME de um backup em /dados/backups"
+        [[ $DO_VOLUME -eq 0 ]] || erro_de_uso "informe um único arquivo"
+        DO_VOLUME=1
+        NOME_VOLUME="$1"
+        shift
+        continue
+        ;;
       -h | --help)
-        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+        awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
         exit 0
         ;;
       -*)
-        echo "opção desconhecida: $arg (use --sim ou --help; para arquivo que começa com '-', use ./ ou --)" >&2
-        exit 2
+        erro_de_uso "opção desconhecida: $arg (use --sim, --do-volume ou --help; para arquivo que começa com '-', use ./ ou --)"
         ;;
     esac
   fi
-  [[ -z "$ARQUIVO" ]] || {
-    echo "informe um único arquivo" >&2
-    exit 2
-  }
+  [[ -z "$ARQUIVO" ]] || erro_de_uso "informe um único arquivo"
   ARQUIVO="$arg"
 done
-[[ -n "$ARQUIVO" ]] || {
-  echo "uso: ./restore.sh ARQUIVO.tar.gz [--sim]" >&2
-  exit 2
-}
-[[ "$ARQUIVO" != -* ]] || ARQUIVO="./$ARQUIVO"
 
-[[ -f "$ARQUIVO" ]] || falhar "'$ARQUIVO' não é um arquivo existente (nada foi alterado)"
-[[ -r "$ARQUIVO" ]] || falhar "'$ARQUIVO' não pode ser lido por este usuário (nada foi alterado)"
+if [[ $DO_VOLUME -eq 1 ]]; then
+  [[ -z "$ARQUIVO" ]] || erro_de_uso "use um arquivo do host OU --do-volume, não os dois"
+  # só o nome, no padrão estrito dos backups do core: nada de pasta, '..' ou ponto inicial
+  nome_backup_valido "$NOME_VOLUME" ||
+    erro_de_uso "nome inválido para --do-volume: informe só o nome de um backup de /dados/backups (ex.: sentinela-20261118T030000Z-pre-restore.tar.gz), sem pasta"
+  ALVO="/dados/backups/$NOME_VOLUME"
+else
+  [[ -n "$ARQUIVO" ]] || erro_de_uso "$USO"
+  [[ "$ARQUIVO" != -* ]] || ARQUIVO="./$ARQUIVO"
+  [[ -f "$ARQUIVO" ]] || falhar "'$ARQUIVO' não é um arquivo existente (nada foi alterado)"
+  [[ -r "$ARQUIVO" ]] || falhar "'$ARQUIVO' não pode ser lido por este usuário (nada foi alterado)"
+  ALVO=""
+fi
 command -v docker >/dev/null 2>&1 || falhar "'docker' não encontrado no PATH"
 
 # cli_avulsa ARGS...: contêiner avulso do core, sem dependências (não sobe o web)
@@ -64,13 +86,12 @@ cli_avulsa() {
   compose run --rm --no-deps -T "$@"
 }
 
-CORE_PARADO=0
-RESTAURADO=0
+# Fases (a interrupção relata a fase; só as duas primeiras são anteriores a qualquer escrita
+# no banco e só nelas o sinal sobe o core de volta)
+FASE_VERIFICANDO="verificando o backup"
+FASE_PARANDO="parando o core"
+FASE=""
 ENTRADA=""
-PRE=""
-INICIOU=0
-ROLLBACK=0
-ESPERANDO=0
 PRE_ORIGINAL=""
 ANTES=""
 
@@ -79,16 +100,48 @@ lista_pre_restore() {
   cli_avulsa core sh -c 'cd /dados/backups && ls -1 -- sentinela-*-pre-restore.tar.gz 2>/dev/null; true'
 }
 
-# pre_restore_novo: o pre-restore mais novo criado depois de ANTES (vazio se não houver)
-pre_restore_novo() {
-  local agora nome novo=""
-  agora="$(lista_pre_restore 2>/dev/null)" || return 0
+# pre_restore_novos: os pre-restore que não existiam no início (um por linha); 1 se não listou
+pre_restore_novos() {
+  local agora nome
+  agora="$(lista_pre_restore 2>/dev/null)" || return 1
   while IFS= read -r nome; do
     nome="${nome%$'\r'}"
     nome_backup_valido "$nome" || continue
-    grep -qxF -- "$nome" <<<"$ANTES" || novo="$nome"
+    grep -qxF -- "$nome" <<<"$ANTES" || printf '%s\n' "$nome"
   done <<<"$agora"
-  printf '%s\n' "$novo"
+}
+
+# relatar_pre_restore: fatos sobre os pre-restore desta execução (na saída de erro)
+relatar_pre_restore() {
+  local novos
+  if ! novos="$(pre_restore_novos)"; then
+    echo "Não foi possível listar /dados/backups para conferir os pre-restore desta execução." >&2
+    return 0
+  fi
+  if [[ -z "$novos" ]]; then
+    echo "Nenhum pre-restore foi criado nesta execução." >&2
+    return 0
+  fi
+  echo "Pre-restore criados nesta execução (em /dados/backups):" >&2
+  recuar <<<"$novos" >&2
+}
+
+# recuar: copia a entrada com dois espaços no início de cada linha
+recuar() {
+  local l
+  while IFS= read -r l; do printf '  %s\n' "$l"; done
+}
+
+# estado_core: o estado real do contêiner do core, consultado agora
+# shellcheck disable=SC2329  # chamada pelo trap de interrupção
+estado_core() {
+  local estado
+  if ! estado="$(compose ps -a --format '{{.Service}}: {{.Status}}' core 2>/dev/null)"; then
+    # compose antigo sem --format de modelo
+    estado="$(compose ps -a core 2>/dev/null)" || estado="(não foi possível consultar; use: docker compose ps core)"
+  fi
+  [[ -n "$estado" ]] || estado="core: sem contêiner"
+  recuar <<<"$estado"
 }
 
 # shellcheck disable=SC2329  # chamada pelos traps abaixo
@@ -103,27 +156,32 @@ finalizar() {
 # shellcheck disable=SC2329  # chamada pelos traps abaixo
 interrompido() {
   trap - INT TERM HUP
-  echo "interrompido." >&2
-  if [[ $CORE_PARADO -eq 1 ]]; then
-    echo "Subindo o core de novo..." >&2
-    compose up -d --no-deps core >/dev/null 2>&1 || echo "erro: suba o core com: docker compose up -d core" >&2
-  fi
-  if [[ $ROLLBACK -eq 1 ]]; then
-    # nunca cita o pre-restore criado pela própria volta: ele guarda o banco com problema
-    echo "A interrupção ocorreu durante a devolução do banco anterior. O banco original continua guardado em ${PRE_ORIGINAL:-(não havia)}; verifique a saúde do core e, se precisar, restaure esse arquivo." >&2
-  elif [[ $ESPERANDO -eq 1 ]]; then
-    echo "A espera pela saúde do core foi interrompida (saúde não confirmada). A restauração foi aplicada; o banco anterior ficou guardado como: ${PRE:-(não havia)}. Verifique a saúde do core e, se ela falhar, restaure esse arquivo." >&2
-  elif [[ $RESTAURADO -eq 1 ]]; then
-    echo "A restauração já tinha sido concluída antes da interrupção; o banco anterior ficou guardado como: ${PRE:-(não havia)}. Confira a saúde do core." >&2
-  elif [[ $INICIOU -eq 1 ]]; then
-    # o sinal pegou a própria chamada de restauração: o banco pode já ter sido trocado
-    PRE="$(pre_restore_novo || true)"
-    if [[ -n "$PRE" ]]; then
-      echo "A interrupção ocorreu durante a restauração: o banco pode já ter sido trocado. O banco anterior ficou guardado como: $PRE. Verifique a saúde do core e, se precisar, restaure esse arquivo." >&2
-    else
-      echo "A interrupção ocorreu durante a restauração e não achei um pre-restore novo no volume. Verifique a saúde do core e o conteúdo de /dados/backups." >&2
+  {
+    echo
+    echo "Interrompido durante: $FASE."
+    case "$FASE" in
+      "$FASE_VERIFICANDO")
+        echo "Este script ainda não tinha parado o core nem escrito no banco."
+        ;;
+      "$FASE_PARANDO")
+        echo "Este script ainda não tinha escrito no banco. Subindo o core de novo..."
+        compose up -d --no-deps core >/dev/null 2>&1 ||
+          echo "erro: não foi possível subir o core; suba com: docker compose up -d --no-deps core"
+        ;;
+      *)
+        echo "Os contêineres foram deixados como estão: nada foi subido nem parado depois da interrupção."
+        ;;
+    esac
+    echo "Estado atual do core:"
+    estado_core
+  } >&2
+  relatar_pre_restore
+  {
+    if [[ -n "$PRE_ORIGINAL" ]]; then
+      echo "O banco original está em /dados/backups/$PRE_ORIGINAL. Para voltar a ele: ./restore.sh --do-volume $PRE_ORIGINAL --sim"
     fi
-  fi
+    echo "Verifique a saúde antes de usar (docker compose ps core; docker compose logs core)."
+  } >&2
   exit 130
 }
 
@@ -135,73 +193,85 @@ if [[ $SIM -ne 1 ]]; then
 fi
 
 # A trava vem antes de qualquer escrita (inclusive a cópia de trabalho no volume)
+FASE="$FASE_VERIFICANDO"
 trava_adquirir
 trap finalizar EXIT
 trap interrompido INT TERM HUP
+
+# Os pre-restore que já existem: o relatório só cita os criados por esta execução
+ANTES="$(lista_pre_restore)" ||
+  falhar "não foi possível listar /dados/backups (nada foi alterado)"
 
 # Cópias de trabalho de execuções que morreram (SIGKILL, queda de energia) guardam um banco
 # de cliente: varre com padrão fixo, sem nenhuma entrada do usuário.
 cli_avulsa core sh -c 'rm -f /dados/backups/.entrada-*' ||
   falhar "não foi possível varrer cópias temporárias antigas do volume (nada foi alterado)"
 
-# O volume pertence a outro usuário (10001): um arquivo 0600 do host não seria legível por
-# bind mount. Por isso ele entra no volume pela entrada padrão de um contêiner avulso.
-ENTRADA="/dados/backups/.entrada-$(date +%Y%m%dT%H%M%S)-$$.tar.gz"
-echo "Enviando o backup ao volume..."
-# shellcheck disable=SC2016  # o $1 é expandido pelo sh do contêiner, de propósito
-cli_avulsa core sh -c 'umask 077; cat > "$1"' sh "$ENTRADA" <"$ARQUIVO" ||
-  falhar "não foi possível copiar o backup para o volume (nada foi alterado)"
+if [[ -z "$ALVO" ]]; then
+  # O volume pertence a outro usuário (10001): um arquivo 0600 do host não seria legível por
+  # bind mount. Por isso ele entra no volume pela entrada padrão de um contêiner avulso.
+  ENTRADA="/dados/backups/.entrada-$(date +%Y%m%dT%H%M%S)-$$.tar.gz"
+  echo "Enviando o backup ao volume..."
+  # shellcheck disable=SC2016  # o $1 é expandido pelo sh do contêiner, de propósito
+  cli_avulsa core sh -c 'umask 077; cat > "$1"' sh "$ENTRADA" <"$ARQUIVO" ||
+    falhar "não foi possível copiar o backup para o volume (nada foi alterado)"
+  ALVO="$ENTRADA"
+fi
 
 echo "Verificando o backup..."
-cli_avulsa core python -m sentinela.cli backup-verificar "$ENTRADA" ||
-  falhar "backup inválido ou de versão mais nova; o core não foi parado e nada foi alterado"
+cli_avulsa core python -m sentinela.cli backup-verificar "$ALVO" ||
+  falhar "backup inválido, ausente ou de versão mais nova; o core não foi parado e nada foi alterado"
 
+FASE="$FASE_PARANDO"
 echo "Parando só o serviço core..."
-CORE_PARADO=1
 if ! compose stop core; then
   echo "erro: não foi possível parar o core; tentando subi-lo de novo..." >&2
   compose up -d --no-deps core >/dev/null 2>&1 || true
   falhar "não foi possível parar o core (nada foi alterado)"
 fi
 
+FASE="restaurando o backup"
 echo "Restaurando..."
-ANTES="$(lista_pre_restore 2>/dev/null || true)"
-INICIOU=1
-if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ENTRADA")"; then
-  echo "erro: a restauração falhou; o banco anterior foi mantido. Subindo o core de novo..." >&2
-  PRE="$(pre_restore_novo || true)"
-  [[ -z "$PRE" ]] || echo "aviso: foi criado o pre-restore $PRE (em /dados/backups)" >&2
-  compose up -d --no-deps --wait --wait-timeout 120 core || true
-  CORE_PARADO=0
-  exit 1
+if ! PRE="$(cli_avulsa core python -m sentinela.cli restaurar "$ALVO")"; then
+  echo "erro: a restauração falhou (veja a mensagem acima)." >&2
+  relatar_pre_restore
+  FASE="subindo o core após a falha da restauração"
+  echo "Subindo o core de novo e esperando a saúde..." >&2
+  if compose up -d --no-deps --wait --wait-timeout 120 core; then
+    falhar "a restauração não foi concluída; o core subiu e respondeu saudável. Confira os dados antes de usar."
+  fi
+  falhar "a restauração não foi concluída e o core não ficou saudável; veja 'docker compose logs core'"
 fi
 PRE="$(printf '%s\n' "$PRE" | head -n 1)"
-PRE_ORIGINAL="$PRE"
-RESTAURADO=1
+PRE="${PRE%$'\r'}"
+# só um backup de nome estrito em /dados/backups pode ser devolvido (e citado como original)
+if nome_backup_valido "$PRE"; then
+  PRE_ORIGINAL="$PRE"
+fi
 
+FASE="subindo o core com o banco restaurado"
 echo "Subindo o core e esperando a saúde..."
-ESPERANDO=1
 if compose up -d --no-deps --wait --wait-timeout 120 core; then
-  ESPERANDO=0
-  CORE_PARADO=0
   echo "Restauração concluída; o core está saudável."
   [[ -z "$PRE" ]] || echo "O banco anterior ficou guardado como: $PRE (em /dados/backups)"
   echo "aviso: $AVISO_ENV"
   exit 0
 fi
 
-ESPERANDO=0
 echo "erro: o core não ficou saudável com o banco restaurado." >&2
-if [[ -z "$PRE" ]]; then
-  falhar "não havia banco anterior para devolver; verifique 'docker compose logs core'"
+if [[ -z "$PRE_ORIGINAL" ]]; then
+  [[ -n "$PRE" ]] ||
+    falhar "não havia banco anterior para devolver; verifique 'docker compose logs core'"
+  falhar "o banco anterior não virou um backup em /dados/backups (o core o guardou como '$PRE'); não há volta automática. Verifique 'docker compose logs core'"
 fi
-RESTAURADO=0
-ROLLBACK=1
-echo "Devolvendo o banco anterior ($PRE)..." >&2
-compose stop core || true
-if cli_avulsa core python -m sentinela.cli restaurar "/dados/backups/$PRE" >/dev/null &&
-  compose up -d --no-deps --wait --wait-timeout 120 core; then
-  CORE_PARADO=0
-  falhar "a restauração foi desfeita: o banco anterior está de volta e o core saudável"
+FASE="devolvendo o banco original"
+echo "Devolvendo o banco original ($PRE_ORIGINAL)..." >&2
+if compose stop core &&
+  cli_avulsa core python -m sentinela.cli restaurar "/dados/backups/$PRE_ORIGINAL" >/dev/null; then
+  FASE="subindo o core com o banco original devolvido"
+  if compose up -d --no-deps --wait --wait-timeout 120 core; then
+    falhar "a restauração foi desfeita: o banco original está de volta e o core saudável"
+  fi
+  falhar "o banco original foi devolvido, mas o core não ficou saudável; veja 'docker compose logs core'. O original continua em /dados/backups/$PRE_ORIGINAL"
 fi
-falhar "não foi possível devolver o banco anterior automaticamente; ele está em /dados/backups/$PRE (use ./backup.sh --exportar PASTA para copiá-lo)"
+falhar "não foi possível devolver o banco original automaticamente; ele está em /dados/backups/$PRE_ORIGINAL. Para tentar de novo: ./restore.sh --do-volume $PRE_ORIGINAL --sim"

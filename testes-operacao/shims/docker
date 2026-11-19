@@ -6,6 +6,8 @@
 #                                  prefixo "1x:" faz falhar só na primeira vez
 #   SHIM_IMAGENS="repo:tag ..."    saída de "docker image ls" (uma por linha)
 #   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
+#   SHIM_DORMIR="padrão"           chamadas que casam esperam 2 s (testes de sinal)
+#   "compose ps" responde "core: <estado>" com o estado deixado pelo último stop/up do core
 set -uo pipefail
 
 : "${SHIM_LOG:?SHIM_LOG não definido}"
@@ -87,6 +89,12 @@ case "$1" in
       *" backup-criar"*) echo "sentinela-20261118T030000Z-manual.tar.gz" ;;
       *" backup-verificar"*) echo "backup válido: esquema 0005, Sentinela 0.4.0" ;;
       *" restaurar "*) echo "sentinela-20261118T030100Z-pre-restore.tar.gz" ;;
+      # estado do core (gravado depois de qualquer espera: é o estado ao fim da chamada)
+      *" stop core") echo "Exited (0) 1 second ago" >"$SHIM_DIR/.core-estado" ;;
+      *" up "*" core") echo "Up 1 second (healthy)" >"$SHIM_DIR/.core-estado" ;;
+      *" ps "*)
+        printf 'core: %s\n' "$(cat "$SHIM_DIR/.core-estado" 2>/dev/null || echo "Up 1 hour (healthy)")"
+        ;;
       *" cp "*)
         origem="${*: -2:1}"
         destino="${*: -1}"

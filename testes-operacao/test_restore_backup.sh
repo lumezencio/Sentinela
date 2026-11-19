@@ -114,80 +114,213 @@ test_restore_falha_da_restauracao_depois_do_stop_sobe_o_core() {
   [[ "$(grep -c 'sentinela.cli restaurar' "$SHIM_LOG")" -eq 1 ]] || _falhou "não deveria tentar a volta do pre-restore"
 }
 
-# sinal_durante PADRAO_DORMIR SINAL: roda o restore.sh e manda o sinal quando a chamada que
-# casa com PADRAO_DORMIR começar; deixa a saída em $TMP_OP/saida-restore e o código em RC_SINAL
+# sinal_durante PADRAO_DORMIR SINAL TEXTO [N]: roda o restore.sh e manda o sinal quando TEXTO
+# aparecer N vezes (padrão 1) no log; deixa a saída em $TMP_OP/saida-restore e o código em RC_SINAL
 sinal_durante() {
   export SHIM_DORMIR="$1"
   bash restore.sh backup.tar.gz --sim >"$TMP_OP/saida-restore" 2>&1 &
   local pid=$! i
   for ((i = 0; i < 100; i++)); do
-    grep -qF -- "${3:-$1}" "$SHIM_LOG" && break
+    [[ "$(grep -cF -- "$3" "$SHIM_LOG")" -ge "${4:-1}" ]] && break
     sleep 0.1
   done
+  [[ "$(grep -cF -- "$3" "$SHIM_LOG")" -ge "${4:-1}" ]] || _falhou "a chamada '$3' não começou"
   kill -"$2" "$pid"
   RC_SINAL=0
   wait "$pid" || RC_SINAL=$?
 }
 
-test_restore_sinal_entre_stop_e_up_sobe_o_core() {
+# log_depois_de TEXTO: linhas do log depois da última que casa com TEXTO
+log_depois_de() {
+  awk -v t="$1" '{ l[NR] = $0 } index($0, t) { n = NR } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$SHIM_LOG"
+}
+
+# afirmar_relatorio FASE: o relatório factual do sinal (sem conclusões sobre o banco)
+afirmar_relatorio() {
+  local s="$TMP_OP/saida-restore"
+  [[ "$RC_SINAL" -eq 130 ]] || _falhou "deveria sair com 130 (obtido $RC_SINAL)"
+  grep -qF "Interrompido durante: $1." "$s" || _falhou "o relatório deveria nomear a fase '$1'"
+  grep -qF "Verifique a saúde antes de usar" "$s" || _falhou "faltou 'Verifique a saúde antes de usar'"
+  if grep -qiE "foi mantido|foi trocado|pode já ter sido trocado|não confirmada|continua guardado" "$s"; then
+    _falhou "o relatório não pode afirmar o estado do banco"
+  fi
+  # um pre-restore que já existia antes desta execução nunca é citado
+  if grep -q "20260101T000000Z" "$s"; then _falhou "citou um pre-restore anterior a esta execução"; fi
+  [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "a trava deveria ser liberada"
+  afirmar_log_contem "rm -f /dados/backups/.entrada-2"
+}
+
+# afirmar_sem_reacao_nos_conteineres TEXTO: depois da chamada interrompida (a última que casa
+# com TEXTO), nenhum contêiner é subido nem parado
+afirmar_sem_reacao_nos_conteineres() {
+  if log_depois_de "$1" | grep -E 'compose.* (up|stop|start|restart)( |$)'; then
+    _falhou "o sinal não deveria subir nem parar contêiner nesta fase"
+  fi
+}
+
+test_restore_sinal_verificando_nao_toca_no_core() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  sinal_durante "*backup-verificar*" TERM "backup-verificar"
+  afirmar_relatorio "verificando o backup"
+  afirmar_log_nao_contem " stop"
+  afirmar_log_nao_contem " up "
+  afirmar_log_nao_contem "sentinela.cli restaurar"
+}
+
+test_restore_sinal_parando_o_core_sobe_o_core_de_novo() {
   rodar_em_diretorio_temporario
   fixture_backup
   local sinal
   for sinal in TERM HUP; do
     : >"$SHIM_LOG"
-    sinal_durante "*sentinela.cli restaurar*" "$sinal" "sentinela.cli restaurar"
-    [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro após $sinal"
-    afirmar_ordem "compose stop core" "sentinela.cli restaurar" "compose up -d --no-deps core" "core rm -f /dados/backups/.entrada-2"
-    [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "a trava deveria ser liberada após $sinal"
+    sinal_durante "*compose stop core*" "$sinal" "compose stop core"
+    afirmar_relatorio "parando o core"
+    afirmar_ordem "compose stop core" "compose up -d --no-deps core"
+    afirmar_log_nao_contem "sentinela.cli restaurar"
   done
 }
 
-test_restore_sinal_depois_de_restaurar_informa_o_pre_restore() {
+test_restore_sinal_restaurando_so_relata_os_fatos() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  local sinal
+  for sinal in TERM HUP; do
+    rm -f "$SHIM_DIR/.restaurou" "$SHIM_DIR/.restaurou2" "$SHIM_DIR/.core-estado"
+    : >"$SHIM_LOG"
+    sinal_durante "*sentinela.cli restaurar*" "$sinal" "sentinela.cli restaurar"
+    afirmar_relatorio "restaurando o backup"
+    afirmar_sem_reacao_nos_conteineres "sentinela.cli restaurar"
+    # estado real do core consultado e impresso
+    afirmar_log_contem "compose ps -a"
+    grep -qF "core: Exited" "$TMP_OP/saida-restore" || _falhou "deveria imprimir o estado atual do core"
+    # o pre-restore criado nesta execução aparece; o antigo não
+    grep -qF "sentinela-20261118T030100Z-pre-restore.tar.gz" "$TMP_OP/saida-restore" ||
+      _falhou "deveria listar o pre-restore criado nesta execução"
+  done
+}
+
+test_restore_sinal_subindo_com_o_banco_restaurado_relata_o_original() {
   rodar_em_diretorio_temporario
   fixture_backup
   sinal_durante "*compose up -d --no-deps --wait*" TERM "compose up -d --no-deps --wait"
-  [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro (saúde não confirmada)"
-  grep -q "espera pela saúde do core foi interrompida.*sentinela-20261118T030100Z-pre-restore" "$TMP_OP/saida-restore" ||
-    _falhou "mensagem própria da espera de saúde com o pre-restore"
-  afirmar_log_contem "rm -f /dados/backups/.entrada-"
+  afirmar_relatorio "subindo o core com o banco restaurado"
+  afirmar_sem_reacao_nos_conteineres "compose up -d --no-deps --wait"
+  # bash só trata o sinal quando o "up --wait" termina: vale o estado real consultado
+  grep -qF "core: Up" "$TMP_OP/saida-restore" || _falhou "deveria imprimir o estado atual do core"
+  grep -qF "O banco original está em /dados/backups/sentinela-20261118T030100Z-pre-restore.tar.gz" "$TMP_OP/saida-restore" ||
+    _falhou "deveria nomear o banco original"
+  grep -qF "./restore.sh --do-volume sentinela-20261118T030100Z-pre-restore.tar.gz --sim" "$TMP_OP/saida-restore" ||
+    _falhou "deveria dar o comando exato para voltar"
 }
 
-test_restore_sinal_durante_o_restaurar_informa_o_pre_restore_novo() {
+test_restore_comando_de_volta_do_relatorio_funciona() {
   rodar_em_diretorio_temporario
   fixture_backup
-  local sinal
-  for sinal in TERM HUP; do
-    rm -f "$SHIM_DIR/.restaurou"
-    : >"$SHIM_LOG"
-    sinal_durante "*sentinela.cli restaurar*" "$sinal" "sentinela.cli restaurar"
-    [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro após $sinal"
-    grep -q "pode já ter sido trocado.*sentinela-20261118T030100Z-pre-restore.tar.gz.*restaure esse arquivo" "$TMP_OP/saida-restore" ||
-      _falhou "deveria informar o pre-restore novo (e não o antigo)"
-    if grep -q "sentinela-20260101T000000Z-pre-restore" "$TMP_OP/saida-restore"; then _falhou "citou um pre-restore antigo"; fi
-    afirmar_ordem "ls -1 -- sentinela-*-pre-restore.tar.gz" "sentinela.cli restaurar" "compose up -d --no-deps core"
-    [[ "$(grep -c 'ls -1 -- sentinela-\*-pre-restore' "$SHIM_LOG")" -eq 2 ]] || _falhou "esperava listar antes e depois"
-  done
+  sinal_durante "*compose up -d --no-deps --wait*" TERM "compose up -d --no-deps --wait"
+  local cmd
+  cmd="$(grep -oE '\./restore\.sh --do-volume [^ ]+ --sim' "$TMP_OP/saida-restore" | head -n 1)"
+  [[ -n "$cmd" ]] || _falhou "o relatório não trouxe o comando de volta"
+  : >"$SHIM_LOG"
+  unset SHIM_DORMIR
+  # shellcheck disable=SC2086  # o comando impresso é dividido em palavras como no terminal
+  bash ${cmd#./} >/dev/null 2>&1 || _falhou "o comando impresso não funcionou: $cmd"
+  afirmar_log_contem "sentinela.cli restaurar /dados/backups/sentinela-20261118T030100Z-pre-restore.tar.gz"
 }
 
-test_restore_sinal_durante_a_volta_cita_so_o_pre_restore_original() {
+test_restore_sinal_devolvendo_nomeia_so_o_original() {
   rodar_em_diretorio_temporario
   fixture_backup
   # saúde falha na 1ª subida; o 2º restaurar (a volta) dorme e recebe o sinal
   export SHIM_FALHAR="1x:compose up*"
-  export SHIM_DORMIR="*sentinela.cli restaurar /dados/backups/sentinela-20261118T030100Z-pre-restore.tar.gz*"
-  bash restore.sh backup.tar.gz --sim >"$TMP_OP/saida-restore" 2>&1 &
-  local pid=$! i
-  for ((i = 0; i < 100; i++)); do
-    grep -q "restaurar /dados/backups/sentinela-20261118T030100Z" "$SHIM_LOG" && break
-    sleep 0.1
+  sinal_durante "*sentinela.cli restaurar /dados/backups/*" TERM "restaurar /dados/backups/sentinela-20261118T030100Z"
+  afirmar_relatorio "devolvendo o banco original"
+  afirmar_sem_reacao_nos_conteineres "restaurar /dados/backups/sentinela-20261118T030100Z"
+  local original
+  original="$(grep -F "O banco original está em" "$TMP_OP/saida-restore")"
+  grep -qF "sentinela-20261118T030100Z-pre-restore.tar.gz" <<<"$original" || _falhou "deveria nomear o original"
+  if grep -q "030200Z" <<<"$original"; then _falhou "chamou de original o pre-restore criado pela volta"; fi
+  # os dois criados nesta execução aparecem na lista de fatos
+  grep -qF "sentinela-20261118T030200Z-pre-restore.tar.gz" "$TMP_OP/saida-restore" ||
+    _falhou "deveria listar também o pre-restore criado pela volta"
+}
+
+test_restore_sinal_subindo_apos_a_volta_nao_mexe_no_core() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  export SHIM_FALHAR="1x:compose up*"
+  sinal_durante "*compose up -d --no-deps --wait*" TERM "compose up -d --no-deps --wait" 2
+  afirmar_relatorio "subindo o core com o banco original devolvido"
+  [[ "$(grep -c 'compose up' "$SHIM_LOG")" -eq 2 ]] || _falhou "não deveria subir o core de novo após o sinal"
+  grep -qF "O banco original está em /dados/backups/sentinela-20261118T030100Z-pre-restore.tar.gz" "$TMP_OP/saida-restore" ||
+    _falhou "deveria nomear o banco original"
+}
+
+test_restore_sinal_subindo_apos_falha_da_restauracao() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  export SHIM_FALHAR="*sentinela.cli restaurar*"
+  sinal_durante "*compose up -d --no-deps --wait*" TERM "compose up -d --no-deps --wait"
+  afirmar_relatorio "subindo o core após a falha da restauração"
+  [[ "$(grep -c 'compose up' "$SHIM_LOG")" -eq 1 ]] || _falhou "não deveria subir o core de novo após o sinal"
+  grep -qF "Nenhum pre-restore foi criado nesta execução" "$TMP_OP/saida-restore" ||
+    _falhou "deveria dizer que nenhum pre-restore foi criado"
+  if grep -qF "O banco original está em" "$TMP_OP/saida-restore"; then _falhou "não havia original conhecido"; fi
+}
+
+test_restore_falha_da_restauracao_nao_afirma_o_estado_do_banco() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  export SHIM_FALHAR="*sentinela.cli restaurar*"
+  local saida
+  saida="$(bash restore.sh backup.tar.gz --sim 2>&1)" && _falhou "deveria sair com erro"
+  if grep -qiE "foi mantido|foi trocado" <<<"$saida"; then _falhou "afirmou o estado do banco"; fi
+  grep -qF "Nenhum pre-restore foi criado nesta execução" <<<"$saida" || _falhou "deveria relatar os pre-restore"
+}
+
+test_restore_do_volume_restaura_o_arquivo_do_volume_sem_copia() {
+  rodar_em_diretorio_temporario
+  bash restore.sh --do-volume sentinela-20261118T030000Z-manual.tar.gz --sim >/dev/null 2>&1 ||
+    _falhou "deveria restaurar o arquivo do volume"
+  afirmar_ordem "backup-verificar /dados/backups/sentinela-20261118T030000Z-manual.tar.gz" "compose stop core" \
+    "sentinela.cli restaurar /dados/backups/sentinela-20261118T030000Z-manual.tar.gz" "compose up -d --no-deps --wait"
+  afirmar_log_nao_contem "cat >"
+  afirmar_log_nao_contem "rm -f /dados/backups/sentinela-"
+  # a ordem dos argumentos não importa
+  : >"$SHIM_LOG"
+  bash restore.sh --sim --do-volume sentinela-20261118T030000Z-manual.tar.gz >/dev/null 2>&1 || _falhou "ordem inversa"
+  afirmar_log_contem "sentinela.cli restaurar /dados/backups/sentinela-20261118T030000Z-manual.tar.gz"
+}
+
+test_restore_do_volume_recusa_nomes_fora_do_padrao() {
+  rodar_em_diretorio_temporario
+  fixture_backup
+  local nome rc
+  local -a nomes=(
+    ""
+    "../sentinela-20261118T030000Z-manual.tar.gz"
+    "/dados/backups/sentinela-20261118T030000Z-manual.tar.gz"
+    "sub/sentinela-20261118T030000Z-manual.tar.gz"
+    "sub\\sentinela-20261118T030000Z-manual.tar.gz"
+    ".entrada-20261118T030000-1.tar.gz"
+    "sentinela-x-manual.tar.gz"
+    "sentinela.db.antes-restore-20261118T030000Z"
+    "sentinela-20261118T030000Z-manual.tar.gz/.."
+    "sentinela-20261118T030000Z-manual.tar.gz
+x"
+  )
+  for nome in "${nomes[@]}"; do
+    rc=0
+    bash restore.sh --do-volume "$nome" --sim >/dev/null 2>&1 || rc=$?
+    afirmar_igual "$rc" "2"
   done
-  kill -TERM "$pid"
-  RC_SINAL=0
-  wait "$pid" || RC_SINAL=$?
-  [[ "$RC_SINAL" -ne 0 ]] || _falhou "deveria sair com erro"
-  grep -q "durante a devolução.*original continua guardado em sentinela-20261118T030100Z-pre-restore.tar.gz.*restaure esse arquivo" "$TMP_OP/saida-restore" ||
-    _falhou "deveria citar o pre-restore original"
-  if grep -q "030200Z" "$TMP_OP/saida-restore"; then _falhou "citou o pre-restore criado pela volta"; fi
+  rc=0
+  bash restore.sh --do-volume >/dev/null 2>&1 || rc=$?
+  afirmar_igual "$rc" "2"
+  rc=0
+  bash restore.sh backup.tar.gz --do-volume sentinela-20261118T030000Z-manual.tar.gz --sim >/dev/null 2>&1 || rc=$?
+  afirmar_igual "$rc" "2"
+  afirmar_log_nao_contem "compose"
 }
 
 test_restore_falha_no_stop_tenta_subir_o_core() {
