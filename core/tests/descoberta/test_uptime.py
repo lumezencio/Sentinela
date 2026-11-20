@@ -81,11 +81,22 @@ def test_leituras_no_mesmo_instante() -> None:
     assert reinicios(leituras) == []
 
 
-def test_ordem_e_lista_curta() -> None:
+def test_lista_curta_e_reinicio_em_ordem_de_insercao() -> None:
     assert reinicios([]) == []
     assert reinicios([Leitura(T0, 10.0)]) == []
-    fora_de_ordem = [Leitura(T0 + timedelta(minutes=10), 100.0), Leitura(T0, 5000.0)]
-    assert reinicios(fora_de_ordem) == [T0 + timedelta(minutes=10) - timedelta(seconds=100)]
+    leituras = [Leitura(T0, 5000.0), Leitura(T0 + timedelta(minutes=10), 100.0)]
+    assert reinicios(leituras) == [T0 + timedelta(minutes=10) - timedelta(seconds=100)]
+
+
+def test_recuo_do_relogio_nao_reordena_as_leituras() -> None:
+    # a 2ª leitura foi inserida depois mas tem lido_em anterior (relógio recuou 1 h); o uptime
+    # só cresce: ordenar por lido_em a transformaria num reinício falso
+    leituras = [
+        Leitura(T0, 1000.0),
+        Leitura(T0 - timedelta(hours=1), 1600.0),
+        Leitura(T0 - timedelta(minutes=50), 2200.0),
+    ]
+    assert reinicios(leituras) == []
 
 
 def test_volta_do_timeticks_nao_e_reinicio() -> None:

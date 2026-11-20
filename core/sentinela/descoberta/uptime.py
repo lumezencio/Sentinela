@@ -59,10 +59,14 @@ def reinicios(leituras: list[Leitura]) -> list[datetime]:
     nada: "o uptime cresceu menos que o tempo decorrido" depende do relógio (um Raspberry Pi sem
     RTC salta quando o NTP sincroniza) e por isso nunca é tratado como reinício.
 
+    ``leituras`` vem na ORDEM DE INSERÇÃO (``LeituraUptime.id``, autoincremento), não ordenada
+    por ``lido_em``: um recuo do relógio do servidor não pode reordenar as leituras e inventar
+    um reinício.
+
     Limite conhecido: dois reinícios entre duas leituras consecutivas contam como um só (o
     uptime só mostra o último boot). Sem leitura que confirme, o laudo continua em "provável".
     """
-    ordenadas = sorted(leituras, key=lambda x: x.lido_em)
+    ordenadas = leituras  # ordem de inserção, nunca por lido_em
     saida: list[datetime] = []
     for anterior, nova in zip(ordenadas, ordenadas[1:], strict=False):
         if nova.uptime_s >= anterior.uptime_s or _deu_a_volta(anterior, nova):
