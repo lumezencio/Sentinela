@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinela import __version__
 from sentinela.api import ws as ws_mod
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.config import Settings
@@ -698,7 +699,7 @@ async def test_saude_ok_com_monitor_rodando(app_com_monitor: FastAPI, settings: 
     async def corpo() -> None:
         await asyncio.sleep(0)
         r = await _saude(app_com_monitor)
-        assert (r.status_code, r.json()) == (200, {"status": "ok"})
+        assert (r.status_code, r.json()) == (200, {"status": "ok", "versao": __version__})
 
     await _rodar_lifespan(app_com_monitor, settings, corpo)
 
@@ -746,7 +747,7 @@ async def test_saude_503_se_laco_terminou_sem_excecao(
 
 async def test_saude_ok_sem_monitor(cliente: httpx.AsyncClient) -> None:
     r = await cliente.get("/api/v1/saude")
-    assert (r.status_code, r.json()) == (200, {"status": "ok"})
+    assert (r.status_code, r.json()) == (200, {"status": "ok", "versao": __version__})
 
 
 # ---- revisão final: monitor morto encerra o processo (só com a flag) ------------------------
