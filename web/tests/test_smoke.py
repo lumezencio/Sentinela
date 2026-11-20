@@ -826,13 +826,15 @@ def test_abrir_no_organograma_nao_mexe_na_teia_oculta(page: Page, alvo: Alvo) ->
     expect(dialogo).to_be_hidden()
     page.get_by_role("tab", name="Teia").click()
     expect(page.locator("#conteudo-teia")).to_be_visible()
-    # rotação automática ligada e câmera na vista geral do estilo A (órbita em y = 260, raio 520)
+    # rotação automática ligada e câmera na vista geral do estilo A: mesma direção de sempre
+    # (elevação y / raio = 260 / 520), a distância é a que faz tudo caber na área livre
     expect(palco).to_have_attribute("data-girando", "sim")
     expect(page.locator("#painel-equipamento")).to_be_hidden()
     page.wait_for_timeout(600)
     x, y, z = (int(v) for v in (palco.get_attribute("data-camera") or "0,0,0").split(","))
-    assert abs(y - 260) <= 5, (x, y, z)
-    assert abs((x * x + z * z) ** 0.5 - 520) <= 10, (x, y, z)
+    raio = (x * x + z * z) ** 0.5
+    assert abs(y / raio - 0.5) <= 0.02, (x, y, z)
+    assert 300 <= raio <= 2200, (x, y, z)
     assert erros == [], erros
 
 
@@ -2283,6 +2285,7 @@ def test_parede_emparelha_e_mostra_contadores_e_relogio(
         expect(tv.locator("#pr-nome")).to_have_text("TV Portaria")
         expect(tv.locator("#pr-relogio")).to_have_text(re.compile(r"^\d{2}:\d{2}$"))
         expect(tv).to_have_title("Sentinela · Telão")
+        expect(tv.locator("#pr-versao")).to_have_text(re.compile(r"^Sentinela v\d+\.\d+\.\d+"))
         soma = tv.evaluate(
             "() => ['online', 'instavel', 'offline', 'inalcancavel']"
             ".reduce((s, n) => s + Number(document.getElementById('pr-n-' + n).textContent), 0)"
@@ -3140,3 +3143,293 @@ def test_cartao_seguranca_visualizador_nao_aparece(page: Page, alvo: Alvo) -> No
     expect(page.locator("#cfg-seguranca")).to_be_hidden()
     expect(page.locator("#cfg-backup")).to_be_hidden()
     expect(page.get_by_role("button", name="Fazer backup agora")).to_be_hidden()
+
+
+# ---------- classes vazias somem da Teia e do Organograma; cartão de alerta cabe ----------
+CLASSES_ESVAZIADAS = ("impressora", "iot")
+NOMES_ESVAZIADOS = ("Impressoras", "IoT/Automação", "Desconhecidos")  # a última já é vazia
+
+
+class PonteSemClasses:
+    """WebSocket do painel sem os equipamentos de ``CLASSES_ESVAZIADAS`` (só o que o navegador
+    recebe; o servidor não é tocado) e com injeção de mensagens do teste."""
+
+    def __init__(self, page: Page, manter: tuple[str, ...] | None = None) -> None:
+        self.rotas: list[Any] = []
+        self.removidos: set[str] = set()
+        self.manter = manter  # None: só tira CLASSES_ESVAZIADAS; senão fica só com estas classes
+
+        def ao_ws(ws: Any) -> None:
+            servidor = ws.connect_to_server()
+            ws.on_message(lambda m: servidor.send(m))
+            servidor.on_message(lambda m: ws.send(self._filtrar(m)))
+            self.rotas.append(ws)
+
+        page.route_web_socket(re.compile(r".*/ws$"), ao_ws)
+
+    def _filtrar(self, texto: Any) -> Any:
+        import json
+
+        if not isinstance(texto, str):
+            return texto
+        try:
+            msg = json.loads(texto)
+        except ValueError:
+            return texto
+        if msg.get("tipo") == "snapshot":
+            todos = msg.get("equipamentos", [])
+            self.removidos = {e["id"] for e in todos if self._sai(e.get("classe"))}
+            msg["equipamentos"] = [e for e in todos if e["id"] not in self.removidos]
+            return json.dumps(msg)
+        if msg.get("id") in self.removidos:  # estados dos que o navegador não conhece
+            return json.dumps({"tipo": "ping"})
+        return texto
+
+    def _sai(self, classe: Any) -> bool:
+        if self.manter is None:
+            return bool(classe in CLASSES_ESVAZIADAS)
+        return bool(classe not in self.manter)
+
+    def injetar(self, mensagem: dict[str, Any]) -> None:
+        import json
+
+        assert self.rotas, "o navegador ainda não abriu o WebSocket"
+        self.rotas[-1].send(json.dumps(mensagem))
+
+
+def equipamento_ws(id_: str, classe: str, nome: str, ip: str) -> dict[str, Any]:
+    return {
+        "tipo": "equipamento",
+        "acao": "criado",
+        "equipamento": {
+            "id": id_,
+            "nome": nome,
+            "ip": ip,
+            "classe": classe,
+            "estado": "pausado",
+            "desde": None,
+            "checagem": "icmp",
+        },
+    }
+
+
+def test_classe_vazia_nao_aparece_na_teia_nem_no_organograma(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    ponte = PonteSemClasses(page)
+    page.goto("/login.html")
+    page.get_by_label("Login").fill(alvo.login)
+    page.get_by_label("Senha").fill(alvo.senha)
+    page.get_by_role("button", name="Entrar").click()
+    page.wait_for_url("**/index.html")
+    expect(page.locator("#contador-total")).not_to_have_text("0", timeout=15_000)
+    page.wait_for_timeout(500)
+    assert ponte.removidos, "o demo tem impressoras e sensores"
+    esperado = TOTAL_DEMO - len(ponte.removidos)
+    expect(page.locator("#contador-total")).to_have_text(str(esperado))
+    # Lista: o filtro "Classe" é do catálogo e continua com todas as classes
+    for nome in NOMES_ESVAZIADOS:
+        expect(page.locator("#filtro-classe option", has_text=nome)).to_have_count(1)
+
+    # Teia: nenhum nó nem botão para a classe sem equipamento
+    page.get_by_role("tab", name="Teia").click()
+    palco = page.locator("#conteudo-teia [data-equipamentos]")
+    expect(palco).to_have_attribute("data-equipamentos", str(esperado), timeout=20_000)
+    expect(palco).to_have_attribute("data-classes", re.compile(r"\bcamera\b"))
+    atual = palco.get_attribute("data-classes") or ""
+    for slug in (*CLASSES_ESVAZIADAS, "desconhecido", "sentinela"):
+        assert slug not in atual.split(","), atual
+    botoes = page.locator("#teia-classes .teia-classe")
+    expect(botoes.filter(has_text="Câmeras")).to_have_count(1)
+    for nome in NOMES_ESVAZIADOS:
+        expect(botoes.filter(has_text=nome)).to_have_count(0)
+
+    # o painel de classes é o mesmo em todos os estilos (Árvore 3D incluída)
+    for estilo in ("Árvore 3D", "Órbitas", "Constelação"):
+        page.get_by_role("button", name=estilo, exact=True).click()
+        for nome in NOMES_ESVAZIADOS:
+            expect(botoes.filter(has_text=nome)).to_have_count(0)
+        expect(botoes.filter(has_text="Câmeras")).to_have_count(1)
+
+    # ao vivo: o 1º equipamento da classe faz ela aparecer; o último removido faz sumir
+    ponte.injetar(equipamento_ws("vazia-1", "impressora", "Impressora do teste", "10.99.61.250"))
+    expect(palco).to_have_attribute("data-classes", re.compile(r"\bimpressora\b"))
+    expect(botoes.filter(has_text="Impressoras")).to_have_count(1)
+    ponte.injetar({"tipo": "equipamento", "acao": "removido", "id": "vazia-1"})
+    expect(palco).not_to_have_attribute("data-classes", re.compile(r"impressora"))
+    expect(botoes.filter(has_text="Impressoras")).to_have_count(0)
+
+    # Organograma: sem cartão para a classe vazia; aparece/some ao vivo
+    secao = abrir_organograma(page)
+    expect(secao.locator('.org-cartao[data-slug="camera"]')).to_have_count(1)
+    for slug in (*CLASSES_ESVAZIADAS, "desconhecido"):
+        expect(secao.locator(f'.org-cartao[data-slug="{slug}"]')).to_have_count(0)
+    ponte.injetar(equipamento_ws("vazia-2", "iot", "Sensor do teste", "10.99.61.251"))
+    expect(secao.locator('.org-cartao[data-slug="iot"]')).to_have_count(1, timeout=10_000)
+    ponte.injetar({"tipo": "equipamento", "acao": "removido", "id": "vazia-2"})
+    expect(secao.locator('.org-cartao[data-slug="iot"]')).to_have_count(0, timeout=10_000)
+    assert erros == [], erros
+
+
+LARGURAS_CARTAO = (360, 390, 768, 1024, 1280, 1300, 1366, 1440, 1920)
+NOME_60 = "Câmera do refeitório principal, corredor leste do bloco B 02"
+MEDIR_CARTAO = """() => {
+    const vw = document.documentElement.clientWidth;
+    const fora = [];
+    const pilha = document.querySelector('#cartoes-alerta');
+    for (const el of pilha.querySelectorAll('article.ca, article.ca *')) {
+        if (getComputedStyle(el).display === 'none') continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (r.left < 15.5 || r.right > vw - 15.5) {
+            fora.push([el.className || el.tagName, r.left, r.right]);
+        }
+    }
+    const nome = pilha.querySelector('.ca-nome');
+    return {vw, rolagem: document.documentElement.scrollWidth, fora,
+            nomeCortado: nome.scrollWidth > nome.clientWidth + 1};
+}"""
+
+
+def test_cartao_de_alerta_cabe_na_janela_em_todas_as_larguras(
+    browser: Browser, alvo: Alvo, novo_alerta: Any
+) -> None:
+    from conftest import PonteWs
+
+    assert len(NOME_60) == 60
+    for largura in LARGURAS_CARTAO:
+        contexto = browser.new_context(
+            viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+        )
+        try:
+            page = contexto.new_page()
+            a = novo_alerta()
+            ponte = PonteWs(page)
+            entrar(page, alvo)
+            expect(page.locator("#cartoes-alerta")).to_be_attached()
+            injetar(page, ponte, "aberto", a["id"], equipamento_nome=NOME_60)
+            cartao = cartao_de(page, a["id"])
+            expect(cartao).to_be_visible(timeout=10_000)
+            expect(cartao.locator(".ca-dados dt", has_text="Checagem")).to_be_visible()
+            page.wait_for_timeout(500)  # fim da animação de entrada
+            m = page.evaluate(MEDIR_CARTAO)
+            assert m["fora"] == [], (largura, m)  # nada colado ou além da margem de 16 px
+            assert m["rolagem"] <= largura, (largura, m)
+            assert not m["nomeCortado"], (largura, m)
+            expect(cartao.locator(".ca-nome")).to_have_text(NOME_60)
+            for nome in ("Ver na Teia", "Ver alerta", "Reconhecer", "Silenciar…"):
+                expect(cartao.get_by_role("button", name=re.compile(f"^{nome}"))).to_be_visible()
+        finally:
+            contexto.close()
+
+
+MEDIR_ROTULOS_TEIA = """() => {
+    const palco = document.querySelector('#conteudo-teia .teia-palco').getBoundingClientRect();
+    const painel = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 ? r : null;
+    };
+    const proibidas = ['#teia-classes', '.teia-estilos', '.teia-ver-tudo', '.teia-legenda']
+        .map(painel).filter(Boolean);
+    const caixas = [...document.querySelectorAll('#conteudo-teia .teia-rotulo:not(.servidor)')]
+        .filter((el) => !el.hidden)
+        .map((el) => el.querySelector('span').getBoundingClientRect());
+    const cruza = (a, b) =>
+        a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const fora = [], sobre = [], toca = [];
+    caixas.forEach((c, i) => {
+        if (c.left < palco.left || c.right > palco.right
+            || c.top < palco.top || c.bottom > palco.bottom) {
+            fora.push(i);
+        }
+        if (proibidas.some((p) => cruza(c, p))) sobre.push(i);
+        caixas.slice(i + 1).forEach((o) => { if (cruza(c, o)) toca.push(i); });
+    });
+    return {rotulos: caixas.length, fora, sobre, toca};
+}"""
+
+CENARIOS_TEIA = {
+    "demo": None,
+    "quatro": ("roteador", "gravador", "camera", "computador"),
+    "uma": ("camera",),
+}
+
+
+def test_teia_vista_geral_rotulos_na_area_livre_sem_sobreposicao(
+    browser: Browser, alvo: Alvo
+) -> None:
+    for nome, manter in CENARIOS_TEIA.items():
+        for largura, altura in ((1366, 900), (1024, 900), (768, 900), (390, 900)):
+            contexto = browser.new_context(
+                viewport={"width": largura, "height": altura},
+                ignore_https_errors=True,
+                base_url=alvo.url,
+            )
+            try:
+                page = contexto.new_page()
+                ponte = PonteSemClasses(page, manter) if manter else None
+                page.goto("/login.html")
+                page.get_by_label("Login").fill(alvo.login)
+                page.get_by_label("Senha").fill(alvo.senha)
+                page.get_by_role("button", name="Entrar").click()
+                page.wait_for_url("**/index.html")
+                expect(page.locator("#contador-total")).to_have_text(re.compile(r"^[1-9]"))
+                page.get_by_role("tab", name="Teia").click()
+                palco = page.locator("#conteudo-teia [data-classes]")
+                esperado = len(manter) if manter else 10  # demo: 10 classes têm equipamento
+                expect(palco).to_have_attribute("data-classes", re.compile(r"\w"), timeout=20_000)
+                assert len((palco.get_attribute("data-classes") or "").split(",")) == esperado
+                if ponte:
+                    assert ponte.removidos
+                page.wait_for_timeout(4000)  # câmera da vista geral (1,2 s) e nível da cena
+                for _ in range(3):  # a rotação automática muda o desenho: mede em 3 instantes
+                    m = page.evaluate(MEDIR_ROTULOS_TEIA)
+                    assert m["rotulos"] == esperado, (nome, largura, m)
+                    assert m["fora"] == [], (nome, largura, m)
+                    assert m["sobre"] == [], (nome, largura, m)
+                    assert m["toca"] == [], (nome, largura, m)
+                    page.wait_for_timeout(1500)
+            finally:
+                contexto.close()
+
+
+VERSAO = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def test_versao_aparece_no_painel_e_no_login_em_todas_as_larguras(
+    browser: Browser, alvo: Alvo
+) -> None:
+    import sentinela
+
+    for largura in (360, 390, 768, 1024, 1366, 1920):
+        contexto = browser.new_context(
+            viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+        )
+        try:
+            page = contexto.new_page()
+            page.goto("/login.html")
+            login = page.locator(".rodape-login.versao")
+            expect(login).to_have_text(VERSAO)
+            expect(login).to_have_text(f"v{sentinela.__version__}")
+            caixa = login.bounding_box()
+            assert caixa and caixa["x"] >= 0 and caixa["x"] + caixa["width"] <= largura
+            page.get_by_label("Login").fill(alvo.login)
+            page.get_by_label("Senha").fill(alvo.senha)
+            page.get_by_role("button", name="Entrar").click()
+            page.wait_for_url("**/index.html")
+            topo = page.locator(".topo .versao")
+            expect(topo).to_have_text(VERSAO)
+            expect(topo).to_have_text(f"v{sentinela.__version__}")
+            m = page.evaluate(
+                """() => {
+                    const r = document.querySelector('.topo .versao').getBoundingClientRect();
+                    const n = document.querySelector('.topo .marca span').getBoundingClientRect();
+                    return {e: r.left, d: r.right, y0: r.top, y1: r.bottom, vw: innerWidth,
+                            nomeD: n.right, rolagem: document.documentElement.scrollWidth};
+                }"""
+            )
+            assert m["e"] >= m["nomeD"] and m["d"] <= m["vw"], (largura, m)  # ao lado do nome
+            assert m["y0"] >= 0 and m["rolagem"] <= largura, (largura, m)
+        finally:
+            contexto.close()

@@ -98,7 +98,7 @@ export function alinhamentoAtras(camera, alvo, de) {
 }
 
 // ---------- rótulos HTML (sobreposição; fora do bloom) ----------
-export const DIST_MAX_ROTULO = 1500;
+export const DIST_MAX_ROTULO = 2600;
 export const ESCALA_ROTULO = { min: 0.72, max: 1.12, referencia: 420 };
 
 /**
@@ -137,4 +137,107 @@ export function manterRotuloNoPalco({
   const minY = folga - desloque;
   const cy = minY > maxY ? minY : Math.min(maxY, Math.max(minY, y));
   return { visivel: true, x: Math.round(cx), y: Math.round(cy) };
+}
+
+// ---------- vista geral: tudo (com os rótulos) dentro da área livre, em qualquer giro ----------
+export const PAD_ROTULO = { lado: 60, vertical: 46 }; // meia largura e altura+vão de um rótulo de classe
+
+/** Giro de `p` em volta do eixo vertical que passa por `centro`. */
+function girarY(p, centro, c, s) {
+  const x = p.x - centro.x, z = p.z - centro.z;
+  return { x: centro.x + x * c + z * s, y: p.y, z: centro.z - x * s + z * c };
+}
+
+/** Caixa (px, y para cima, a partir do centro da tela) que contém todos os pontos em todos os giros. */
+function caixaDaVista(pontos, alvo, camera, fov, altura, giros) {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const [c, s] of giros) {
+    for (const p of pontos) {
+      const q = girarY(p, alvo, c, s);
+      const t = projetarNaTela(q, camera, alvo, fov, altura);
+      if (!(t.profundidade > 1)) return null; // atrás da câmera
+      const k = altura / 2 / Math.tan((fov * GRAUS) / 2) / t.profundidade;
+      const r = (p.raio || 0) * k;
+      const pl = p.rotulo ? Math.max(r, PAD_ROTULO.lado) : r;
+      const pv = p.rotulo ? Math.max(r, PAD_ROTULO.vertical) : r;
+      x0 = Math.min(x0, t.x - pl); x1 = Math.max(x1, t.x + pl);
+      y0 = Math.min(y0, t.y - pv); y1 = Math.max(y1, t.y + pv);
+    }
+  }
+  return { x0, x1, y0, y1 };
+}
+
+/**
+ * Câmera da vista geral: a menor distância (na direção `direcao`, olhando `alvo`) em que todos
+ * os `pontos` ({x,y,z,raio,rotulo}) cabem na área livre (tela menos as `margens` dos painéis),
+ * em qualquer um dos `passos` giros da rotação automática em volta do eixo vertical. A área
+ * livre costuma ser descentrada: em vez de mover o alvo (que é o pivô da rotação), devolve o
+ * `desvio` em px (x para a direita, y para cima) para a cena aplicar como deslocamento da janela.
+ * @returns {{camera, olhar, distancia, desvio:{x,y}, coube:boolean, girar:boolean}} `girar` = false quando só
+ * cabe parado (tela estreita): a cena desliga a rotação automática.
+ */
+export function enquadrarVistaGeral({
+  pontos, alvo, direcao, fov, largura, altura, margens = {}, folga = 4, minimo = 120, maximo = 2200, passos = 12,
+}) {
+  const { esquerda = 0, direita = 0, cima = 0, baixo = 0 } = margens;
+  const livreL = Math.max(1, largura - esquerda - direita - 2 * folga);
+  const livreA = Math.max(1, altura - cima - baixo - 2 * folga);
+  const dir = unit(direcao);
+  const giros = Array.from({ length: passos }, (_, j) => [Math.cos((j * 2 * Math.PI) / passos), Math.sin((j * 2 * Math.PI) / passos)]);
+  const cam = (d) => soma(alvo, esc(dir, d));
+  const cabe = (d) => {
+    const b = caixaDaVista(pontos, alvo, cam(d), fov, altura, giros);
+    return b && b.x1 - b.x0 <= livreL && b.y1 - b.y0 <= livreA;
+  };
+  let d = maximo, coube = cabe(maximo);
+  let giraLivre = true;
+  if (!coube) {
+    // não cabe em todos os giros nem na distância máxima: vale só a vista parada (a cena para de girar)
+    giraLivre = false;
+    giros.length = 1;
+    coube = cabe(maximo);
+  }
+  if (coube) {
+    let lo = minimo, hi = maximo;
+    if (cabe(lo)) hi = lo;
+    for (let k = 0; k < 24 && hi - lo > 0.5; k++) {
+      const mid = (lo + hi) / 2;
+      if (cabe(mid)) hi = mid; else lo = mid;
+    }
+    d = hi;
+  }
+  const b = caixaDaVista(pontos, alvo, cam(d), fov, altura, giros) || { x0: 0, x1: 0, y0: 0, y1: 0 };
+  const desvio = {
+    x: Math.round((esquerda - direita) / 2 - (b.x0 + b.x1) / 2),
+    y: Math.round((baixo - cima) / 2 - (b.y0 + b.y1) / 2),
+  };
+  return { camera: cam(d), olhar: alvo, distancia: d, desvio, coube, girar: giraLivre };
+}
+
+/**
+ * Tira as sobreposições entre rótulos movendo cada um na vertical (para baixo; para cima só
+ * se não couber). `caixas`: {x (centro), topo, l, a} em px, na ordem de prioridade (o 1º
+ * não se move). Devolve o deslocamento vertical de cada caixa (mesma ordem). `limite` = altura
+ * do palco: o deslocamento que jogaria a caixa para fora é descartado em favor do outro lado.
+ */
+export function separarRotulos(caixas, { folga = 4, limite = Infinity } = {}) {
+  const fixas = [];
+  const dy = [];
+  for (const c of caixas) {
+    let d = 0;
+    for (let volta = 0; volta < 12; volta++) {
+      const topo = c.topo + d, base = topo + c.a;
+      const bate = fixas.find((o) => Math.abs(o.x - c.x) < (o.l + c.l) / 2 + folga
+        && topo < o.topo + o.a + folga && base + folga > o.topo);
+      if (!bate) break;
+      // sempre para baixo (sem vaivém entre dois vizinhos); para cima só se não couber no palco
+      const paraBaixo = bate.topo + bate.a + folga - c.topo;
+      const paraCima = bate.topo - folga - c.a - c.topo;
+      if (c.topo + paraBaixo + c.a <= limite || c.topo + paraCima < 0) d = Math.max(d, paraBaixo);
+      else d = Math.min(d, paraCima);
+    }
+    dy.push(d);
+    fixas.push({ x: c.x, topo: c.topo + d, l: c.l, a: c.a });
+  }
+  return dy;
 }

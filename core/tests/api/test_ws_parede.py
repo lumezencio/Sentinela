@@ -48,7 +48,7 @@ async def test_ws_parede_snapshot_reduzido(
     ws = await _aberto(abrir_ws_parede, token)
     snap = await ws.json()
     sem_proibidos(snap)
-    assert set(snap) == {"tipo", "nome", "fuso", "classes", "equipamentos", "alertas"}
+    assert set(snap) == {"tipo", "nome", "versao", "fuso", "classes", "equipamentos", "alertas"}
     assert snap["tipo"] == "snapshot" and snap["nome"] == "TV Portaria"
     assert set(snap["equipamentos"][0]) == {"id", "nome", "classe", "estado", "pai_id"}
     assert set(snap["alertas"][0]) == {

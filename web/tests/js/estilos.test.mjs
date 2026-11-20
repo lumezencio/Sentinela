@@ -15,6 +15,7 @@ function equips(n, classe = "camera", prefixo = "eq") {
 function cenario() {
   return [...equips(25, "camera"), ...equips(7, "iot"), ...equips(1, "switch"), ...equips(13, "computador")];
 }
+const UM_POR_CLASSE = SLUGS.filter((s) => s !== "sentinela").flatMap((s) => equips(1, s, "u"));
 const igual = (a, b) => {
   assert.deepEqual([...a.entries()].sort(), [...b.entries()].sort());
 };
@@ -38,9 +39,10 @@ for (const estilo of ESTILOS) {
     const eqs = cenario();
     const m = calcularPosicoes(estilo, CLASSES, eqs);
     assert.ok(m.has("srv"));
-    for (const c of CLASSES) assert.equal(m.has(`h-${c.slug}`), c.slug !== "sentinela");
+    const presentes = new Set(eqs.map((e) => e.classe));
+    for (const c of CLASSES) assert.equal(m.has(`h-${c.slug}`), presentes.has(c.slug));
     for (const e of eqs) assert.ok(m.has(e.id));
-    assert.equal(m.size, 1 + 11 + eqs.length);
+    assert.equal(m.size, 1 + presentes.size + eqs.length);
     for (const p of m.values()) {
       for (const k of ["x", "y", "z"]) assert.ok(Number.isFinite(p[k]));
     }
@@ -102,9 +104,9 @@ for (const estilo of ESTILOS) {
 
   test(`${estilo}: classe com 0 e com 1 equipamento`, () => {
     const zero = calcularPosicoes(estilo, CLASSES, []);
-    assert.equal(zero.size, 12);
+    assert.equal(zero.size, 1); // só o servidor: classe sem equipamento não tem hub
     const um = calcularPosicoes(estilo, CLASSES, equips(1, "wifi"));
-    assert.equal(um.size, 13);
+    assert.equal(um.size, 3); // servidor, hub e o equipamento
     const semClasses = calcularPosicoes(estilo, [], []);
     assert.deepEqual(semClasses.get("srv"), { x: 0, y: estilo === "e" ? 200 : 0, z: 0 });
   });
@@ -123,7 +125,7 @@ for (const estilo of ESTILOS) {
 
 test("A, B e D: hubs com y variando (casca inclinada)", () => {
   for (const estilo of ["a", "b", "d"]) {
-    const m = calcularPosicoes(estilo, CLASSES, []);
+    const m = calcularPosicoes(estilo, CLASSES, UM_POR_CLASSE);
     const ys = new Set(CLASSES.filter((c) => c.slug !== "sentinela").map((c) => Math.round(m.get(`h-${c.slug}`).y)));
     assert.ok(ys.size > 3, `${estilo}: y quase constante`);
   }
@@ -163,9 +165,10 @@ test("estilos diferentes produzem posições diferentes", () => {
 });
 
 function menorDistanciaEntreHubs(estilo) {
-  const pos = calcularPosicoes(estilo, CLASSES.map((c, i) => ({ ...c, slug: `c${i}` })), []);
+  const pos = calcularPosicoes(estilo, CLASSES.map((c, i) => ({ ...c, slug: `c${i}` })),
+    CLASSES.map((c, i) => ({ id: `u${i}`, classe: `c${i}` })));
   const hubs = [...pos].filter(([k]) => k.startsWith("h-")).map(([, p]) => p);
-  assert.equal(hubs.length, VAGAS);
+  assert.equal(hubs.length, 12);
   let menor = Infinity;
   for (let i = 0; i < hubs.length; i++) {
     for (let j = i + 1; j < hubs.length; j++) {
@@ -180,4 +183,50 @@ test("hubs afastados: D >= 120 entre quaisquer 2 vagas; A e B >= 100", () => {
   assert.ok(menorDistanciaEntreHubs("d") >= 120, `D: ${menorDistanciaEntreHubs("d")}`);
   assert.ok(menorDistanciaEntreHubs("a") >= 100, `A: ${menorDistanciaEntreHubs("a")}`);
   assert.ok(menorDistanciaEntreHubs("b") >= 100, `B: ${menorDistanciaEntreHubs("b")}`);
+});
+
+// ---------- vagas: hubs distribuídos por igual entre as classes presentes ----------
+import { vagasDasClasses } from "../../src/js/teia/estilos.js";
+
+test("vagasDasClasses: só presentes, ordem por Classe.ordem, n igual ao número de presentes", () => {
+  const eqs = [...equips(3, "camera"), ...equips(1, "roteador"), ...equips(2, "desconhecido"), ...equips(1, "sentinela")];
+  const v = vagasDasClasses(CLASSES, eqs);
+  assert.deepEqual([...v.keys()], ["roteador", "camera", "desconhecido"]);
+  assert.deepEqual(v.get("camera"), { i: 1, n: 3 });
+  assert.equal(vagasDasClasses(CLASSES, []).size, 0);
+});
+
+test("vagasDasClasses: classe desconhecida do backend vai ao fim, por slug", () => {
+  const v = vagasDasClasses(CLASSES, [...equips(1, "zeta"), ...equips(1, "alfa"), ...equips(1, "camera")]);
+  assert.deepEqual([...v.keys()], ["camera", "alfa", "zeta"]);
+});
+
+test("hubs: com 1, 4 e 11 classes ficam bem separados em todos os estilos", () => {
+  const nomes = SLUGS.filter((s) => s !== "sentinela");
+  for (const n of [1, 4, 11]) {
+    const sel = n === 4 ? ["roteador", "gravador", "camera", "desconhecido"] : nomes.slice(0, n);
+    const eqs = sel.flatMap((s) => equips(1, s, "u"));
+    for (const estilo of ESTILOS) {
+      const m = calcularPosicoes(estilo, CLASSES, eqs);
+      const hubs = sel.map((s) => m.get(`h-${s}`));
+      assert.equal(hubs.length, n);
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const d = Math.hypot(hubs[i].x - hubs[j].x, hubs[i].y - hubs[j].y, hubs[i].z - hubs[j].z);
+          assert.ok(d >= (estilo === "d" ? 100 : 60), `${estilo} n=${n}: hubs a ${d.toFixed(0)}`);
+        }
+      }
+    }
+  }
+});
+
+test("hubs só se movem quando o conjunto de classes muda; a ordem relativa se mantém", () => {
+  const base = [...equips(2, "roteador"), ...equips(2, "camera"), ...equips(2, "desconhecido")];
+  for (const estilo of ESTILOS) {
+    const a = calcularPosicoes(estilo, CLASSES, base);
+    const b = calcularPosicoes(estilo, CLASSES, [...base, ...equips(5, "camera", "novo")]);
+    for (const s of ["roteador", "camera", "desconhecido"]) assert.deepEqual(a.get(`h-${s}`), b.get(`h-${s}`));
+    const c = calcularPosicoes(estilo, CLASSES, [...base, ...equips(1, "wifi")]); // classe nova: n muda
+    assert.ok(c.has("h-wifi"));
+  }
 });

@@ -212,7 +212,7 @@ export function visoesDoPainel(store) {
       if (this.aba !== "teia" || document.hidden) controle.pausar();
     },
 
-    /** px da cena cobertos pelo painel de classes e pelo do equipamento (se aberto). */
+    /** px da cena cobertos pelos painéis (classes, equipamento aberto, barra de estilos, legenda). */
     margensDaCena() {
       const palco = this.$refs.palcoTeia;
       if (!palco) return {};
@@ -220,9 +220,17 @@ export function visoesDoPainel(store) {
         const el = document.getElementById(id);
         return el && !el.hidden ? el.getBoundingClientRect() : null;
       };
+      // também a barra de estilos, o "Ver tudo" e a legenda: a Teia só usa o retângulo livre
+      const dentro = (seletor) => {
+        const el = document.querySelector(seletor);
+        return el ? el.getBoundingClientRect() : null;
+      };
       return margensDosPaineis(palco.getBoundingClientRect(), [
         caixa("teia-classes"),
         this.equipAberto ? caixa("painel-equipamento") : null,
+        dentro("#conteudo-teia .teia-estilos"),
+        dentro("#conteudo-teia .teia-ver-tudo"),
+        dentro("#conteudo-teia .teia-legenda"),
       ]);
     },
 
@@ -251,6 +259,8 @@ export function visoesDoPainel(store) {
         const c = this.teiaClasses.find((x) => x.slug === this.classeFocada);
         if (!c) {
           this.classeFocada = "";
+          // a classe esvaziou (último equipamento removido ou reclassificado): sai do foco
+          if (controle) controle.verTudo();
         } else {
           const r = equipamentosDaClasse(store, c.slug, this.teiaPagina);
           this.classeFocadaNome = c.nome;

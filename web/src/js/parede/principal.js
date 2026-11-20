@@ -13,6 +13,7 @@ import {
 } from "../cartoes.js";
 import { aplicarEquipamento, aplicarEstado, aplicarSnapshot, criarStore, ESTADOS, grupoDe } from "../lista.js";
 import { montarOrganograma } from "../organograma.js";
+import { textoDaVersao } from "../versao.js";
 import { webglDisponivel } from "../visoes.js";
 import { criarConexao } from "../ws.js";
 import { proximoPasso, validadeDoCodigoMs } from "./emparelhar.js";
@@ -274,6 +275,15 @@ export function iniciarParede(doc = document) {
   }
 
   // ---------- telão ----------
+  /** Versão no rodapé do telão (vem no snapshot do servidor; formato conferido). */
+  function mostrarVersaoDoTelao(versao) {
+    const texto = textoDaVersao(versao);
+    const alvo = $("pr-versao");
+    if (!alvo) return;
+    alvo.textContent = texto ? `Sentinela ${texto}` : "";
+    alvo.hidden = !texto;
+  }
+
   function entrarNoTelao(msg) {
     limparPedido();
     geracao += 1;
@@ -283,6 +293,7 @@ export function iniciarParede(doc = document) {
     pilha = pilhaVazia(); // o que já estava aberto no snapshot fica só na faixa, sem cartão
     fuso = typeof msg.fuso === "string" ? msg.fuso : "";
     el.nome.textContent = typeof msg.nome === "string" ? msg.nome : "";
+    mostrarVersaoDoTelao(msg.versao);
     const primeiraVez = modo !== "telao";
     mostrar("telao");
     if (primeiraVez) escolherVisao();

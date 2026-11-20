@@ -17,11 +17,15 @@ fictícios; precisa de ``--with cryptography``), de ``core/``::
 
 Destinos: ``alertas`` (sem silêncio ativo), ``alertas-silencio`` (com um silêncio e uma
 manutenção ativos), ``alertas-dialogo`` (diálogo de silêncio aberto, com erro de validação) e
-``configuracoes`` (cartões do Telegram e do fuso). Cada um sai em
+``configuracoes`` (cartões do Telegram e do fuso). ``teia-vazias`` e ``organograma-vazias``
+tiram do que o navegador recebe os equipamentos de impressora e iot (classes sem equipamento
+não podem aparecer). ``cartao-1/3/grupo`` abrem a Lista com cartões de alerta (nome de 60
+caracteres). Cada um sai em
 ``<destino>-<tema>-<largura>.png`` (a janela de 900 px) e ``...-pagina.png`` (a página inteira).
 """
 
 import argparse
+import json
 import os
 import re
 import secrets
@@ -47,7 +51,31 @@ DESTINOS = (
     "cartao-1",
     "cartao-3",
     "cartao-grupo",
+    "teia-vazias",
+    "organograma-vazias",
+    "teia-quatro",
+    "teia-uma",
 )
+# destinos em que as classes abaixo ficam sem equipamento (só no que o navegador recebe)
+CLASSES_ESVAZIADAS = ("impressora", "iot")
+# cenários da Teia: só estas classes ficam com equipamento (4 = rede típica do dono)
+CENARIOS_TEIA = {
+    "teia-demo": None,  # os 10 grupos com equipamento do demo
+    "teia-quatro": ("roteador", "gravador", "camera", "computador"),
+    "teia-uma": ("camera",),
+}
+# estilo da Teia por sufixo do destino (ex.: teia-quatro-e); sem sufixo, a Constelação
+ESTILOS_TEIA = {"b": "Órbitas", "c": "Galáxia", "d": "Átomo", "e": "Árvore 3D"}
+
+
+def _destino_teia(destino: str) -> tuple[str, str] | None:
+    """(cenário, estilo) de ``teia-<cenário>[-<estilo>]``; None se não for desse tipo."""
+    base, _, sufixo = destino.rpartition("-")
+    if sufixo in ESTILOS_TEIA and base in CENARIOS_TEIA:
+        return base, sufixo
+    return (destino, "") if destino in CENARIOS_TEIA else None
+
+
 NOME_LONGO = "Switch de distribuição do bloco administrativo B, sala de telecom do 2º andar"
 NOME_EXTREMO = (
     "Gravador de vídeo do corredor central do prédio anexo, rack 3, prateleira inferior; "
@@ -97,6 +125,36 @@ def _entrar(browser: Browser, url: str, login: str, senha: str) -> dict[str, Any
         return contexto.storage_state()
     finally:
         contexto.close()
+
+
+def esvaziar_classes(manter: tuple[str, ...] | None = None) -> Callable[[str], str]:
+    """Reescritor do WebSocket: tira do snapshot os equipamentos de ``CLASSES_ESVAZIADAS`` e
+    descarta os estados deles (o demo continua publicando). Um por página (guarda os ids)."""
+    removidos: set[str] = set()
+
+    def reescrever(texto: str) -> str:
+        try:
+            msg: dict[str, Any] = json.loads(texto)
+        except ValueError:
+            return texto
+        if msg.get("tipo") == "snapshot":
+            todos = msg.get("equipamentos", [])
+            removidos.update(
+                e["id"]
+                for e in todos
+                if (
+                    e.get("classe") not in manter
+                    if manter
+                    else e.get("classe") in CLASSES_ESVAZIADAS
+                )
+            )
+            msg["equipamentos"] = [e for e in todos if e["id"] not in removidos]
+            return json.dumps(msg)
+        if msg.get("id") in removidos:
+            return json.dumps({"tipo": "ping"})
+        return texto
+
+    return reescrever
 
 
 def _abrir_teia(page: Page, perto: bool) -> None:
@@ -151,10 +209,17 @@ def _abrir_cartoes(page: Page, destino: str, ids: dict[str, int], ponte: Any) ->
 
 
 def _abrir(page: Page, destino: str) -> None:
-    if destino in ("teia", "teia-perto"):
+    cenario = _destino_teia(destino)
+    if destino.endswith("-vazias") or (cenario and CENARIOS_TEIA[cenario[0]]):
+        manter = CENARIOS_TEIA[cenario[0]] if cenario else None  # None: só impressora e iot
+        interceptar_ws(page, esvaziar_classes(manter))
+    if destino in ("teia", "teia-perto", "teia-vazias") or cenario:
         _abrir_teia(page, destino == "teia-perto")
+        if cenario and cenario[1]:
+            page.get_by_role("button", name=ESTILOS_TEIA[cenario[1]], exact=True).click()
+            page.wait_for_timeout(2500)  # transição de estilo e nova vista geral
         return
-    if destino == "organograma":
+    if destino in ("organograma", "organograma-vazias"):
         page.goto("/index.html#organograma")
         expect(page.locator("#conteudo-organograma .org-item").first).to_be_visible(timeout=20_000)
         page.wait_for_timeout(900)
@@ -256,14 +321,19 @@ def capturar(
     saida: Path,
     gpu: bool = False,
     semeados: dict[str, int] | None = None,
+    temas: tuple[str, ...] = TEMAS,
+    larguras: tuple[int, ...] = LARGURAS,
 ) -> None:
     with sync_playwright() as p:
-        navegador = p.chromium.launch(args=ARGS_GPU if gpu else [])
+        # barras de rolagem clássicas (as do Windows, 15-17 px), como no navegador do dono
+        navegador = p.chromium.launch(
+            args=ARGS_GPU if gpu else [], ignore_default_args=["--hide-scrollbars"]
+        )
         try:
             estado = _entrar(navegador, url, login, senha)
             for destino in destinos:
-                for tema in TEMAS:
-                    for largura in LARGURAS:
+                for tema in temas:
+                    for largura in larguras:
                         contexto = navegador.new_context(
                             viewport={"width": largura, "height": ALTURA},
                             ignore_https_errors=True,
@@ -322,19 +392,25 @@ def main() -> None:
     ap.add_argument("--local", action="store_true", help="sobe o demo do smoke e captura nele")
     ap.add_argument("--saida", type=Path, default=None, help="pasta das imagens")
     ap.add_argument("--destinos", default=",".join(DESTINOS), help=f"entre {', '.join(DESTINOS)}")
+    ap.add_argument("--temas", default=",".join(TEMAS), help="claro, escuro ou os dois")
+    ap.add_argument("--larguras", default="", help="ex.: 360,1366 (padrão: as 8 do dono)")
     ap.add_argument("--gpu", action="store_true", help="Chromium com GPU real (Teia sem agrupar)")
     args = ap.parse_args()
     destinos = [d.strip() for d in args.destinos.split(",") if d.strip()]
-    desconhecidos = [d for d in destinos if d not in DESTINOS]
+    desconhecidos = [d for d in destinos if d not in DESTINOS and not _destino_teia(d)]
     if desconhecidos:
         sys.exit(f"destino desconhecido: {', '.join(desconhecidos)}")
+    temas = tuple(t.strip() for t in args.temas.split(",") if t.strip() in TEMAS)
+    larguras = tuple(int(x) for x in args.larguras.split(",") if x.strip()) or LARGURAS
     saida = args.saida or pasta_saida()
     saida.mkdir(parents=True, exist_ok=True)
     if args.local:
         with tempfile.TemporaryDirectory(prefix="sentinela-capt-") as tmp:
             url, login, senha, servidor = _subir_local(Path(tmp))
             try:
-                capturar(url, login, senha, destinos, saida, args.gpu, servidor.ids)
+                capturar(
+                    url, login, senha, destinos, saida, args.gpu, servidor.ids, temas, larguras
+                )
             finally:
                 servidor.derrubar()
     else:
@@ -345,7 +421,7 @@ def main() -> None:
             sys.exit("informe --url (ou SENTINELA_URL_SMOKE) e SENTINELA_SMOKE_LOGIN/SENHA")
         if any(d.startswith("cartao-") for d in destinos):
             sys.exit("os destinos cartao-* precisam do banco local: use --local")
-        capturar(url, login, senha, destinos, saida, args.gpu)
+        capturar(url, login, senha, destinos, saida, args.gpu, None, temas, larguras)
     print(f"capturas em {saida}")
 
 

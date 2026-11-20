@@ -38,6 +38,17 @@ html[data-aba="organograma"] #conteudo-lista {
   font-weight: 700;
 }
 
+/* versão em execução, ao lado do nome (nunca cortada: não encolhe nem quebra) */
+.versao {
+  flex: none;
+  color: var(--texto-suave);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .abas {
   position: relative; /* o texto só para leitor de tela (absoluto) dos contadores fica contido */
   display: flex;
@@ -1063,10 +1074,6 @@ html[data-aba="teia"] .campo {
 .teia-equip[aria-current="true"] {
   border-color: var(--borda);
   background: var(--superficie-2);
-}
-
-.teia-classe.vazia {
-  opacity: 0.5;
 }
 
 .teia-classe .pino {

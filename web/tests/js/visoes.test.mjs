@@ -131,7 +131,7 @@ test("carregarTeia: um único import() do bundle (promessa memorizada)", async (
 // ---------- painel de classes ----------
 test("resumoDasClasses: ordem do backend, sem 'sentinela', contagem por estado", () => {
   const r = resumoDasClasses(lojaDemo());
-  assert.deepEqual(r.map((c) => c.slug), ["wifi", "camera", "iot"]);
+  assert.deepEqual(r.map((c) => c.slug), ["wifi", "camera"]);
   const cam = r.find((c) => c.slug === "camera");
   assert.equal(cam.nome, "Câmeras");
   assert.equal(cam.total, 5);
@@ -139,14 +139,13 @@ test("resumoDasClasses: ordem do backend, sem 'sentinela', contagem por estado",
   assert.equal(cam.cor, "#E59866");
   assert.match(cam.rotulo, /^Câmeras: 5 equipamentos/);
   assert.match(cam.rotulo, /1 offline/);
-  const iot = r.find((c) => c.slug === "iot");
-  assert.equal(iot.total, 0);
-  assert.equal(iot.vazia, true);
+  assert.equal(r.some((c) => c.slug === "iot"), false); // classe vazia não aparece
 });
 
 test("resumoDasClasses: cor inválida do backend não vai para o CSS", () => {
   const store = lojaDemo();
   store.classes.get("iot").cor = "red;background:url(x)";
+  store.itens.set("z1", { id: "z1", nome: "Sensor", ip: "10.99.9.1", classe: "iot", estado: "online" });
   const iot = resumoDasClasses(store).find((c) => c.slug === "iot");
   assert.equal(iot.cor, "");
 });
