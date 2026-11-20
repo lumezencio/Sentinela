@@ -6,7 +6,7 @@ import { horaNoFuso } from "./alertas.js";
 import { api } from "./api.js";
 import {
   aplicarNaPilha, dadosDoCartao, dispensarDaPilha, expirarDaPilha, listaDeAfetados, MAX_NO_PAINEL,
-  pilhaVazia, renovarNaPilha, textoDoMais, visiveisDaPilha,
+  pilhaVazia, renovarNaPilha, textoDoMais, TIPOS_DO_PAINEL, visiveisDaPilha,
 } from "./cartoes.js";
 
 const CHAVE_SOM = "sentinela-som-alertas";
@@ -104,7 +104,7 @@ export function cartoesDoPainel(store) {
     // ---------- mensagens ao vivo ----------
     cartoesAoMensagem(msg) {
       const antes = pilha;
-      pilha = aplicarNaPilha(pilha, msg, Date.now());
+      pilha = aplicarNaPilha(pilha, msg, Date.now(), TIPOS_DO_PAINEL);
       if (pilha === antes) return;
       const novo = msg.acao === "aberto" && pilha.cartoes.length > antes.cartoes.length;
       this.renderizarCartoes();
@@ -185,7 +185,7 @@ export function cartoesDoPainel(store) {
     },
 
     // ---------- ações ----------
-    dispensarCartao(id) {
+    dispensarCartao(id, devolverFoco = true) {
       // o foco estava no cartão que sai: vai ao próximo cartão (ou ao conteúdo) em vez de se perder
       const ordem = this.cartoes.map((c) => c.id);
       const i = ordem.indexOf(id);
@@ -195,7 +195,7 @@ export function cartoesDoPainel(store) {
       retidos.delete(id);
       pilha = dispensarDaPilha(pilha, id);
       this.renderizarCartoes();
-      if (!tinhaFoco) return;
+      if (!tinhaFoco || !devolverFoco) return;
       window.setTimeout(() => {
         const alvo = (proximo !== null && document.querySelector(`#cartoes-alerta article[data-id="${proximo}"]`))
           || document.getElementById("conteudo");
@@ -234,6 +234,14 @@ export function cartoesDoPainel(store) {
       this.dispensarCartao(id);
       this.irPara("alertas");
     },
+    /** Aparelho novo: fecha o aviso e leva à fila de Novos, já no cartão desse aparelho. */
+    verEmNovosDoCartao(id) {
+      const c = pilha.cartoes.find((x) => x.id === id);
+      const descoberta = c && c.alerta.descoberta_id;
+      if (typeof descoberta !== "string" || !descoberta) return;
+      this.dispensarCartao(id, false); // o foco vai ao cartão em Novos, não a #conteudo
+      this.verDescobertaEmNovos(descoberta);
+    },
     /** Abre a ficha do equipamento: na Teia, ou no Organograma se o navegador não tem 3D. */
     verNaTeiaDoCartao(id) {
       const c = pilha.cartoes.find((x) => x.id === id);
@@ -255,7 +263,7 @@ export function cartoesDoPainel(store) {
         return;
       }
       const m = { tipo: "alerta", acao: "atualizado", id, alerta: r.dados };
-      pilha = aplicarNaPilha(pilha, m, Date.now());
+      pilha = aplicarNaPilha(pilha, m, Date.now(), TIPOS_DO_PAINEL);
       this.alertasAoMensagem(m); // a aba Alertas, se já carregada
       this.renderizarCartoes();
     },

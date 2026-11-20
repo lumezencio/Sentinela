@@ -3660,3 +3660,363 @@ def test_visualizador_nao_alcanca_o_primeiro_acesso(browser: Browser, alvo: Alvo
             assert r.status == 404, (rota, r.status)
     finally:
         contexto.close()
+
+
+# ---------- Fase 5, Task 10: aparelho novo, Sub-redes e Atualizações ----------
+def aviso_de_atualizacao(**campos: Any) -> dict[str, Any]:
+    """Corpo de ``GET /atualizacao`` (fictício) para o smoke."""
+    import datetime as dt
+
+    agora = dt.datetime.now(dt.UTC).isoformat()
+    padrao: dict[str, Any] = {
+        "versao": "0.5.0",
+        "ativo": True,
+        "agendado": True,
+        "ultima_verificacao": agora,
+        "ultima_verificacao_ok": agora,
+        "resultado": "atualizado",
+        "de": "0.4.1",
+        "para": "0.5.0",
+        "mensagem": None,
+        "aviso": "Atualizado para 0.5.0",
+        "comando_manual": "./update.sh",
+        "arquivo_ilegivel": False,
+    }
+    return {**padrao, **campos}
+
+
+def servir_atualizacao(page: Page, corpo: dict[str, Any]) -> None:
+    """Responde ``GET /api/v1/atualizacao`` com ``corpo`` (a escrita segue para o servidor)."""
+
+    def tratar(route: Route) -> None:
+        if route.request.method == "GET":
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(corpo))
+        else:
+            route.continue_()
+
+    page.route("**/api/v1/atualizacao", tratar)
+
+
+def test_aviso_de_aparelho_novo_e_ver_em_novos_foca_o_cartao(
+    page: Page, alvo: Alvo, novo_aparelho: Any
+) -> None:
+    erros = vigiar_console(page)
+    a = novo_aparelho()
+    ponte = entrar_com_ponte(page, alvo)
+    alerta = injetar(page, ponte, "aberto", a["alerta_id"])
+    assert alerta["tipo"] == "aparelho_novo" and alerta["ip"] == a["ip"], alerta
+    cartao = cartao_de(page, a["alerta_id"])
+    expect(cartao).to_be_visible(timeout=10_000)
+    expect(cartao.locator(".ca-marca")).to_have_text("Novo na rede")
+    expect(cartao.locator(".ca-nome")).to_have_text("Novo aparelho conectou na rede")
+    expect(cartao.locator(".ca-dados")).to_contain_text(a["ip"])
+    expect(cartao.locator(".ca-dados")).to_contain_text("Fabricante Fictício")
+    expect(cartao.locator(".ca-dados")).to_contain_text("80, 443")
+    # a lista de alertas mostra a mesma linha, com o atalho
+    page.get_by_role("tab", name="Alertas").click()
+    linha = page.locator(f'#lista-alertas li[data-id="{a["alerta_id"]}"]')
+    expect(linha).to_be_visible(timeout=10_000)
+    info = linha.locator(".al-info-novo")
+    expect(info).to_contain_text(a["ip"])
+    expect(info).to_contain_text("Fabricante Fictício")
+    expect(info).to_contain_text("portas 80, 443")
+    expect(linha.get_by_role("button", name="Ver em Novos")).to_be_visible()
+    page.get_by_role("tab", name="Lista").click()
+    # "Ver em Novos" no cartão: abre a fila e destaca o cartão da descoberta, com o foco nele
+    cartao.get_by_role("button", name="Ver em Novos").click()
+    expect(page.get_by_role("tab", name="Novos")).to_have_attribute("aria-selected", "true")
+    alvo_novos = page.locator(f'#conteudo-novos .nv-cartao[data-id="{a["descoberta_id"]}"]')
+    expect(alvo_novos).to_be_visible(timeout=20_000)
+    expect(alvo_novos).to_have_class(re.compile(r"nv-destaque"))
+    expect(alvo_novos).to_be_focused()
+    box = alvo_novos.bounding_box()
+    altura = (page.viewport_size or {"height": 720})["height"]
+    assert box is not None and 0 <= box["y"] < altura, box
+    expect(cartao).to_have_count(0)  # o aviso cumpriu o papel
+    assert erros == [], erros
+
+
+def test_ignorar_em_novos_fecha_o_aviso(page: Page, alvo: Alvo, novo_aparelho: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_aparelho()
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Alertas").click()
+    linha = page.locator(f'#lista-alertas li[data-id="{a["alerta_id"]}"]')
+    expect(linha).to_be_visible(timeout=10_000)
+    linha.get_by_role("button", name="Ver em Novos").click()
+    alvo_novos = page.locator(f'#conteudo-novos .nv-cartao[data-id="{a["descoberta_id"]}"]')
+    expect(alvo_novos).to_be_focused(timeout=20_000)
+    alvo_novos.get_by_role("button", name=re.compile("^Ignorar")).click()
+    expect(alvo_novos).to_have_count(0, timeout=10_000)
+    page.get_by_role("tab", name="Alertas").click()
+    # o agrupador fecha o alerta (ao vivo): sai de "Abertos"
+    expect(linha).to_have_count(0, timeout=15_000)
+    r = api_json(page, "GET", f"/alertas/{a['alerta_id']}")
+    assert r["status"] == 200 and r["dados"]["fechado_em"] is not None, r
+    assert erros == [], erros
+
+
+def test_faixa_de_varredura_automatica(page: Page, alvo: Alvo) -> None:
+    from conftest import PonteWs
+
+    erros = vigiar_console(page)
+    ponte = PonteWs(page)
+    entrar(page, alvo)
+    faixa = page.locator("#faixa-varredura")
+    base = {
+        "tipo": "varredura", "estado": "rodando", "cidr": "10.99.10.0/24",
+        "total": 200, "feitos": 50, "achados": 1,
+    }  # fmt: skip
+    ponte.injetar({**base, "origem": "agendada"})
+    expect(faixa).to_contain_text("Varredura automática em 10.99.10.0/24: 25%.")
+    ponte.injetar({**base, "origem": "manual"})
+    expect(faixa).to_contain_text("Varredura lenta em 10.99.10.0/24: 25%.")
+    ponte.injetar({"tipo": "varredura", "estado": "concluida"})
+    expect(faixa).to_be_hidden()
+    assert erros == [], erros
+
+
+def test_cartao_atualizacoes_mostra_versao_e_chave(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    versao = api_json(page, "GET", "/atualizacao")["dados"]["versao"]
+    page.get_by_role("tab", name="Configurações").click()
+    cartao = page.locator("#cfg-atualizacoes")
+    expect(cartao).to_be_visible(timeout=10_000)
+    expect(cartao.locator("#atz-versao")).to_have_text(f"Versão instalada: {versao}")
+    chave = cartao.get_by_role("switch", name="Atualizar sozinho")
+    expect(chave).to_have_attribute("aria-checked", "true")  # ligada por padrão
+    expect(cartao.locator("#atz-agendamento")).to_contain_text("rode ./update.sh")
+    expect(cartao.locator("#atz-resultado")).to_have_text(
+        "Ainda não houve verificação de atualização."
+    )
+    try:
+        with page.expect_request(
+            lambda r: r.method == "PATCH" and r.url.endswith("/api/v1/atualizacao")
+        ) as pedido:
+            chave.click()
+        assert json.loads(pedido.value.post_data or "{}") == {"ativo": False}
+        expect(chave).to_have_attribute("aria-checked", "false")
+        expect(cartao.locator("#atz-aviso")).to_have_text("Atualização automática desligada.")
+        assert api_json(page, "GET", "/atualizacao")["dados"]["ativo"] is False
+    finally:
+        api_json(page, "PATCH", "/atualizacao", {"ativo": True})
+    page.reload()
+    page.get_by_role("tab", name="Configurações").click()
+    expect(cartao.get_by_role("switch", name="Atualizar sozinho")).to_have_attribute(
+        "aria-checked", "true"
+    )
+    assert erros == [], erros
+
+
+def test_visualizador_nao_ve_o_cartao_atualizacoes_mas_ve_o_aviso(
+    browser: Browser, alvo: Alvo
+) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        page = contexto.new_page()
+        erros = vigiar_console(page)
+        servir_atualizacao(page, aviso_de_atualizacao())
+        entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+        expect(page.locator("#aviso-atualizacao")).to_contain_text("Atualizado para 0.5.0")
+        page.goto("/index.html#configuracoes")
+        expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
+        expect(page.locator("#cfg-atualizacoes")).to_be_hidden()
+        r = page.request.patch(
+            "/api/v1/atualizacao", data={"ativo": False}, headers={"X-CSRF": "x"}
+        )
+        assert r.status in (401, 403), r.status
+        assert erros == [], erros
+    finally:
+        contexto.close()
+
+
+def test_aviso_de_24h_aparece_e_dispensa(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    servir_atualizacao(page, aviso_de_atualizacao())
+    entrar(page, alvo)
+    aviso = page.locator("#aviso-atualizacao")
+    expect(aviso).to_be_visible(timeout=10_000)
+    expect(aviso).to_contain_text("Atualizado para 0.5.0")
+    # abaixo do cabeçalho e acima do conteúdo: nunca cobre nada
+    topo = page.locator("header.topo").bounding_box()
+    caixa = aviso.bounding_box()
+    conteudo = page.locator("#conteudo").bounding_box()
+    assert topo and caixa and conteudo
+    assert caixa["y"] >= topo["y"] + topo["height"] - 1, (topo, caixa)
+    assert caixa["y"] + caixa["height"] <= conteudo["y"] + 1, (caixa, conteudo)
+    aviso.get_by_role("button", name=re.compile("^Dispensar")).click()
+    expect(aviso).to_be_hidden()
+    page.reload()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    page.wait_for_timeout(500)
+    expect(aviso).to_be_hidden()  # a dispensa fica guardada (por pessoa, neste navegador)
+    assert erros == [], erros
+
+
+def test_aviso_voltou_e_atencao_e_o_de_7_dias_usa_a_data_local(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    servir_atualizacao(
+        page,
+        aviso_de_atualizacao(
+            resultado="voltou",
+            aviso="A atualização para 0.5.0 falhou; o Sentinela voltou para 0.4.1",
+        ),
+    )
+    entrar(page, alvo)
+    aviso = page.locator("#aviso-atualizacao")
+    expect(aviso).to_contain_text("voltou para 0.4.1", timeout=10_000)
+    expect(aviso.locator(".aviso-atz")).to_have_class(re.compile("aviso-atz-atencao"))
+    page.unroute_all()
+    # 21/11 01:00 UTC é 20/11 22:00 no fuso da instalação (America/Sao_Paulo): a data é a local
+    servir_atualizacao(
+        page,
+        aviso_de_atualizacao(
+            resultado="sem_conexao",
+            ultima_verificacao_ok="2026-11-21T01:00:00+00:00",
+            aviso="O Sentinela não conseguiu verificar atualizações desde 21/11",
+        ),
+    )
+    page.reload()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    expect(aviso).to_contain_text("não conseguiu verificar atualizações", timeout=10_000)
+    fuso = api_json(page, "GET", "/config/geral")["dados"]["fuso"]
+    if fuso == "America/Sao_Paulo":
+        expect(aviso).to_contain_text("desde 20/11")
+    assert erros == [], erros
+
+
+def test_subrede_salva_gateway_e_intervalo(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    sub = next(
+        s for s in api_json(page, "GET", "/subredes")["dados"] if s["cidr"] == "10.99.10.0/24"
+    )
+    ajustes0 = api_json(page, "GET", "/config/descoberta")["dados"]
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    campo = secao.get_by_label("Gateway (roteador) de 10.99.10.0/24")
+    expect(campo).to_be_visible(timeout=10_000)
+    salvar = secao.get_by_role("button", name="Salvar o gateway de 10.99.10.0/24")
+    erro_gw = secao.locator(f"#cfg-gw-erro-{sub['id']}")
+    escritas: list[str] = []
+    page.on(
+        "request",
+        lambda r: escritas.append(r.url) if r.method == "PATCH" and "/api/v1/" in r.url else None,
+    )
+    try:
+        # inválido: nada é enviado
+        campo.fill("10.99.11.1")
+        salvar.click()
+        expect(erro_gw).to_have_text("O gateway precisa estar dentro da sub-rede.")
+        campo.fill("roteador")
+        salvar.click()
+        expect(erro_gw).to_have_text("Informe um endereço IPv4, como 192.168.15.1.")
+        assert escritas == [], escritas
+        # válido: grava e o servidor confirma
+        campo.fill("10.99.10.1")
+        salvar.click()
+        expect(secao.locator("#cfg-aviso")).to_have_text("Gateway de 10.99.10.0/24 salvo.")
+        lista = api_json(page, "GET", "/subredes")["dados"]
+        assert next(s for s in lista if s["id"] == sub["id"])["gateway_ip"] == "10.99.10.1"
+        # intervalo fora de 15 a 240: nada é enviado
+        n_antes = len(escritas)
+        intervalo = secao.get_by_label("Varredura automática a cada (minutos)")
+        botao = secao.get_by_role("button", name="Salvar intervalo")
+        for ruim in ("14", "241"):
+            intervalo.fill(ruim)
+            botao.click()
+            expect(secao.locator("#cfg-intervalo-erro")).to_have_text(
+                "Informe de 15 a 240 minutos."
+            )
+        assert len(escritas) == n_antes, escritas
+        intervalo.fill("45")
+        botao.click()
+        expect(secao.locator("#cfg-aviso")).to_contain_text("a cada 45 minutos")
+        assert api_json(page, "GET", "/config/descoberta")["dados"]["varredura_continua_min"] == 45
+    finally:
+        api_json(page, "PATCH", f"/subredes/{sub['id']}", {"gateway_ip": sub["gateway_ip"]})
+        api_json(
+            page,
+            "PATCH",
+            "/config/descoberta",
+            {"varredura_continua_min": ajustes0["varredura_continua_min"]},
+        )
+    assert erros == [], erros
+
+
+LARGURAS_T10 = (360, 390, 768, 1024, 1280, 1366, 1440, 1920)
+MEDIR_T10 = """(seletores) => {
+    const vw = document.documentElement.clientWidth;
+    const problemas = [];
+    for (const sel of seletores) {
+        for (const raiz of document.querySelectorAll(sel)) {
+            for (const el of [raiz, ...raiz.querySelectorAll('*')]) {
+                const cs = getComputedStyle(el);
+                if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+                if (el.closest('.so-leitor')) continue; // texto só para leitor de tela
+                const r = el.getBoundingClientRect();
+                if (!r.width || !r.height) continue;
+                if (r.left < -0.5 || r.right > vw + 0.5) {
+                    problemas.push([sel, el.className, 'fora', r.left, r.right]);
+                }
+                if (cs.textOverflow === 'ellipsis') {
+                    problemas.push([sel, el.className, 'reticencias']);
+                }
+                const folga = el.scrollWidth > el.clientWidth + 1;
+                if (el.children.length === 0 && folga && cs.overflowX !== 'visible') {
+                    problemas.push([sel, el.className, 'cortado', el.scrollWidth, el.clientWidth]);
+                }
+            }
+        }
+    }
+    return {vw, rolagem: document.documentElement.scrollWidth, problemas};
+}"""
+
+
+def test_telas_novas_sem_corte_nas_8_larguras(
+    browser: Browser, alvo: Alvo, novo_aparelho: Any
+) -> None:
+    """Sub-redes, Atualizações, aviso de 24 h e a linha de aparelho novo (fabricante de 120
+    caracteres, 12 portas, mensagem de 200): nada passa da janela, nada é cortado nem vira
+    reticências, em 360 a 1920 px."""
+    a = novo_aparelho(
+        fabricante=(
+            "Fabricante Internacional de Equipamentos de Rede e Telecomunicações Ltda., Divisão"
+            " Industrial de Câmeras IP e Gravadores de Vídeo"
+        )[:120],
+        sinais={"portas": [21, 22, 23, 80, 443, 554, 8000, 8080, 8443, 9000, 37777, 49152]},
+    )
+    mensagem = "Falha ao verificar a imagem: " + "x" * 160 + " fim."
+    corpo = aviso_de_atualizacao(
+        resultado="falhou", mensagem=mensagem[:200], aviso="A atualização falhou; " + "y" * 120
+    )
+    for largura in LARGURAS_T10:
+        contexto = browser.new_context(
+            viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+        )
+        try:
+            page = contexto.new_page()
+            servir_atualizacao(page, corpo)
+            entrar(page, alvo)
+            expect(page.locator("#aviso-atualizacao")).to_be_visible(timeout=10_000)
+            r = page.evaluate(MEDIR_T10, ["#aviso-atualizacao"])
+            assert r["rolagem"] <= r["vw"] and r["problemas"] == [], (largura, r)
+            page.get_by_role("tab", name="Alertas").click()
+            expect(page.locator(f'#lista-alertas li[data-id="{a["alerta_id"]}"]')).to_be_visible(
+                timeout=10_000
+            )
+            r = page.evaluate(MEDIR_T10, ["#lista-alertas"])
+            assert r["rolagem"] <= r["vw"] and r["problemas"] == [], (largura, r)
+            page.get_by_role("tab", name="Configurações").click()
+            expect(page.locator("#cfg-subredes li").first).to_be_visible(timeout=10_000)
+            page.locator("#cfg-atualizacoes").scroll_into_view_if_needed()
+            expect(page.locator("#atz-resultado")).to_contain_text(mensagem[:200])
+            r = page.evaluate(
+                MEDIR_T10, ["#cfg-subredes", "#cfg-intervalo-bloco", "#cfg-atualizacoes"]
+            )
+            assert r["rolagem"] <= r["vw"] and r["problemas"] == [], (largura, r)
+        finally:
+            contexto.close()

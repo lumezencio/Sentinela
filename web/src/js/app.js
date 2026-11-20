@@ -4,7 +4,7 @@ import { api, irParaLogin } from "./api.js";
 import { cartoesDoPainel } from "./cartoes-painel.js";
 import { paredesDoPainel } from "./config-paredes.js";
 import { telegramDoPainel } from "./config-telegram.js";
-import { backupDoPainel, configuracoesDoPainel, segurancaDoPainel } from "./configuracoes.js";
+import { atualizacaoDoPainel, backupDoPainel, configuracoesDoPainel, segurancaDoPainel } from "./configuracoes.js";
 import {
   aplicarEquipamento,
   aplicarEstado,
@@ -27,6 +27,7 @@ const LIMITE_CSV = 1024 * 1024;
 const ERROS_CSV_NA_TELA = 50;
 const RECUO_INICIAL_MS = 1000; // mesmo recuo do WS: 1 s → 30 s
 const RECUO_MAXIMO_MS = 30000;
+const ATUALIZACAO_MS = 600000;
 const MSG_SAIR = "Não foi possível sair. Tente de novo.";
 
 function dormir(ms) {
@@ -41,11 +42,14 @@ function temaAtual() {
 
 /** Faixa da varredura a partir da mensagem "varredura" (ou do GET /varredura). */
 function estadoDaVarredura(p) {
-  if (!p || p.estado !== "rodando") return { rodando: false, cidr: "", pct: 0, achados: 0 };
+  if (!p || p.estado !== "rodando") return { rodando: false, cidr: "", pct: 0, achados: 0, automatica: false };
   const total = Number(p.total) || 0;
   const feitos = Number(p.feitos) || 0;
   const pct = total > 0 ? Math.min(100, Math.floor((feitos / total) * 100)) : 0;
-  return { rodando: true, cidr: textoSeguro(p.cidr, 43), pct, achados: Number(p.achados) || 0 };
+  return {
+    rodando: true, cidr: textoSeguro(p.cidr, 43), pct, achados: Number(p.achados) || 0,
+    automatica: p.origem === "agendada", // a varredura contínua, sem ninguém ter clicado
+  };
 }
 
 function novoFormulario() {
@@ -58,6 +62,7 @@ function painel() {
   let conexao = null;
   let quadro = 0;
   let relogio = 0;
+  let relogioAtualizacao = 0;
   let ressinc = 0;
   let resolverConfirmacao = null;
   let focoAntesDaConfirmacao = null;
@@ -118,6 +123,7 @@ function painel() {
       this.liberarTeia(); // só agora a Teia monta (e o bundle é pedido) e Novos/Config carregam
       this.carregarVarredura();
       this.carregarGeral(); // fuso dos horários de alertas e silêncios
+      this.carregarAtualizacao(); // aviso de atualização (24 h / 7 dias): todos os usuários
       this.iniciarCartoes();
       conexao = criarConexao({
         aoMensagem: (msg) => this.receber(msg),
@@ -131,6 +137,8 @@ function painel() {
         this.agendarRender();
         this.renderizarCartoes(); // "há N min" dos cartões de alerta
       }, 30000);
+      // a atualização roda de madrugada: o aviso aparece sem recarregar a página (10 em 10 min)
+      relogioAtualizacao = window.setInterval(() => this.carregarAtualizacao(), ATUALIZACAO_MS);
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) this.agendarRender();
       });
@@ -139,6 +147,7 @@ function painel() {
     destroy() {
       if (conexao) conexao.parar();
       window.clearInterval(relogio);
+      window.clearInterval(relogioAtualizacao);
     },
 
     receber(msg) {
@@ -328,7 +337,8 @@ function painel() {
       return this.varredura.rodando;
     },
     get textoVarredura() {
-      return `Varredura lenta em ${this.varredura.cidr}: ${this.varredura.pct}%.`;
+      const nome = this.varredura.automatica ? "Varredura automática" : "Varredura lenta";
+      return `${nome} em ${this.varredura.cidr}: ${this.varredura.pct}%.`;
     },
     get detalheVarredura() {
       const n = this.varredura.achados;
@@ -556,6 +566,7 @@ function painel() {
     paredesDoPainel(),
     segurancaDoPainel(),
     backupDoPainel(),
+    atualizacaoDoPainel(),
   ]) {
     Object.defineProperties(dados, Object.getOwnPropertyDescriptors(parte));
   }

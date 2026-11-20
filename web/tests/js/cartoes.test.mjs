@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  aplicarNaPilha, dadosDoCartao, dispensarDaPilha, expirarDaPilha, listaDeAfetados, pilhaVazia,
+  aplicarNaPilha, dadosDoCartao, dispensarDaPilha, expirarDaPilha, listaDeAfetados, pilhaVazia, TIPOS_DO_PAINEL,
   textoDoMais, visiveisDaPilha, VOLTOU_MS,
 } from "../../src/js/cartoes.js";
 import { aplicarLatencias, aplicarEstado, criarStore, aplicarSnapshot } from "../../src/js/lista.js";
@@ -224,4 +224,37 @@ test("cartoes.js não usa API posterior ao Chromium 63 (o telão carrega este m�
   for (const api of ["Object.hasOwn", "flatMap", "replaceAll", ".at(", "fromEntries", "?.", "??", "\\p{"]) {
     assert.ok(!texto.includes(api), api);
   }
+});
+
+const novoAparelho = (id, extra = {}) => ({
+  id, tipo: "aparelho_novo", texto: "novo aparelho conectou na rede", equipamento_id: null,
+  equipamento_nome: null, classe: null, afetados_total: 0, aberto_em: "2026-11-18T17:32:00Z",
+  fechado_em: null, silenciado: false, reconhecido_em: null, reconhecido_por: null, envio: "nao_aplica",
+  breve: false, descoberta_id: "d-9", ip: "192.168.15.23", fabricante: "Fabricante Fictício",
+  portas: [80, 443], ...extra,
+});
+
+test("cartão ao vivo de aparelho novo: IP, fabricante, portas e Ver em Novos; só o painel o abre", () => {
+  assert.ok(TIPOS_DO_PAINEL.includes("aparelho_novo"));
+  // o telão usa o padrão e nunca abre cartão de aparelho novo (nem o IP vai a ele)
+  const tela = aplicarNaPilha(pilhaVazia(), msg("aberto", novoAparelho(1)), AGORA);
+  assert.equal(tela.cartoes.length, 0);
+  const p = aplicarNaPilha(pilhaVazia(), msg("aberto", novoAparelho(1)), AGORA, TIPOS_DO_PAINEL);
+  assert.equal(p.cartoes.length, 1);
+  const c = dadosDoCartao(p.cartoes[0], criarStore(), { agora: AGORA, hora, reduzido: false });
+  assert.equal(c.rotuloMarca, "Novo na rede");
+  assert.equal(c.titulo, "Novo aparelho conectou na rede");
+  assert.equal(c.verEmNovos, "d-9");
+  assert.equal(c.temEquipamento, false);
+  assert.equal(c.reconhecivel, false);
+  const por = Object.fromEntries(c.linhas.map((l) => [l.rotulo, l.valor]));
+  assert.equal(por.IP, "192.168.15.23");
+  assert.equal(por.Fabricante, "Fabricante Fictício");
+  assert.equal(por.Portas, "80, 443");
+  assert.equal(c.linhas.find((l) => l.rotulo === "IP").principal, true);
+  // aprovado ou ignorado em Novos: o alerta fecha e o cartão simplesmente sai (não vira "voltou")
+  const fechado = aplicarNaPilha(p, msg("fechado", novoAparelho(1, { fechado_em: "2026-11-18T17:35:00Z" })), AGORA);
+  assert.equal(fechado.cartoes.length, 0);
+  // queda continua abrindo nos dois
+  assert.equal(aplicarNaPilha(pilhaVazia(), msg("aberto", queda(2)), AGORA, TIPOS_DO_PAINEL).cartoes.length, 1);
 });

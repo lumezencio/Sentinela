@@ -8,11 +8,15 @@ import { ESTADOS, formatarLatencia, haQuanto, limparTexto, rotuloChecagem, texto
 import { formatarDuracao } from "./visoes.js";
 
 export const TIPOS_DO_CARTAO = ["queda", "instavel", "fonte_falhou"];
+// o painel (autenticado) também abre cartão de aparelho novo; o telão usa TIPOS_DO_CARTAO, que
+// não o inclui (o IP e as portas de um aparelho novo nunca vão ao telão)
+export const TIPOS_DO_PAINEL = ["queda", "instavel", "fonte_falhou", "aparelho_novo"];
 export const MAX_NO_PAINEL = 3;
 export const MAX_NO_TELAO = 2;
 export const VOLTOU_MS = 10000;
 const MAX_GUARDADOS = 50; // cartões na memória (os de cima aparecem, o resto vira "e mais N")
 const MAX_DISPENSADOS = 200;
+const TEXTO_APARELHO_NOVO = "Novo aparelho conectou na rede"; // IP e fabricante saem nas linhas
 const MAX_TEXTO = 400; // nome de equipamento vai até 300 caracteres
 
 export function limpar(texto, max) {
@@ -23,6 +27,7 @@ const MARCAS = {
   queda: { icone: "#i-offline", rotulo: "Fora do ar", estilo: "queda" },
   instavel: { icone: "#i-instavel", rotulo: "Instável", estilo: "aviso" },
   fonte_falhou: { icone: "#i-instavel", rotulo: "Fonte sem coleta", estilo: "aviso" },
+  aparelho_novo: { icone: "#i-desconhecido", rotulo: "Novo na rede", estilo: "novo" },
   voltou: { icone: "#i-online", rotulo: "Voltou", estilo: "ok" },
 };
 
@@ -48,7 +53,8 @@ function fechado(entrada, alerta, agora) {
  * desconhecido é ignorado); silenciado não abre; `fechado` vira "voltou" por 10 s; `removido`
  * (absorvido pelo pai) tira o cartão.
  */
-export function aplicarNaPilha(pilha, msg, agora) {
+export function aplicarNaPilha(pilha, msg, agora, tipos) {
+  const permitidos = tipos || TIPOS_DO_CARTAO;
   if (!msg || typeof msg !== "object") return pilha;
   const id = idDaMensagem(msg);
   if (id === null) return pilha;
@@ -62,14 +68,17 @@ export function aplicarNaPilha(pilha, msg, agora) {
   if (msg.acao === "removido") {
     return atual ? { ...pilha, cartoes: pilha.cartoes.filter((c) => c.id !== id) } : pilha;
   }
-  if (msg.acao === "fechado") return atual ? trocar(fechado(atual, a, agora)) : pilha;
+  // aparelho novo não "volta": aprovado ou ignorado, o alerta fecha e o cartão só sai
+  const semVolta = atual && atual.alerta.tipo === "aparelho_novo";
+  const sair = () => ({ ...pilha, cartoes: pilha.cartoes.filter((c) => c.id !== id) });
+  if (msg.acao === "fechado") return atual ? (semVolta ? sair() : trocar(fechado(atual, a, agora))) : pilha;
   if (msg.acao === "atualizado") {
     if (!atual) return pilha;
-    if (a && a.fechado_em) return trocar(fechado(atual, a, agora));
+    if (a && a.fechado_em) return semVolta ? sair() : trocar(fechado(atual, a, agora));
     return a ? trocar({ ...atual, alerta: { ...atual.alerta, ...a } }) : pilha;
   }
   if (msg.acao === "aberto") {
-    if (!a || a.fechado_em || a.silenciado || TIPOS_DO_CARTAO.indexOf(a.tipo) < 0) return pilha;
+    if (!a || a.fechado_em || a.silenciado || permitidos.indexOf(a.tipo) < 0) return pilha;
     if (atual) return trocar({ ...atual, alerta: { ...atual.alerta, ...a } });
     if (pilha.dispensados.indexOf(id) >= 0) return pilha;
     const nova = { id, alerta: a, fechado: false, expiraEm: 0, chegou: agora };
@@ -114,6 +123,13 @@ export function textoDoMais(n) {
 }
 
 // ---------- montagem dos dados de um cartão ----------
+/** "80, 443": só números de porta válidos (o alerta de aparelho novo traz a lista inteira). */
+export function portasEmTexto(portas) {
+  if (!Array.isArray(portas)) return "";
+  const ok = portas.filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
+  return ok.join(", ");
+}
+
 const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 
 function estadoDe(item) {
@@ -172,7 +188,7 @@ export function dadosDoCartao(entrada, store, opcoes) {
   const item = a.equipamento_id ? store.itens.get(a.equipamento_id) || null : null;
   const marca = entrada.fechado ? MARCAS.voltou : MARCAS[a.tipo] || MARCAS.queda;
   const semEquipamento = a.tipo === "fonte_falhou" || (!item && !a.equipamento_nome);
-  const nome = semEquipamento ? limpar(a.texto) : limpar(a.equipamento_nome || (item && item.nome) || a.texto);
+  const nome = a.tipo === "aparelho_novo" ? TEXTO_APARELHO_NOVO : semEquipamento ? limpar(a.texto) : limpar(a.equipamento_nome || (item && item.nome) || a.texto);
   const classe = item ? store.classes.get(item.classe) : null;
   const classeSlug = a.classe || (item && item.classe) || "";
   const { dependeDe, causa } = paiEcausa(item, store);
@@ -188,6 +204,12 @@ export function dadosDoCartao(entrada, store, opcoes) {
     linha("MAC", limpar(extras.mac, 32), true);
     linha("Fabricante", limpar(extras.fabricante, 120), false);
     linha("Checagem", rotuloChecagem(item.checagem, item.porta), true);
+  }
+  const novo = a.tipo === "aparelho_novo";
+  if (!reduzido && novo) {
+    linha("IP", textoDoIp(a.ip), true, true);
+    linha("Fabricante", limpar(a.fabricante, 120), false);
+    linha("Portas", portasEmTexto(a.portas), true);
   }
   linha("Depende de", item ? dependeDe : "", false);
   linha("Causa", causa, false, true);
@@ -217,6 +239,7 @@ export function dadosDoCartao(entrada, store, opcoes) {
     estadoClasse: est ? est.classe : "estado st-desconhecido",
     linhas,
     equipamentoId: a.equipamento_id || "",
+    verEmNovos: novo && !entrada.fechado && typeof a.descoberta_id === "string" ? a.descoberta_id : "",
     temEquipamento: Boolean(item),
     afetados: n,
     rotuloAfetados: n ? plural(n, "equipamento afetado", "equipamentos afetados") : "",

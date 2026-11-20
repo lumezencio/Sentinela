@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 import pytest
 
 _EQUIPAMENTO_DO_ALERTA = itertools.count()
+_APARELHOS_NOVOS = itertools.count(900)
 RAIZ = Path(__file__).resolve().parents[2]
 WEB_SRC = RAIZ / "web" / "src"
 # mesma política que o proxy de produção vai enviar: violação vira erro no console
@@ -770,6 +771,91 @@ def novo_alerta(alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]) -> Iter
     yield criar
     if criados:
         _em_thread(lambda: asyncio.run(apagar_alertas(alvo.banco_url, criados, renomeados)))
+
+
+async def inserir_aparelho_novo(banco_url: str, indice: int, **campos: Any) -> dict[str, Any]:
+    """Uma descoberta pendente (10.99.x, MAC 02:00:00:...) e o alerta ``aparelho_novo`` aberto
+    sobre ela, como o agrupador os deixa. ``campos`` sobrescreve colunas da descoberta."""
+    from sentinela.db.modelos import Alerta, Descoberta
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            agora = dt.datetime.now(dt.UTC)
+            padrao: dict[str, Any] = {
+                "chave": f"02:00:00:fe:{indice // 256:02x}:{indice % 256:02x}",
+                "ip": f"10.99.70.{indice % 200 + 1}",
+                "mac": f"02:00:00:fe:{indice // 256:02x}:{indice % 256:02x}",
+                "fabricante": "Fabricante Fictício",
+                "nome_sugerido": f"aparelho-novo-{indice}",
+                "classe_sugerida": "iot",
+                "confianca": 0.6,
+                "sinais": {"portas": [80, 443]},
+                "origens": [{"fonte_id": "varredura", "origem": "varredura"}],
+                "status": "pendente",
+                "primeira_vez": agora,
+                "ultima_vez": agora,
+            }
+            d = Descoberta(**{**padrao, **campos})
+            db.add(d)
+            await db.flush()
+            a = Alerta(
+                tipo="aparelho_novo",
+                descoberta_id=d.id,
+                quedas=[],
+                afetados=[],
+                voltaram=[],
+                aberto_em=agora,
+                envio="nao_aplica",
+            )
+            db.add(a)
+            await db.flush()
+            saida = {"alerta_id": a.id, "descoberta_id": d.id, "ip": d.ip, "nome": d.nome_sugerido}
+            await db.commit()
+            return saida
+    finally:
+        await motor.dispose()
+
+
+async def apagar_aparelhos_novos(banco_url: str, ids: list[int], descobertas: list[str]) -> None:
+    from sqlalchemy import delete
+
+    from sentinela.db.modelos import Alerta, Descoberta
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            await db.execute(delete(Alerta).where(Alerta.id.in_(ids)))
+            await db.execute(delete(Descoberta).where(Descoberta.id.in_(descobertas)))
+            await db.commit()
+    finally:
+        await motor.dispose()
+
+
+@pytest.fixture
+def novo_aparelho(alvo: Alvo) -> Iterator[Any]:
+    """Fábrica de aparelhos novos descartáveis (descoberta pendente + alerta aberto). Só no core
+    local do smoke; contra o compose o teste é pulado."""
+    if not alvo.banco_url:
+        pytest.skip("aparelho novo semeado só com o core local do smoke")
+    alertas: list[int] = []
+    descobertas: list[str] = []
+
+    def criar(**campos: Any) -> dict[str, Any]:
+        saida: dict[str, Any] = {}
+        n = next(_APARELHOS_NOVOS)
+        url = alvo.banco_url
+        _em_thread(lambda: saida.update(asyncio.run(inserir_aparelho_novo(url, n, **campos))))
+        alertas.append(saida["alerta_id"])
+        descobertas.append(saida["descoberta_id"])
+        return saida
+
+    yield criar
+    if alertas:
+        url = alvo.banco_url
+        _em_thread(lambda: asyncio.run(apagar_aparelhos_novos(url, alertas, descobertas)))
 
 
 async def _estados(banco_url: str, ips: list[str]) -> dict[str, str]:

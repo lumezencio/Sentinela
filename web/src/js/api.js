@@ -163,16 +163,18 @@ export const api = {
   confiarFonte: (id, impressao) =>
     requisitar("POST", `/fontes/${encodeURIComponent(id)}/confiar`, { json: { impressao } }),
   coletarFonte: (id) => requisitar("POST", `/fontes/${encodeURIComponent(id)}/coletar`),
-  editarSubrede: (id, permite) =>
-    requisitar("PATCH", `/subredes/${encodeURIComponent(id)}`, {
-      json: { permite_varredura: permite },
-    }),
+  /** `campos`: `permite_varredura` (bool) e/ou `gateway_ip` (IPv4 da sub-rede; null apaga). */
+  editarSubrede: (id, campos) =>
+    requisitar("PATCH", `/subredes/${encodeURIComponent(id)}`, { json: campos }),
   verVarredura: () => requisitar("GET", "/varredura"),
   iniciarVarredura: (subRedeId) =>
     requisitar("POST", "/varredura", { json: { sub_rede_id: subRedeId } }),
   cancelarVarredura: () => requisitar("DELETE", "/varredura"),
   verAjustes: () => requisitar("GET", "/config/descoberta"),
   editarAjustes: (dados) => requisitar("PATCH", "/config/descoberta", { json: dados }),
+  // ---- atualização automática (Fase 5): qualquer usuário lê; só o admin liga e desliga ----
+  verAtualizacao: () => requisitar("GET", "/atualizacao"),
+  definirAtualizacao: (ativo) => requisitar("PATCH", "/atualizacao", { json: { ativo: Boolean(ativo) } }),
   // ---- alertas, silêncios e Telegram (Fase 4) ----
   listarAlertas: ({ filtro = "abertos", classe = "", desde = "", pagina = 1, porPagina = 50 }) => {
     const q = new URLSearchParams({ filtro, pagina: String(pagina), por_pagina: String(porPagina) });

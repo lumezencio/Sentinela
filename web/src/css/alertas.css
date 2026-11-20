@@ -844,3 +844,104 @@ html[data-aba="configuracoes"] {
 .cfg-seg-linha .botao-remover {
   border-color: var(--borda); /* botão com contorno: alinha à borda esquerda quando quebra de linha */
 }
+
+/* ---------- Fase 5: aviso de aparelho novo (lista de alertas e cartão ao vivo) ---------- */
+.al-novo {
+  --cor-status: var(--primaria);
+}
+
+.al-info-novo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.al-info-novo > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ca-novo {
+  --cor-status: var(--primaria);
+}
+
+/* ---------- aviso de atualização abaixo do cabeçalho (24 h / 7 dias) ---------- */
+.aviso-atz-faixa {
+  padding-top: 12px;
+  padding-bottom: 0;
+}
+
+.aviso-atz {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--online);
+  border-radius: var(--raio-p);
+  background: var(--superficie);
+  font-size: 14px;
+}
+
+.aviso-atz-atencao {
+  border-left-color: var(--instavel);
+}
+
+.aviso-atz > svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aviso-atz-texto {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.aviso-atz .botao {
+  flex: none;
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+@media (max-width: 559px) {
+  .aviso-atz {
+    flex-wrap: wrap;
+  }
+  .aviso-atz .botao {
+    margin-left: auto;
+  }
+}
+
+/* ---------- Configurações → Atualizações ---------- */
+.cfg-atz-chave {
+  display: grid;
+  gap: 8px;
+  max-width: 760px;
+}
+
+.cfg-atz-resultado {
+  margin: 16px 0 0;
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.cfg-atz-neutro {
+  border-left-color: var(--borda);
+}
+
+#atz-ilegivel {
+  margin-bottom: 12px;
+  border-left-color: var(--instavel);
+}

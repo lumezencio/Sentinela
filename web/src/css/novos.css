@@ -681,11 +681,9 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 .cfg-subredes li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 18px;
-  padding: 6px 14px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
   border: 1px solid var(--borda);
   border-radius: var(--raio-p);
   background: var(--superficie);
@@ -696,9 +694,64 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   font-weight: 600;
 }
 
-.cfg-subredes .botao {
+.cfg-subrede-topo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.cfg-subredes .cfg-subrede-topo .botao {
   min-height: 36px;
   margin-left: auto;
+}
+
+.cfg-subrede-meta {
+  margin: 0;
+}
+
+.cfg-subrede-gw {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 16px;
+}
+
+.cfg-subrede-gw .campo-form {
+  flex: 0 1 280px;
+  min-width: 0;
+}
+
+.cfg-subrede-gw .botao {
+  min-height: 44px;
+}
+
+.cfg-intervalo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 16px;
+  margin-bottom: 16px;
+}
+
+.cfg-intervalo .campo-form {
+  flex: 0 1 280px;
+  min-width: 0;
+}
+
+.cfg-intervalo .botao {
+  min-height: 44px;
+}
+
+.cfg-intervalo .dica,
+.cfg-intervalo .campo-erro {
+  flex: 1 1 100%;
+}
+
+/* "Ver em Novos": o cartão da descoberta pisca o contorno por alguns segundos */
+.nv-cartao.nv-destaque {
+  outline: 3px solid var(--primaria);
+  outline-offset: 2px;
 }
 
 /* chave liga/desliga (role="switch"; estado também no texto lido: aria-checked) */
@@ -942,8 +995,12 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   .cfg-limiar label {
     grid-column: 1 / -1;
   }
-  .cfg-subredes .botao {
+  .cfg-subredes .cfg-subrede-topo .botao {
     margin-left: 0;
+  }
+  .cfg-subrede-gw .campo-form,
+  .cfg-intervalo .campo-form {
+    flex: 1 1 100%;
   }
   .faixa-barra {
     display: none;

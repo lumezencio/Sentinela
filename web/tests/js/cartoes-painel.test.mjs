@@ -124,3 +124,32 @@ test("cartão 'voltou' não expira com foco ou mouse em cima; ao soltar, ganha n
     void amb;
   }
 });
+
+const aparelhoNovo = (id) => ({
+  id, tipo: "aparelho_novo", texto: "novo aparelho conectou na rede", equipamento_id: null,
+  equipamento_nome: null, classe: null, afetados_total: 0, aberto_em: "2026-11-18T17:32:00Z",
+  fechado_em: null, silenciado: false, reconhecido_em: null, envio: "nao_aplica",
+  descoberta_id: `d-${id}`, ip: "192.168.15.23", fabricante: "Fabricante Fictício", portas: [80, 443],
+});
+
+test("cartão de aparelho novo no painel: abre ao vivo e Ver em Novos leva à descoberta", async () => {
+  const amb = ambiente();
+  try {
+    const p = await painel();
+    p.cartoesAoMensagem({ tipo: "alerta", acao: "aberto", id: 4, alerta: aparelhoNovo(4) });
+    assert.equal(p.cartoes.length, 1);
+    assert.equal(p.cartoes[0].verEmNovos, "d-4");
+    const pedidos = [];
+    p.verDescobertaEmNovos = (id) => pedidos.push(id);
+    p.verEmNovosDoCartao(4);
+    assert.deepEqual(pedidos, ["d-4"]);
+    assert.equal(p.cartoes.length, 0, "o cartão sai: o aviso cumpriu o papel");
+    // o alerta fechado (aprovado ou ignorado) tira o cartão sem virar voltou
+    p.cartoesAoMensagem({ tipo: "alerta", acao: "aberto", id: 5, alerta: aparelhoNovo(5) });
+    p.cartoesAoMensagem({ tipo: "alerta", acao: "fechado", id: 5, alerta: { fechado_em: "2026-11-18T17:40:00Z" } });
+    assert.equal(p.cartoes.length, 0);
+  } finally {
+    delete globalThis.window; delete globalThis.document;
+    void amb;
+  }
+});
