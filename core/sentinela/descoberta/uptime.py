@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sentinela.db.modelos import LeituraUptime
 
 TETO_TIMETICKS_S = 2**32 / 100  # ~497 dias
-TOLERANCIA_S = 120.0  # desvio de relógio/atraso de coleta aceito entre duas leituras
+TOLERANCIA_S = 120.0  # mantida na interface; a detecção não usa mais o relógio
+MARGEM_VOLTA_S = 86400.0  # queda é volta de 32 bits: anterior >= TETO - margem e novo <= margem
 MAXIMO_S = 10 * 365 * 86400.0
 
 _UNIDADES = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
@@ -44,11 +45,11 @@ def ler_uptime_mikrotik(texto: str) -> float | None:
 
 
 def _deu_a_volta(anterior: Leitura, nova: Leitura) -> bool:
-    """O contador de 32 bits passou do teto entre as duas leituras (e só isso)."""
-    decorrido = (nova.lido_em - anterior.lido_em).total_seconds()
-    diferenca = anterior.uptime_s + decorrido - nova.uptime_s
-    voltas = round(diferenca / TETO_TIMETICKS_S)
-    return voltas >= 1 and abs(diferenca - voltas * TETO_TIMETICKS_S) <= TOLERANCIA_S
+    """A queda é a volta do contador de 32 bits: o uptime anterior estava a ``MARGEM_VOLTA_S``
+    do teto e o novo é pequeno. Não olha o relógio do servidor (``lido_em``)."""
+    return (
+        anterior.uptime_s >= TETO_TIMETICKS_S - MARGEM_VOLTA_S and nova.uptime_s <= MARGEM_VOLTA_S
+    )
 
 
 def reinicios(leituras: list[Leitura]) -> list[datetime]:
@@ -63,8 +64,15 @@ def reinicios(leituras: list[Leitura]) -> list[datetime]:
     por ``lido_em``: um recuo do relógio do servidor não pode reordenar as leituras e inventar
     um reinício.
 
-    Limite conhecido: dois reinícios entre duas leituras consecutivas contam como um só (o
-    uptime só mostra o último boot). Sem leitura que confirme, o laudo continua em "provável".
+    A volta do contador (~497 dias) é reconhecida sem o relógio: uptime anterior a até um dia
+    do teto e novo de até um dia (``MARGEM_VOLTA_S``). Toda outra queda é reinício.
+
+    Limites conhecidos (sem leitura que confirme, o laudo continua em "provável"):
+    - dois reinícios entre duas leituras consecutivas contam como um só (o uptime só mostra o
+      último boot);
+    - um reinício cujo uptime novo já passou do uptime da leitura anterior não é visto;
+    - um reinício real com uptime anterior a até um dia do teto e novo de até um dia é
+      indistinguível da volta do contador e conta como volta.
     """
     ordenadas = leituras  # ordem de inserção, nunca por lido_em
     saida: list[datetime] = []

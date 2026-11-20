@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 from sentinela.descoberta.uptime import (
+    MARGEM_VOLTA_S,
     TETO_TIMETICKS_S,
     TOLERANCIA_S,
     Leitura,
@@ -58,8 +59,8 @@ def test_salto_do_relogio_para_frente_nao_e_reinicio() -> None:
 
 
 def test_salto_do_relogio_para_tras_nao_e_reinicio() -> None:
-    # o relógio do servidor recuou 1 h entre as leituras: o roteador contou 1 h a mais do que
-    # o relógio decorrido; uptime cresceu, logo não é reinício
+    # o relógio decorrido entre as leituras (5 min) é menor que o uptime ganho (1 h 5 min), como
+    # num relógio do servidor atrasado; o uptime só cresce, logo não é reinício
     leituras = [
         Leitura(T0, 1000.0),
         Leitura(T0 + timedelta(minutes=5), 1000.0 + 3600 + 300),
@@ -117,3 +118,28 @@ def test_reinicio_logo_apos_a_volta_continua_sendo_reinicio() -> None:
         Leitura(T0 + timedelta(minutes=20), 20.0),  # reiniciou de verdade
     ]
     assert len(reinicios(leituras)) == 1
+
+
+def test_salto_de_relogio_durante_a_volta_nao_e_reinicio() -> None:
+    leituras = [
+        Leitura(T0, TETO_TIMETICKS_S - 300),
+        Leitura(T0 + timedelta(hours=2, minutes=10), 300.0),  # relógio saltou +2 h
+    ]
+    assert reinicios(leituras) == []
+
+
+def test_reinicio_real_colado_no_teto_conta_como_volta_por_desenho() -> None:
+    # caso conhecido e indistinguível: uptime anterior a 300 s do teto e novo de 50 s
+    leituras = [Leitura(T0, TETO_TIMETICKS_S - 300), Leitura(T0 + timedelta(minutes=10), 50.0)]
+    assert reinicios(leituras) == []
+
+
+def test_reinicio_longe_do_teto_continua_detectado() -> None:
+    meio = TETO_TIMETICKS_S / 2
+    leituras = [Leitura(T0, meio), Leitura(T0 + timedelta(minutes=10), 50.0)]
+    assert len(reinicios(leituras)) == 1
+    perto_mas_novo_grande = [
+        Leitura(T0, TETO_TIMETICKS_S - 300),
+        Leitura(T0 + timedelta(minutes=10), MARGEM_VOLTA_S + 1000),
+    ]
+    assert len(reinicios(perto_mas_novo_grande)) == 1
