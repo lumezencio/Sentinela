@@ -512,11 +512,28 @@ class ServidorLocal:
 
         principal.ChecagemSimulada = ChecagemDoSmoke  # type: ignore[misc]
         if not self._demo:
-            # sem demonstração o ping seria o ICMP real: o smoke nunca manda pacote à rede
+            # sem demonstração o ping da varredura e a checagem do monitor seriam o ICMP real:
+            # as duas viram simuladas aqui, então o smoke não envia nenhum pacote à rede
             async def ping_sem_rede(_destino: Any) -> bool:
                 return False
 
+            class ChecagemSemRede:
+                custo = 1
+
+                async def executar(self, destino: Any, timeout: float = 2.0) -> Any:  # noqa: ASYNC109
+                    return ResultadoChecagem(ok=False, latencia_ms=None, erro="sem rede no smoke")
+
+            original = principal.montar_monitor
+
+            async def montar_sem_rede(
+                sessoes: Any, config: Any, checagens: Any = None, relogio: Any = None
+            ) -> Any:
+                return await original(
+                    sessoes, config, checagens or (lambda _tipo: ChecagemSemRede()), relogio
+                )
+
             principal.ping_icmp = ping_sem_rede  # type: ignore[assignment]
+            principal.montar_monitor = montar_sem_rede  # type: ignore[assignment]
 
         settings = Settings(
             ambiente="desenvolvimento",

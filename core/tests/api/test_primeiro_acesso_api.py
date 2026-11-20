@@ -408,3 +408,48 @@ async def test_rede_ja_cadastrada_audita_como_edicao(
     assert "subrede.criar" not in auds
     assert auds["subrede.editar"].antes == {"permite_varredura": False, "gateway_ip": None}
     assert auds["subrede.editar"].depois == {"permite_varredura": True, "gateway_ip": "192.168.1.1"}
+
+
+# ---- /saude: o login só redireciona ao assistente com ele realmente ativo --------------------
+
+
+async def test_saude_primeiro_acesso_verdadeiro_so_sem_usuario_e_com_codigo_valido(
+    cliente: httpx.AsyncClient, settings: Settings, criar_usuario: CriarUsuario
+) -> None:
+    pasta = pasta_dados(settings)
+    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] is False  # sem código
+    await instalacao.gravar(pasta, CODIGO, datetime.now(UTC))
+    r = await cliente.get("/api/v1/saude")
+    assert r.status_code == 200 and r.json()["primeiro_acesso"] is True
+    assert CODIGO.replace("-", "") not in r.text  # nada do código na resposta
+    await instalacao.gravar(pasta, CODIGO, datetime.now(UTC) - timedelta(hours=25))
+    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] is False  # expirado
+    await instalacao.gravar(pasta, CODIGO, datetime.now(UTC))
+    await criar_usuario("dono", SENHA_TESTE, "admin")
+    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] is False  # há usuário
+
+
+async def test_saude_primeiro_acesso_falso_na_demonstracao(tmp_path: Path) -> None:
+    s = Settings(
+        ambiente="teste",
+        banco_url=f"sqlite+aiosqlite:///{tmp_path / 'demo.db'}",
+        chave_sessao="chave-de-teste-nao-secreta",
+        chave_credenciais=secrets.token_hex(32),
+        demo=True,
+    )
+    await criar_esquema(s.banco_url)
+    await instalacao.gravar(pasta_dados(s), CODIGO, datetime.now(UTC))
+    app = criar_app(s, relogio=RelogioFalso(), iniciar_monitor=False)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://teste"
+        ) as c:
+            assert (await c.get("/api/v1/saude")).json()["primeiro_acesso"] is False
+
+
+async def test_saude_degradado_nao_leva_dados_extras(
+    app: FastAPI, cliente: httpx.AsyncClient, codigo: str
+) -> None:
+    app.state.iniciar_monitor = True  # monitor "ligado" sem laços: degradado
+    r = await cliente.get("/api/v1/saude")
+    assert (r.status_code, r.json()) == (503, {"status": "degradado"})

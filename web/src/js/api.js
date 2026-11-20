@@ -88,6 +88,11 @@ export const api = {
       redirecionar401: false,
     }),
   // ---- primeiro acesso (Fase 5): rotas sem sessão; 404 = já existe usuário ----
+  /** `/saude` público: verdadeiro só com o assistente ativo (sem usuário e com código válido). */
+  primeiroAcessoAtivo: async () => {
+    const r = await requisitar("GET", "/saude", { redirecionar401: false });
+    return r.ok && r.dados !== null && r.dados.primeiro_acesso === true;
+  },
   /** `estado`: "ativo" | "expirado" | "ausente" (vazio se não foi 200). 404 = o assistente acabou. */
   estadoPrimeiroAcesso: async () => {
     const r = await requisitar("GET", "/primeiro-acesso", { redirecionar401: false });

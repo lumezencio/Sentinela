@@ -24,9 +24,14 @@ const blocoComando = $("pa-novo-codigo");
 const textoComando = $("pa-novo-texto");
 const trilha = [...$("pa-trilha").children];
 const MSG_SEM_CONEXAO = "Não foi possível falar com o servidor. Confira a conexão e tente de novo.";
+const MSG_LIMITE_NGINX = "Muitas tentativas. Aguarde um minuto e tente de novo.";
 const MSG_NOVO_CODIGO = "O código de instalação não existe ou expirou. No computador onde o Sentinela está instalado, gere um novo com este comando:";
 
-let codigoConferido = ""; // só aqui; vira "" no erro e ao sair da página
+// O código conferido fica SÓ nesta variável (nunca em campo, URL, log ou armazenamento). Vive do
+// passo 1 aceito até o concluir: vira "" em 401/429/erro de conferência, no sucesso e em pagehide.
+// Erros do concluir que não são 401 (422, 429, 5xx) o mantêm de propósito, para reenviar sem
+// redigitar. Por isso o passo 2 não tem "Voltar": não há o que corrigir no passo 1.
+let codigoConferido = "";
 let passo = 0;
 let contagem = 0;
 
@@ -66,6 +71,11 @@ function voltarAoLogin() {
 function destacarComando(texto) {
   textoComando.textContent = texto;
   blocoComando.classList.add("pa-destaque");
+}
+
+/** O 429 do backend (bloqueio do código) traz JSON com `detail`; o do nginx (limite por IP) não. */
+function limiteDoBackend(r) {
+  return r.dados !== null && typeof r.dados === "object" && typeof r.dados.detail === "string";
 }
 
 function bloquear(botao, rotulo, segundos) {
@@ -134,9 +144,14 @@ formularios.codigo.addEventListener("submit", async (evento) => {
   }
   codigoConferido = "";
   if (r.status === 429) {
-    mostrarErro("erro-codigo", r.erro);
-    destacarComando("Para gerar um código novo (isso também libera o bloqueio), rode no computador do Sentinela:");
-    bloquear(botao, "Continuar", r.espera || 30);
+    if (limiteDoBackend(r)) {
+      mostrarErro("erro-codigo", r.erro);
+      destacarComando("Para gerar um código novo (isso também libera o bloqueio), rode no computador do Sentinela:");
+      bloquear(botao, "Continuar", r.espera || 30);
+    } else {
+      mostrarErro("erro-codigo", MSG_LIMITE_NGINX); // sem a caixa: código novo não resolve
+      bloquear(botao, "Continuar", r.espera || 60);
+    }
     return;
   }
   botao.disabled = false;
@@ -222,8 +237,8 @@ formularios.concluir.addEventListener("submit", async (evento) => {
     return;
   }
   if (r.status === 429) {
-    mostrarErro("erro-concluir", r.erro);
-    bloquear(botao, "Concluir e entrar", r.espera || 30);
+    mostrarErro("erro-concluir", limiteDoBackend(r) ? r.erro : MSG_LIMITE_NGINX);
+    bloquear(botao, "Concluir e entrar", r.espera || (limiteDoBackend(r) ? 30 : 60));
     return;
   }
   botao.disabled = false;

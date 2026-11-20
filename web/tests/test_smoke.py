@@ -152,9 +152,6 @@ def test_primeira_tela_leve_e_sem_erros_no_console(page: Page, alvo: Alvo) -> No
 
 
 def _anotar_erro(erros: list[str], m: ConsoleMessage) -> None:
-    # o login consulta GET /primeiro-acesso; com usuário o servidor responde 404 de propósito
-    if m.location.get("url", "").endswith("/api/v1/primeiro-acesso") and "404" in m.text:
-        return
     # Alpine reporta erro de expressão como warning: os dois reprovam
     if m.type in ("error", "warning"):
         erros.append(f"{m.type}: {m.text}")
@@ -1011,7 +1008,9 @@ def test_organograma_filtros_compartilhados_recolher_e_painel(page: Page, alvo: 
     page.get_by_role("combobox", name="Classe").select_option(label="Gravadores")
     secao = abrir_organograma(page)
     expect(secao.locator(".org-cartao")).to_have_count(1)
-    expect(secao.locator('.org-cartao[data-slug="gravador"] .org-item')).to_have_count(9)  # 8 da rede sintética + o da rede do Diagnóstico
+    expect(secao.locator('.org-cartao[data-slug="gravador"] .org-item')).to_have_count(
+        9
+    )  # 8 da rede sintética + o da rede do Diagnóstico
     expect(secao.get_by_role("combobox", name="Classe")).to_have_value("gravador")
     secao.get_by_role("combobox", name="Classe").select_option(label="Todas")
     page.get_by_role("tab", name="Lista").click()
@@ -3528,6 +3527,55 @@ def test_muitas_tentativas_mostra_como_gerar_codigo_novo(
         expect(page.locator("#continuar-codigo")).to_be_disabled()
         expect(page.locator("#continuar-codigo")).to_contain_text("Aguarde")
         expect(page.locator("#pa-comando")).to_have_text(COMANDO_NOVO_CODIGO)
+        expect(page.locator("#codigo")).to_have_value("")
+    finally:
+        page.context.close()
+
+
+def test_limite_do_nginx_nao_pede_codigo_novo(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.route(  # 429 do nginx: corpo HTML, sem JSON
+            "**/api/v1/primeiro-acesso/conferir",
+            lambda r: r.fulfill(status=429, content_type="text/html", body="<html>429</html>"),
+        )
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ABCD-2345")
+        expect(page.locator("#erro-codigo")).to_have_text(
+            "Muitas tentativas. Aguarde um minuto e tente de novo."
+        )
+        expect(page.locator("#continuar-codigo")).to_contain_text("Aguarde")
+        expect(page.locator("#pa-novo-texto")).not_to_contain_text("libera o bloqueio")
+        expect(page.locator("#pa-novo-codigo.pa-destaque")).to_have_count(0)
+    finally:
+        page.context.close()
+
+
+def test_codigo_expirado_sem_usuario_login_nao_redireciona(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    instalacao_nova.regravar_codigo(horas_atras=25)
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/login.html")
+        expect(page.get_by_role("button", name="Entrar")).to_be_visible()
+        page.wait_for_timeout(1500)  # a consulta ao /saude já voltou: nada de redirecionar
+        assert page.url.endswith("/login.html")
+    finally:
+        page.context.close()
+
+
+def test_passo_2_nao_tem_voltar_e_codigo_nao_fica_na_pagina(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ABCD-2345")
+        expect(page.locator("#passo-administrador")).to_be_visible()
+        expect(page.locator("#passo-administrador [data-voltar]")).to_have_count(0)
         expect(page.locator("#codigo")).to_have_value("")
     finally:
         page.context.close()

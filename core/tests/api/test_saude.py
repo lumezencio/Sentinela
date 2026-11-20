@@ -10,12 +10,16 @@ from sentinela.main import criar_app
 async def test_saude_responde_ok(cliente: httpx.AsyncClient) -> None:
     resposta = await cliente.get("/api/v1/saude")
     assert resposta.status_code == 200
-    assert resposta.json() == {"status": "ok", "versao": sentinela.__version__}
+    assert resposta.json() == {
+        "status": "ok",
+        "versao": sentinela.__version__,
+        "primeiro_acesso": False,  # sem código de instalação gravado
+    }
 
 
-async def test_saude_so_expoe_status_e_versao(cliente: httpx.AsyncClient) -> None:
+async def test_saude_so_expoe_status_versao_e_primeiro_acesso(cliente: httpx.AsyncClient) -> None:
     corpo = (await cliente.get("/api/v1/saude")).json()
-    assert set(corpo) == {"status", "versao"}
+    assert set(corpo) == {"status", "versao", "primeiro_acesso"}
     assert re.fullmatch(r"\d+\.\d+\.\d+", corpo["versao"])
 
 

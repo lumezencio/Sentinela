@@ -75,11 +75,12 @@ test("test_codigo_nunca_vai_a_console_nem_storage", () => {
   }
 });
 
-test("nginx: o limite do login vale para /api/v1/primeiro-acesso/", () => {
+test("nginx: o limite do login vale para /api/v1/primeiro-acesso com e sem a barra", () => {
   const conf = ler("../../nginx/nginx.conf");
-  const m = conf.match(/location \/api\/v1\/primeiro-acesso\/ \{([^}]*)\}/);
+  const m = conf.match(/location \^~ \/api\/v1\/primeiro-acesso \{([^}]*)\}/);
   assert.ok(m, "location do primeiro acesso ausente");
   assert.match(m[1], /limit_req zone=login burst=10 nodelay;/);
   assert.match(m[1], /include \/etc\/nginx\/proxy-core\.conf;/);
-  assert.ok(conf.indexOf("primeiro-acesso/ {") < conf.indexOf("location /api/ {"));
+  assert.doesNotMatch(conf, /location \/api\/v1\/primeiro-acesso\/ \{/); // prefixo ^~ cobre as duas formas
+  assert.ok(conf.indexOf("primeiro-acesso {") < conf.indexOf("location /api/ {"));
 });
