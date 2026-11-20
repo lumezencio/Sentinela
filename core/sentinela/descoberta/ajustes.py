@@ -16,11 +16,15 @@ from sentinela.db.modelos import Config
 APROVACAO_AUTOMATICA = "aprovacao_automatica"
 LIMIAR_APROVACAO = "limiar_aprovacao"
 INTERVALO_VARREDURA = "intervalo_varredura_ips_s"
+VARREDURA_CONTINUA = "varredura_continua_min"
 
 LIMIAR_PADRAO = 0.80
 INTERVALO_VARREDURA_PADRAO = 0.5
 INTERVALO_VARREDURA_MIN = 0.1  # teto de 10 IPs/s mesmo com a linha editada à mão
 INTERVALO_VARREDURA_MAX = 60.0
+VARREDURA_CONTINUA_PADRAO = 30  # minutos entre varreduras agendadas
+VARREDURA_CONTINUA_MIN = 15
+VARREDURA_CONTINUA_MAX = 240
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,7 @@ class AjustesDescoberta:
     aprovacao_automatica: bool = False
     limiar_aprovacao: float = LIMIAR_PADRAO
     intervalo_varredura_ips_s: float = INTERVALO_VARREDURA_PADRAO
+    varredura_continua_min: int = VARREDURA_CONTINUA_PADRAO
 
 
 def _numero(valor: Any, padrao: float, minimo: float, maximo: float) -> float:
@@ -39,8 +44,15 @@ def _numero(valor: Any, padrao: float, minimo: float, maximo: float) -> float:
     return numero
 
 
+def _minutos(valor: Any) -> int:
+    """Inteiro dentro da faixa; número fora dela é limitado, tipo errado cai no padrão."""
+    if isinstance(valor, bool) or not isinstance(valor, int | float) or not math.isfinite(valor):
+        return VARREDURA_CONTINUA_PADRAO
+    return min(max(int(valor), VARREDURA_CONTINUA_MIN), VARREDURA_CONTINUA_MAX)
+
+
 async def ler_ajustes(db: AsyncSession) -> AjustesDescoberta:
-    chaves = (APROVACAO_AUTOMATICA, LIMIAR_APROVACAO, INTERVALO_VARREDURA)
+    chaves = (APROVACAO_AUTOMATICA, LIMIAR_APROVACAO, INTERVALO_VARREDURA, VARREDURA_CONTINUA)
     linhas = await db.execute(select(Config.chave, Config.valor).where(Config.chave.in_(chaves)))
     valores = {chave: valor for chave, valor in linhas}
     automatica = valores.get(APROVACAO_AUTOMATICA)
@@ -53,6 +65,7 @@ async def ler_ajustes(db: AsyncSession) -> AjustesDescoberta:
             INTERVALO_VARREDURA_MIN,
             INTERVALO_VARREDURA_MAX,
         ),
+        varredura_continua_min=_minutos(valores.get(VARREDURA_CONTINUA)),
     )
 
 

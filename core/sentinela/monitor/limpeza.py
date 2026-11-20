@@ -1,4 +1,5 @@
-"""Retenção (§10): amostras por 48 h, eventos por 1 ano, sessões expiradas ou revogadas.
+"""Retenção (§10): amostras por 48 h, eventos por 1 ano, leituras de uptime por 35 dias, sessões
+expiradas ou revogadas.
 
 Roda uma vez ao subir e depois uma vez por dia. As amostras são apagadas por equipamento
 (cada DELETE usa a chave primária ``(equipamento_id, ts)`` e segura o bloqueio de escrita do
@@ -13,7 +14,15 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.db.modelos import Alerta, Amostra, Equipamento, Evento, Sessao, Silencio
+from sentinela.db.modelos import (
+    Alerta,
+    Amostra,
+    Equipamento,
+    Evento,
+    LeituraUptime,
+    Sessao,
+    Silencio,
+)
 from sentinela.relogio import Relogio
 
 log = logging.getLogger(__name__)
@@ -21,6 +30,7 @@ log = logging.getLogger(__name__)
 RETER_AMOSTRAS = timedelta(hours=48)
 RETER_EVENTOS = timedelta(days=365)
 RETER_ALERTAS = timedelta(days=90)
+RETER_UPTIME = timedelta(days=35)
 INTERVALO_S = 24 * 3600.0
 
 
@@ -31,6 +41,7 @@ class ResultadoLimpeza:
     sessoes: int
     alertas: int
     silencios: int
+    leituras_uptime: int
 
 
 async def limpar(sessoes: async_sessionmaker[AsyncSession], agora: datetime) -> ResultadoLimpeza:
@@ -62,12 +73,17 @@ async def limpar(sessoes: async_sessionmaker[AsyncSession], agora: datetime) -> 
                 )
             )
         )
+    async with sessoes() as s, s.begin():
+        r_up = await s.execute(
+            delete(LeituraUptime).where(LeituraUptime.lido_em < agora - RETER_UPTIME)
+        )
     return ResultadoLimpeza(
         amostras=amostras,
         eventos=r_ev.rowcount or 0,  # type: ignore[attr-defined]
         sessoes=r_se.rowcount or 0,  # type: ignore[attr-defined]
         alertas=r_al.rowcount or 0,  # type: ignore[attr-defined]
         silencios=r_si.rowcount or 0,  # type: ignore[attr-defined]
+        leituras_uptime=r_up.rowcount or 0,  # type: ignore[attr-defined]
     )
 
 
@@ -89,6 +105,7 @@ async def limpar_periodicamente(
                     "sessoes": r.sessoes,
                     "alertas": r.alertas,
                     "silencios": r.silencios,
+                    "leituras_uptime": r.leituras_uptime,
                 },
             )
         except Exception:

@@ -108,6 +108,10 @@ class SubRede(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cidr: Mapped[str] = mapped_column(String(43), unique=True)
     permite_varredura: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # gateway da rede (sugerido no primeiro acesso) e marcos da varredura contínua
+    gateway_ip: Mapped[str | None] = mapped_column(String(45), default=None)
+    ultima_varredura_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    linha_base_em: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
 
 
 class Usuario(Base):
@@ -256,7 +260,9 @@ class Alerta(Base):
 
     __tablename__ = "alerta"
     __table_args__ = (
-        CheckConstraint("tipo IN ('queda', 'volta', 'instavel', 'fonte_falhou')", name="tipo"),
+        CheckConstraint(
+            "tipo IN ('queda', 'volta', 'instavel', 'fonte_falhou', 'aparelho_novo')", name="tipo"
+        ),
         CheckConstraint("envio IN ('nao_aplica', 'pendente', 'enviado', 'falhou')", name="envio"),
     )
 
@@ -267,6 +273,10 @@ class Alerta(Base):
     )
     fonte_id: Mapped[str | None] = mapped_column(
         ForeignKey("fonte.id", ondelete="SET NULL"), default=None
+    )
+    # aparelho_novo: a descoberta que o originou (botão "Ver em Novos")
+    descoberta_id: Mapped[str | None] = mapped_column(
+        ForeignKey("descoberta.id", ondelete="SET NULL"), default=None, index=True
     )
     # ids que caíram por conta própria (principal primeiro)
     quedas: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -364,3 +374,16 @@ class ParedePedido(Base):
     parede_id: Mapped[int | None] = mapped_column(
         ForeignKey("parede.id", ondelete="SET NULL"), default=None
     )
+
+
+class LeituraUptime(Base):
+    """``sysUpTime`` lido numa coleta SNMP, para o laudo confirmar reinício (Diagnóstico)."""
+
+    __tablename__ = "leitura_uptime"
+    __table_args__ = (Index("ix_leitura_uptime_equipamento_lido", "equipamento_id", "lido_em"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fonte_id: Mapped[str] = mapped_column(ForeignKey("fonte.id", ondelete="CASCADE"))
+    equipamento_id: Mapped[str] = mapped_column(ForeignKey("equipamento.id", ondelete="CASCADE"))
+    lido_em: Mapped[datetime] = mapped_column(UTCDateTime)
+    uptime_s: Mapped[float] = mapped_column(Float)
