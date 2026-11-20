@@ -558,6 +558,8 @@ export function montarTeia(container, opcoes = {}) {
     container.dataset.nos = String(est.nivel === "agrupado" ? 0 : nos.size);
     // R6: equipamentos que a cena conhece (independe do nível; agrupado não zera)
     container.dataset.equipamentos = String(est.total);
+    // só as classes com equipamento viram nó (slugs, para o smoke conferir)
+    container.dataset.classes = [...(est.nivel === "agrupado" ? grupos : hubs).keys()].join(",");
     container.dataset.nivel = est.nivel;
     container.dataset.movimento = reduzido ? "reduzido" : "normal";
     container.dataset.girando = est.girando ? "sim" : "nao";

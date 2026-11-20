@@ -1065,10 +1065,6 @@ html[data-aba="teia"] .campo {
   background: var(--superficie-2);
 }
 
-.teia-classe.vazia {
-  opacity: 0.5;
-}
-
 .teia-classe .pino {
   width: 10px;
   height: 10px;

@@ -31,15 +31,19 @@ export function diferencaNos(anteriores, itens) {
   return { adicionar, remover, mudouClasse, mudouEstado };
 }
 
-/** Classes que viram nó (ordem do backend, sem a do servidor), com a contagem de equipamentos. */
+/**
+ * Classes que viram nó (ordem do backend, sem a do servidor), com a contagem de equipamentos.
+ * Classe sem nenhum equipamento (em qualquer estado) não vira nó: some da cena e volta quando
+ * chega o primeiro.
+ */
 export function classesDaCena(store) {
   const totais = new Map();
   for (const it of store.itens.values()) {
     if (naCena(it)) totais.set(it.classe, (totais.get(it.classe) || 0) + 1);
   }
   return store.ordemClasses
-    .filter((c) => c && c.slug !== CLASSE_SERVIDOR)
-    .map((c) => ({ slug: c.slug, nome: c.nome, cor: c.cor, ordem: c.ordem, total: totais.get(c.slug) || 0 }));
+    .filter((c) => c && c.slug !== CLASSE_SERVIDOR && (totais.get(c.slug) || 0) > 0)
+    .map((c) => ({ slug: c.slug, nome: c.nome, cor: c.cor, ordem: c.ordem, total: totais.get(c.slug) }));
 }
 
 const peso = (estado) => (Object.hasOwn(ESTADOS, estado) ? ESTADOS[estado].peso : ESTADOS.desconhecido.peso);

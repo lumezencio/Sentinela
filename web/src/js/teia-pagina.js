@@ -251,6 +251,8 @@ export function visoesDoPainel(store) {
         const c = this.teiaClasses.find((x) => x.slug === this.classeFocada);
         if (!c) {
           this.classeFocada = "";
+          // a classe esvaziou (último equipamento removido ou reclassificado): sai do foco
+          if (controle) controle.verTudo();
         } else {
           const r = equipamentosDaClasse(store, c.slug, this.teiaPagina);
           this.classeFocadaNome = c.nome;

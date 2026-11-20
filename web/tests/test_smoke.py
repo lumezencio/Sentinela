@@ -3140,3 +3140,167 @@ def test_cartao_seguranca_visualizador_nao_aparece(page: Page, alvo: Alvo) -> No
     expect(page.locator("#cfg-seguranca")).to_be_hidden()
     expect(page.locator("#cfg-backup")).to_be_hidden()
     expect(page.get_by_role("button", name="Fazer backup agora")).to_be_hidden()
+
+
+# ---------- classes vazias somem da Teia e do Organograma; cartão de alerta cabe ----------
+CLASSES_ESVAZIADAS = ("impressora", "iot")
+NOMES_ESVAZIADOS = ("Impressoras", "IoT/Automação", "Desconhecidos")  # a última já é vazia
+
+
+class PonteSemClasses:
+    """WebSocket do painel sem os equipamentos de ``CLASSES_ESVAZIADAS`` (só o que o navegador
+    recebe; o servidor não é tocado) e com injeção de mensagens do teste."""
+
+    def __init__(self, page: Page) -> None:
+        self.rotas: list[Any] = []
+        self.removidos: set[str] = set()
+
+        def ao_ws(ws: Any) -> None:
+            servidor = ws.connect_to_server()
+            ws.on_message(lambda m: servidor.send(m))
+            servidor.on_message(lambda m: ws.send(self._filtrar(m)))
+            self.rotas.append(ws)
+
+        page.route_web_socket(re.compile(r".*/ws$"), ao_ws)
+
+    def _filtrar(self, texto: Any) -> Any:
+        import json
+
+        if not isinstance(texto, str):
+            return texto
+        try:
+            msg = json.loads(texto)
+        except ValueError:
+            return texto
+        if msg.get("tipo") == "snapshot":
+            todos = msg.get("equipamentos", [])
+            self.removidos = {e["id"] for e in todos if e.get("classe") in CLASSES_ESVAZIADAS}
+            msg["equipamentos"] = [e for e in todos if e["id"] not in self.removidos]
+            return json.dumps(msg)
+        if msg.get("id") in self.removidos:  # estados dos que o navegador não conhece
+            return json.dumps({"tipo": "ping"})
+        return texto
+
+    def injetar(self, mensagem: dict[str, Any]) -> None:
+        import json
+
+        assert self.rotas, "o navegador ainda não abriu o WebSocket"
+        self.rotas[-1].send(json.dumps(mensagem))
+
+
+def equipamento_ws(id_: str, classe: str, nome: str, ip: str) -> dict[str, Any]:
+    return {
+        "tipo": "equipamento",
+        "acao": "criado",
+        "equipamento": {
+            "id": id_,
+            "nome": nome,
+            "ip": ip,
+            "classe": classe,
+            "estado": "pausado",
+            "desde": None,
+            "checagem": "icmp",
+        },
+    }
+
+
+def test_classe_vazia_nao_aparece_na_teia_nem_no_organograma(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    ponte = PonteSemClasses(page)
+    page.goto("/login.html")
+    page.get_by_label("Login").fill(alvo.login)
+    page.get_by_label("Senha").fill(alvo.senha)
+    page.get_by_role("button", name="Entrar").click()
+    page.wait_for_url("**/index.html")
+    expect(page.locator("#contador-total")).not_to_have_text("0", timeout=15_000)
+    page.wait_for_timeout(500)
+    assert ponte.removidos, "o demo tem impressoras e sensores"
+    esperado = TOTAL_DEMO - len(ponte.removidos)
+    expect(page.locator("#contador-total")).to_have_text(str(esperado))
+    # Lista: o filtro "Classe" é do catálogo e continua com todas as classes
+    for nome in NOMES_ESVAZIADOS:
+        expect(page.locator("#filtro-classe option", has_text=nome)).to_have_count(1)
+
+    # Teia: nenhum nó nem botão para a classe sem equipamento
+    page.get_by_role("tab", name="Teia").click()
+    palco = page.locator("#conteudo-teia [data-equipamentos]")
+    expect(palco).to_have_attribute("data-equipamentos", str(esperado), timeout=20_000)
+    expect(palco).to_have_attribute("data-classes", re.compile(r"\bcamera\b"))
+    atual = palco.get_attribute("data-classes") or ""
+    for slug in (*CLASSES_ESVAZIADAS, "desconhecido", "sentinela"):
+        assert slug not in atual.split(","), atual
+    botoes = page.locator("#teia-classes .teia-classe")
+    expect(botoes.filter(has_text="Câmeras")).to_have_count(1)
+    for nome in NOMES_ESVAZIADOS:
+        expect(botoes.filter(has_text=nome)).to_have_count(0)
+
+    # ao vivo: o 1º equipamento da classe faz ela aparecer; o último removido faz sumir
+    ponte.injetar(equipamento_ws("vazia-1", "impressora", "Impressora do teste", "10.99.61.250"))
+    expect(palco).to_have_attribute("data-classes", re.compile(r"\bimpressora\b"))
+    expect(botoes.filter(has_text="Impressoras")).to_have_count(1)
+    ponte.injetar({"tipo": "equipamento", "acao": "removido", "id": "vazia-1"})
+    expect(palco).not_to_have_attribute("data-classes", re.compile(r"impressora"))
+    expect(botoes.filter(has_text="Impressoras")).to_have_count(0)
+
+    # Organograma: sem cartão para a classe vazia; aparece/some ao vivo
+    secao = abrir_organograma(page)
+    expect(secao.locator('.org-cartao[data-slug="camera"]')).to_have_count(1)
+    for slug in (*CLASSES_ESVAZIADAS, "desconhecido"):
+        expect(secao.locator(f'.org-cartao[data-slug="{slug}"]')).to_have_count(0)
+    ponte.injetar(equipamento_ws("vazia-2", "iot", "Sensor do teste", "10.99.61.251"))
+    expect(secao.locator('.org-cartao[data-slug="iot"]')).to_have_count(1, timeout=10_000)
+    ponte.injetar({"tipo": "equipamento", "acao": "removido", "id": "vazia-2"})
+    expect(secao.locator('.org-cartao[data-slug="iot"]')).to_have_count(0, timeout=10_000)
+    assert erros == [], erros
+
+
+LARGURAS_CARTAO = (360, 390, 768, 1024, 1280, 1300, 1366, 1440, 1920)
+NOME_60 = "Câmera do refeitório principal, corredor leste do bloco B 02"
+MEDIR_CARTAO = """() => {
+    const vw = document.documentElement.clientWidth;
+    const fora = [];
+    const pilha = document.querySelector('#cartoes-alerta');
+    for (const el of pilha.querySelectorAll('article.ca, article.ca *')) {
+        if (getComputedStyle(el).display === 'none') continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (r.left < 15.5 || r.right > vw - 15.5) {
+            fora.push([el.className || el.tagName, r.left, r.right]);
+        }
+    }
+    const nome = pilha.querySelector('.ca-nome');
+    return {vw, rolagem: document.documentElement.scrollWidth, fora,
+            nomeCortado: nome.scrollWidth > nome.clientWidth + 1};
+}"""
+
+
+def test_cartao_de_alerta_cabe_na_janela_em_todas_as_larguras(
+    browser: Browser, alvo: Alvo, novo_alerta: Any
+) -> None:
+    from conftest import PonteWs
+
+    assert len(NOME_60) == 60
+    for largura in LARGURAS_CARTAO:
+        contexto = browser.new_context(
+            viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+        )
+        try:
+            page = contexto.new_page()
+            a = novo_alerta()
+            ponte = PonteWs(page)
+            entrar(page, alvo)
+            expect(page.locator("#cartoes-alerta")).to_be_attached()
+            injetar(page, ponte, "aberto", a["id"], equipamento_nome=NOME_60)
+            cartao = cartao_de(page, a["id"])
+            expect(cartao).to_be_visible(timeout=10_000)
+            expect(cartao.locator(".ca-dados dt", has_text="Checagem")).to_be_visible()
+            page.wait_for_timeout(500)  # fim da animação de entrada
+            m = page.evaluate(MEDIR_CARTAO)
+            assert m["fora"] == [], (largura, m)  # nada colado ou além da margem de 16 px
+            assert m["rolagem"] <= largura, (largura, m)
+            assert not m["nomeCortado"], (largura, m)
+            expect(cartao.locator(".ca-nome")).to_have_text(NOME_60)
+            for nome in ("Ver na Teia", "Ver alerta", "Reconhecer", "Silenciar…"):
+                expect(cartao.get_by_role("button", name=re.compile(f"^{nome}"))).to_be_visible()
+        finally:
+            contexto.close()

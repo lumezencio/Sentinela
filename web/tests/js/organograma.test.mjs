@@ -243,3 +243,12 @@ test("paginaDoCartao: IP do item como a API manda (câmera de gravador incluída
   assert.equal(porId.h.ip, "<script>1</script>");
   assert.equal(porId.z.ip, "");
 });
+
+test("organograma: classe aparece com o 1o equipamento e some ao esvaziar (ao vivo)", () => {
+  const store = lojaDemo();
+  assert.ok(!montarOrganograma(store, SEM_FILTRO).some((c) => c.slug === "impressora"));
+  store.itens.set("p1", { id: "p1", nome: "Impressora 1", ip: "10.99.4.1", classe: "impressora", estado: "pausado" });
+  assert.ok(montarOrganograma(store, SEM_FILTRO).some((c) => c.slug === "impressora"));
+  store.itens.get("p1").classe = "roteador"; // reclassificado: impressora esvazia
+  assert.ok(!montarOrganograma(store, SEM_FILTRO).some((c) => c.slug === "impressora"));
+});

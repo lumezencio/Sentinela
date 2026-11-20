@@ -56,10 +56,10 @@ test("diferencaNos: sem mudanças devolve listas vazias", () => {
   assert.deepEqual(d, { adicionar: [], remover: [], mudouClasse: [], mudouEstado: [] });
 });
 
-test("classesDaCena: ordem do backend, sem a classe sentinela, com contagem (inclui vazias)", () => {
+test("classesDaCena: ordem do backend, sem a classe sentinela, com contagem (omite as vazias)", () => {
   const store = storeCom([item("a", "camera"), item("b", "camera"), item("x", "desconhecida")]);
   const cs = classesDaCena(store);
-  assert.deepEqual(cs.map((c) => [c.slug, c.total]), [["camera", 2], ["switch", 0]]);
+  assert.deepEqual(cs.map((c) => [c.slug, c.total]), [["camera", 2]]);
   assert.equal(cs[0].nome, "Câmeras");
   assert.equal(cs[0].cor, "#8793E8");
 });
@@ -103,4 +103,16 @@ test("rotuloAbaixo: vaga par (hub elevado) acima, ímpar abaixo; segue ordem % 1
   assert.equal(rotuloAbaixo(13), true);
   assert.equal(rotuloAbaixo(-1), true);
   assert.equal(rotuloAbaixo(undefined), false);
+});
+
+test("classesDaCena: classe aparece com o 1o equipamento (qualquer estado) e some com o ultimo", () => {
+  const store = storeCom([item("a", "camera", "offline")]);
+  assert.deepEqual(classesDaCena(store).map((c) => c.slug), ["camera"]);
+  store.itens.set("b", item("b", "switch", "pausado"));
+  assert.deepEqual(classesDaCena(store).map((c) => c.slug), ["camera", "switch"]);
+  store.itens.get("b").classe = "camera"; // reclassificado: switch esvazia
+  assert.deepEqual(classesDaCena(store).map((c) => c.slug), ["camera"]);
+  store.itens.delete("a");
+  store.itens.delete("b");
+  assert.deepEqual(classesDaCena(store), []); // so o servidor fica
 });

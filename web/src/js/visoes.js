@@ -108,6 +108,7 @@ export function resumoDasClasses(store) {
       online: 0, instavel: 0, offline: 0, inalcancavel: 0, pausado: 0, aguardando: 0,
     };
     const total = Object.values(contagem).reduce((a, b) => a + b, 0);
+    if (total === 0) continue; // classe sem equipamento não aparece no painel da Teia
     const partes = [plural(total, "equipamento", "equipamentos")];
     if (contagem.offline) partes.push(`${contagem.offline} offline`);
     if (contagem.inalcancavel) {
@@ -120,7 +121,6 @@ export function resumoDasClasses(store) {
       nome: classe.nome,
       cor: corSegura(classe.cor),
       total,
-      vazia: total === 0,
       contagem,
       rotulo: `${classe.nome}: ${partes.join(", ")}`,
     });
