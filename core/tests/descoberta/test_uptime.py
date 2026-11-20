@@ -47,6 +47,40 @@ def test_desvio_de_relogio_pequeno_nao_e_reinicio() -> None:
     assert reinicios(leituras) == []
 
 
+def test_salto_do_relogio_para_frente_nao_e_reinicio() -> None:
+    # NTP acertou o relógio do servidor em +2 h; o uptime do roteador seguiu normal
+    leituras = [
+        Leitura(T0, 1000.0),
+        Leitura(T0 + timedelta(minutes=10, hours=2), 1600.0),
+        Leitura(T0 + timedelta(minutes=20, hours=2), 2200.0),
+    ]
+    assert reinicios(leituras) == []
+
+
+def test_salto_do_relogio_para_tras_nao_e_reinicio() -> None:
+    # o relógio do servidor recuou 1 h entre as leituras: o roteador contou 1 h a mais do que
+    # o relógio decorrido; uptime cresceu, logo não é reinício
+    leituras = [
+        Leitura(T0, 1000.0),
+        Leitura(T0 + timedelta(minutes=5), 1000.0 + 3600 + 300),
+        Leitura(T0 + timedelta(minutes=15), 1000.0 + 3600 + 900),
+    ]
+    assert reinicios(leituras) == []
+
+
+def test_dois_reinicios_entre_leituras_contam_como_um() -> None:
+    leituras = [
+        Leitura(T0, 50_000.0),
+        Leitura(T0 + timedelta(minutes=30), 200.0),  # reiniciou duas vezes; só o último aparece
+    ]
+    assert len(reinicios(leituras)) == 1
+
+
+def test_leituras_no_mesmo_instante() -> None:
+    leituras = [Leitura(T0, 500.0), Leitura(T0, 500.0)]
+    assert reinicios(leituras) == []
+
+
 def test_ordem_e_lista_curta() -> None:
     assert reinicios([]) == []
     assert reinicios([Leitura(T0, 10.0)]) == []

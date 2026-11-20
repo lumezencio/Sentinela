@@ -52,17 +52,22 @@ def _deu_a_volta(anterior: Leitura, nova: Leitura) -> bool:
 
 
 def reinicios(leituras: list[Leitura]) -> list[datetime]:
-    """Instantes de boot (estimados) de cada reinício visto entre leituras consecutivas."""
+    """Instantes de boot (estimados) de cada reinício visto entre leituras consecutivas.
+
+    Só vale o que o próprio roteador informa: reinício = o uptime lido é MENOR que o da leitura
+    anterior e a queda não é a volta do contador de 32 bits. O relógio do servidor não decide
+    nada: "o uptime cresceu menos que o tempo decorrido" depende do relógio (um Raspberry Pi sem
+    RTC salta quando o NTP sincroniza) e por isso nunca é tratado como reinício.
+
+    Limite conhecido: dois reinícios entre duas leituras consecutivas contam como um só (o
+    uptime só mostra o último boot). Sem leitura que confirme, o laudo continua em "provável".
+    """
     ordenadas = sorted(leituras, key=lambda x: x.lido_em)
     saida: list[datetime] = []
     for anterior, nova in zip(ordenadas, ordenadas[1:], strict=False):
-        boot_anterior = anterior.lido_em - timedelta(seconds=anterior.uptime_s)
-        boot_novo = nova.lido_em - timedelta(seconds=nova.uptime_s)
-        if (boot_novo - boot_anterior).total_seconds() <= TOLERANCIA_S:
+        if nova.uptime_s >= anterior.uptime_s or _deu_a_volta(anterior, nova):
             continue
-        if _deu_a_volta(anterior, nova):
-            continue
-        saida.append(boot_novo)
+        saida.append(nova.lido_em - timedelta(seconds=nova.uptime_s))
     return saida
 
 
