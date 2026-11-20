@@ -491,12 +491,19 @@ html[data-aba="configuracoes"] {
 .ca-pilha {
   position: fixed;
   top: 72px;
+  /* Ancorada pelos DOIS lados (16 px de cada), nunca por "100vw": o vw conta a barra de rolagem
+     da página e, com barra clássica (Windows), o cartão passava da borda. margin-left:auto
+     encosta o cartão à direita quando a janela é larga (máx. 420 px). */
   right: 16px;
+  left: 16px;
   z-index: 30;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: min(420px, calc(100vw - 32px));
+  box-sizing: border-box;
+  width: auto;
+  max-width: 420px;
+  margin-left: auto;
   max-height: calc(100vh - 80px);
   pointer-events: none;
 }
@@ -510,6 +517,7 @@ html[data-aba="configuracoes"] {
 .ca-cartoes {
   display: grid;
   flex: 0 1 auto;
+  grid-template-columns: minmax(0, 1fr); /* coluna nunca maior que a pilha */
   gap: 12px;
   min-height: 0;
   padding: 12px;
@@ -521,6 +529,8 @@ html[data-aba="configuracoes"] {
 
 .ca {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 6px;
   padding: 10px 16px;
   border: 1px solid var(--borda);
@@ -718,10 +728,8 @@ html[data-aba="configuracoes"] {
 @media (max-width: 560px) {
   .ca-pilha {
     top: auto;
-    right: 16px;
     bottom: 16px;
-    left: 16px;
-    width: auto;
+    max-width: none;
     max-height: calc(100vh - 32px);
   }
 }
