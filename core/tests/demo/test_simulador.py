@@ -15,7 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import sentinela.demo.simulador as simulador
 from sentinela.config import Settings
-from sentinela.db.modelos import Alerta, Classe, Equipamento, Parede, SubRede, Usuario
+from sentinela.db.modelos import (
+    Alerta,
+    Classe,
+    Descoberta,
+    Equipamento,
+    Parede,
+    SubRede,
+    Usuario,
+)
 from sentinela.demo.simulador import ChecagemSimulada, gerar_rede
 from sentinela.main import criar_app
 from sentinela.rede.guarda import DestinoAutorizado, Guarda
@@ -376,8 +384,9 @@ async def test_demo_semeia_alertas(settings_demo: Settings) -> None:
     app = await _app_demo_aberto(settings_demo)
     async with app.router.lifespan_context(app):
         async with app.state.sessoes() as db:
-            alertas = (await db.execute(select(Alerta).order_by(Alerta.aberto_em))).scalars().all()
-        assert len(alertas) == 2
+            todos = (await db.execute(select(Alerta).order_by(Alerta.aberto_em))).scalars().all()
+        assert sorted(a.tipo for a in todos) == ["aparelho_novo", "queda", "queda"]
+        alertas = [a for a in todos if a.tipo == "queda"]
         assert all(a.envio == "nao_aplica" and a.fechado_em is not None for a in alertas)
         queda = next(a for a in alertas if len(a.afetados) == 14)
         assert not queda.breve and queda.tipo == "queda"
@@ -405,7 +414,7 @@ async def test_demo_alertas_idempotente(settings_demo: Settings) -> None:
         sessoes = app.state.sessoes
         assert await simulador.semear_alertas_demo(sessoes, datetime.now(UTC)) is False
         async with sessoes() as db:
-            assert await db.scalar(select(func.count()).select_from(Alerta)) == 2
+            assert await db.scalar(select(func.count()).select_from(Alerta)) == 3
             assert await db.scalar(select(func.count()).select_from(Parede)) == 1
 
 
@@ -465,5 +474,9 @@ async def test_demo_semeia_alertas_em_volume_com_alertas_existentes(
             await db.commit()
         assert await simulador.semear_alertas_demo(sessoes, datetime.now(UTC)) is True
         async with sessoes() as db:
-            assert await db.scalar(select(func.count()).select_from(Alerta)) == 3
+            assert await db.scalar(select(func.count()).select_from(Alerta)) == 4
+            novo = await db.scalar(select(Alerta).where(Alerta.tipo == "aparelho_novo"))
+            assert novo is not None and novo.envio == "nao_aplica" and novo.fechado_em is None
+            d = await db.get(Descoberta, novo.descoberta_id)
+            assert d is not None and d.status == "pendente" and d.ip.startswith("10.99.")
             assert await db.scalar(select(func.count()).select_from(Parede)) == 1

@@ -80,6 +80,7 @@ from sentinela.descoberta.mescla import (
     na_rede,
     reclassificar,
     redes_com_varredura,
+    sub_rede_com_linha_base,
 )
 from sentinela.descoberta.varredura import Ping, ping_icmp
 from sentinela.monitor.agendador import Agendador
@@ -492,17 +493,22 @@ class Orquestrador:
         agora = self._agora_parede()
         if self._oui is None:
             self._oui = BaseOui.carregar()
+        novos: list[str] = []  # descobertas a anunciar como "aparelho novo" (depois do commit)
         try:
             # só banco dentro da trava; a sondagem (lenta) roda depois, em fundo
             async with self._trava_mescla, self._sessoes() as db:
                 r = await mesclar(db, achados, self._guarda, agora, oui=self._oui)
                 aviso = MSG_TRUNCADA if truncado or r.truncado else None
+                linha_base = fonte_id is None  # varredura: vale a linha de base da sub-rede
                 if fonte_id is not None:
                     fonte = await db.get(Fonte, fonte_id)
                     if fonte is not None:
+                        # a primeira coleta da fonte é a linha de base dela: lida ANTES de gravar
+                        linha_base = fonte.ultima_coleta is not None
                         fonte.ultima_coleta, fonte.ultimo_erro = agora, aviso
                 elif aviso is not None:
                     log.warning("achados da varredura descartados: fila de pendentes cheia")
+                novos = await self._aparelhos_novos(db, r.novas, fonte_id is None, linha_base)
                 await db.commit()
         except Exception as e:  # noqa: BLE001
             log.error("falha ao gravar achados: %s", type(e).__name__)
@@ -512,11 +518,36 @@ class Orquestrador:
         for eq_id in r.equipamentos_atualizados:
             await self._reagendar(eq_id)
         await self._publicar_resultado(r)
+        for id in novos:
+            self._barramento.publicar(Mensagem("aparelho_novo", {"descoberta_id": id}))
         await self._aprovar_automaticamente([*r.novas, *r.atualizadas])
         for id in r.a_sondar:
             if id not in self._sondando:
                 self._sondando.add(id)
                 self._lancar(self._sondar_em_fundo(id))
+
+    @staticmethod
+    async def _aparelhos_novos(
+        db: AsyncSession, ids: list[str], da_varredura: bool, linha_base: bool
+    ) -> list[str]:
+        """Das descobertas novas, as que merecem o aviso "aparelho novo". Canal de gravador
+        nunca avisa. Da varredura: só com o IP numa sub-rede que já tem linha de base. De fonte:
+        só se a fonte já tinha coletado antes (``linha_base``)."""
+        if not ids or (not da_varredura and not linha_base):
+            return []
+        linhas = await db.execute(
+            select(Descoberta.id, Descoberta.chave, Descoberta.ip).where(Descoberta.id.in_(ids))
+        )
+        por_id = {id: (chave, ip) for id, chave, ip in linhas}
+        saida: list[str] = []
+        for id in ids:
+            chave, ip = por_id.get(id, ("nvr:", ""))
+            if chave.startswith("nvr:"):
+                continue
+            if da_varredura and not await sub_rede_com_linha_base(db, ip):
+                continue
+            saida.append(id)
+        return saida
 
     async def _sondar_em_fundo(self, descoberta_id: str) -> None:
         """§9.1 a: sondagem de descoberta em sub-rede com varredura, fora da trava; o

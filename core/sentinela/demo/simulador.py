@@ -13,12 +13,22 @@ from ipaddress import IPv4Address
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte, Parede, SubRede
+from sentinela.db.modelos import (
+    Alerta,
+    Classe,
+    Descoberta,
+    Equipamento,
+    Fonte,
+    Parede,
+    SubRede,
+)
 from sentinela.descoberta.fontes.simulada import PORTA_MIKROTIK, PORTA_SNMP
+from sentinela.descoberta.mescla import reclassificar
 from sentinela.monitor.estados import ResultadoChecagem
 from sentinela.rede.guarda import DestinoAutorizado
 from sentinela.relogio import Relogio, RelogioReal
 
+CHAVE_NOVO_DEMO = "02:00:00:fd:0f:01"  # descoberta pendente do aparelho novo da demo
 SUB_REDES_DEMO: tuple[str, ...] = tuple(f"10.99.{n}.0/24" for n in (10, 20, 30, 40, 50, 60))
 
 _LOCAIS_CAMERA = (
@@ -293,7 +303,8 @@ async def semear_fontes_demo(sessoes: async_sessionmaker[AsyncSession]) -> bool:
 
 
 async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: datetime) -> bool:
-    """Hierarquia (pai e 14 filhos), dois alertas históricos e um telão pareado (idempotente:
+    """Hierarquia (pai e 14 filhos), dois alertas históricos, um aparelho novo aberto (com a
+    sua descoberta pendente) e um telão pareado (idempotente:
     a marca é o telão demo, então vale também num volume que já tem alertas). Nenhum
     socket, nenhuma mensagem: ``envio='nao_aplica'``."""
     async with sessoes() as db:
@@ -337,6 +348,34 @@ async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: 
                 aberto_em=aberto,
                 fechado_em=aberto + timedelta(seconds=80),
                 breve=True,
+                envio="nao_aplica",
+            )
+        )
+        novo = agora - timedelta(minutes=10)
+        # idempotente também se a descoberta já existe (telão apagado, descoberta ficou)
+        descoberta = await db.scalar(select(Descoberta).where(Descoberta.chave == CHAVE_NOVO_DEMO))
+        if descoberta is None:
+            descoberta = Descoberta(
+                chave=CHAVE_NOVO_DEMO,
+                ip="10.99.60.199",
+                mac="02:00:00:fd:0f:01",
+                fabricante="Fabricante Demo",
+                sinais={"portas": [80, 554]},
+                origens=[{"fonte_id": "varredura", "origem": "varredura"}],
+                primeira_vez=novo,
+                ultima_vez=novo,
+            )
+            reclassificar(descoberta)  # classe sugerida e "por que", como as demais da fila
+            db.add(descoberta)
+            await db.flush()
+        db.add(
+            Alerta(
+                tipo="aparelho_novo",
+                descoberta_id=descoberta.id,
+                quedas=[],
+                afetados=[],
+                voltaram=[],
+                aberto_em=novo,
                 envio="nao_aplica",
             )
         )

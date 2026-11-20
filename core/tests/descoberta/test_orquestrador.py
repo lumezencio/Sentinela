@@ -10,7 +10,7 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
-from sentinela.db.modelos import Auditoria, Descoberta, Equipamento, Fonte
+from sentinela.db.modelos import Auditoria, Descoberta, Equipamento, Fonte, SubRede
 from sentinela.descoberta.ajustes import (
     APROVACAO_AUTOMATICA,
     LIMIAR_APROVACAO,
@@ -918,3 +918,116 @@ async def test_teto_de_pendentes_avisa_na_fonte(
     async with cena.sessoes() as db:
         fonte = await db.get(Fonte, f)
     assert fonte is not None and fonte.ultimo_erro == orquestrador.MSG_TRUNCADA
+
+
+# ---- aviso de aparelho novo (Fase 5): linha de base e quem avisa ---------------------------
+
+
+async def _linha_base(cena: Cena, cidr: str = "10.99.2.0/24") -> None:
+    async with cena.sessoes() as db:
+        sub = await db.scalar(select(SubRede).where(SubRede.cidr == cidr))
+        assert sub is not None
+        sub.linha_base_em = AGORA
+        await db.commit()
+
+
+def _novos(cena: Cena) -> list[str]:
+    return [m["descoberta_id"] for m in cena.barramento.do_tipo("aparelho_novo")]
+
+
+async def test_nova_da_varredura_com_linha_base_publica_aparelho_novo(
+    cena: Cena, cofre: Cofre
+) -> None:
+    orq = _orquestrador(cena, cofre, {})
+    await _linha_base(cena)
+    await orq.processar_achados([Achado("10.99.2.30", None, "varredura", "varredura")])
+    [d] = await _descobertas(cena)
+    assert _novos(cena) == [d.id]
+    # a mensagem sai depois do commit: a descoberta já está legível
+    assert d.status == "pendente"
+
+
+async def test_primeira_varredura_da_sub_rede_nao_avisa(cena: Cena, cofre: Cofre) -> None:
+    orq = _orquestrador(cena, cofre, {})
+    for n in range(40):  # a primeira varredura entrega os 40 achados antes da linha de base
+        await orq.processar_achados([Achado(f"10.99.2.{n + 10}", None, "varredura", "varredura")])
+    assert len(await _descobertas(cena)) == 40
+    assert _novos(cena) == []
+    await _linha_base(cena)  # o fim da primeira varredura grava a linha de base
+    await orq.processar_achados([Achado("10.99.2.200", None, "varredura", "varredura")])
+    ds = {d.ip: d.id for d in await _descobertas(cena)}
+    assert _novos(cena) == [ds["10.99.2.200"]]
+
+
+async def test_varredura_em_sub_rede_sem_linha_base_nao_avisa(cena: Cena, cofre: Cofre) -> None:
+    orq = _orquestrador(cena, cofre, {})
+    await _linha_base(cena)  # linha de base só na 10.99.2.0/24
+    await orq.processar_achados([Achado("10.99.1.30", None, "varredura", "varredura")])
+    assert len(await _descobertas(cena)) == 1 and _novos(cena) == []
+
+
+async def test_primeira_coleta_da_fonte_nao_avisa_e_a_segunda_avisa(
+    cena: Cena, cofre: Cofre
+) -> None:
+    f = await _fonte(cena, cofre, host="10.99.1.1")
+    coletor = ColetorFalso([Achado("10.99.1.20", M1, "arp", f)])
+    orq = _orquestrador(cena, cofre, {f: coletor})
+    await orq.coletar_agora(f)
+    assert len(await _descobertas(cena)) == 1 and _novos(cena) == []
+    coletor.achados = [Achado("10.99.1.20", M1, "arp", f), Achado("10.99.1.21", M2, "arp", f)]
+    orq._inicio.clear()
+    await orq.coletar_agora(f)
+    ds = {d.ip: d.id for d in await _descobertas(cena)}
+    assert _novos(cena) == [ds["10.99.1.21"]]
+
+
+async def test_reaparecer_nao_e_novo(cena: Cena, cofre: Cofre) -> None:
+    orq = _orquestrador(cena, cofre, {})
+    await _linha_base(cena)
+    achado = Achado("10.99.2.30", None, "varredura", "varredura")
+    await orq.processar_achados([achado])
+    assert len(_novos(cena)) == 1
+    await orq.processar_achados([achado])  # pendente de novo
+    async with cena.sessoes() as db:
+        d = await db.scalar(select(Descoberta))
+        assert d is not None
+        d.status = "ignorada"
+        await db.commit()
+    await orq.processar_achados([achado])  # ignorada
+    async with cena.sessoes() as db:
+        d = await db.scalar(select(Descoberta))
+        assert d is not None
+        d.status = "aprovada"
+        eq = await criar_equipamento(db, "AP", "10.99.2.30")
+        d.equipamento_id = eq.id
+        await db.commit()
+    await orq.processar_achados([achado])  # aprovada com equipamento
+    assert len(_novos(cena)) == 1
+
+
+async def test_canal_de_gravador_nao_avisa(cena: Cena, cofre: Cofre) -> None:
+    f = await _fonte(cena, cofre, "hikvision", host="10.99.1.50", porta=443)
+    canal = Achado("192.168.254.3", None, "gravador_canal", f, pai_fonte_id=f, canal=1)
+    coletor = ColetorFalso([Achado("10.99.1.50", M2, "gravador", f)])
+    orq = _orquestrador(cena, cofre, {f: coletor})
+    await orq.coletar_agora(f)  # primeira coleta: linha de base
+    coletor.achados = [canal]
+    orq._inicio.clear()
+    await orq.coletar_agora(f)
+    assert any(d.chave.startswith("nvr:") for d in await _descobertas(cena))
+    assert _novos(cena) == []
+
+
+async def test_mac_novo_num_ip_de_equipamento_avisa(cena: Cena, cofre: Cofre) -> None:
+    async with cena.sessoes() as db:
+        await criar_equipamento(db, "Impressora", "10.99.1.60", mac=M1)
+        await db.commit()
+    f = await _fonte(cena, cofre, host="10.99.1.1")
+    coletor = ColetorFalso([])
+    orq = _orquestrador(cena, cofre, {f: coletor})
+    await orq.coletar_agora(f)  # linha de base da fonte
+    coletor.achados = [Achado("10.99.1.60", M2, "arp", f)]  # outro MAC no IP do equipamento
+    orq._inicio.clear()
+    await orq.coletar_agora(f)
+    [d] = await _descobertas(cena)
+    assert d.mac == M2 and _novos(cena) == [d.id]

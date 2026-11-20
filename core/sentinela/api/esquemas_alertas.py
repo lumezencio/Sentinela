@@ -65,6 +65,11 @@ class AlertaSaida(BaseModel):
     reconhecido_em: datetime | None
     silenciado: bool
     envio: str
+    # só em ``aparelho_novo`` (o IP e as portas nunca vão ao telão, só ao painel autenticado)
+    descoberta_id: str | None = None
+    ip: str | None = None
+    fabricante: str | None = None
+    portas: list[int] = Field(default_factory=list)
 
 
 class AfetadoSaida(BaseModel):

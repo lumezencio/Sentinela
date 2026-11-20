@@ -16,6 +16,7 @@ from tests.api.apoio_parede import (
     AbrirWsParede,
     ClienteWsParede,
     alerta_no_banco,
+    aparelho_novo_no_banco,
     criar_equipamento_completo,
     emparelhar,
     ligar_http,
@@ -131,6 +132,26 @@ async def test_alertas_reduzidos(app: FastAPI, token: str, abrir_ws_parede: Abri
     assert await ws.json() == {"tipo": "alerta", "acao": "removido", "id": aberto}
     barramento.publicar(Mensagem("alerta", {"acao": "atualizado", "id": 9999, "abertos": 0}))
     assert await ws.json() == {"tipo": "alerta", "acao": "removido", "id": 9999}
+
+
+async def test_telao_nao_recebe_aparelho_novo(
+    app: FastAPI, token: str, abrir_ws_parede: AbrirWsParede
+) -> None:
+    eq = await criar_equipamento_completo(app)
+    novo, _ = await aparelho_novo_no_banco(app)
+    ws = await _aberto(abrir_ws_parede, token)
+    snap = await ws.json()
+    sem_proibidos(snap)
+    assert snap["alertas"] == []  # o snapshot não traz o aparelho novo
+    barramento: Barramento = app.state.barramento
+    for acao in ("aberto", "atualizado"):
+        barramento.publicar(Mensagem("alerta", {"acao": acao, "id": novo, "abertos": 1}))
+    barramento.publicar(Mensagem("aparelho_novo", {"descoberta_id": "x"}))
+    queda = await alerta_no_banco(app, eq)  # a próxima mensagem do telão é a da queda
+    barramento.publicar(Mensagem("alerta", {"acao": "aberto", "id": queda, "abertos": 2}))
+    msg = await ws.json()
+    sem_proibidos(msg)
+    assert msg["alerta"]["id"] == queda
 
 
 async def test_revogar_derruba_ws_na_hora(

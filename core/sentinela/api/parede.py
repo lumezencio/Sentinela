@@ -5,7 +5,8 @@ Por HTTP (porta 80, ``X-Forwarded-Proto: http`` do nginx) só respondem com a ch
 "permitir telão sem HTTPS" ligada; desligada, 404 como se não existissem.
 
 O token ``parede`` só abre o snapshot daqui e o ``/ws/parede``: nome, classe, estado e pai de
-cada equipamento (``id`` opaco), nunca IP, MAC, fabricante ou latência.
+cada equipamento (``id`` opaco), nunca IP, MAC, fabricante ou latência. O alerta
+``aparelho_novo`` (que traz IP e portas) nunca chega ao telão.
 """
 
 import math
@@ -114,7 +115,7 @@ async def montar_snapshot(db: AsyncSession, nome: str, fuso: str) -> dict[str, A
     alertas = (
         await db.execute(
             select(Alerta)
-            .where(Alerta.fechado_em.is_(None))
+            .where(Alerta.fechado_em.is_(None), Alerta.tipo != "aparelho_novo")
             .order_by(Alerta.aberto_em.desc(), Alerta.id.desc())
             .limit(MAX_ALERTAS)
         )

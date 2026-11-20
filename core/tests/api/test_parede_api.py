@@ -16,6 +16,7 @@ from tests.api.apoio_parede import (
     AbrirTv,
     AbrirWsParede,
     alerta_no_banco,
+    aparelho_novo_no_banco,
     atributos,
     cookie,
     criar_equipamento_completo,
@@ -124,6 +125,19 @@ async def test_snapshot_sem_ip_mac_fabricante_latencia(
     }
     assert alerta["equipamento_id"] == eq and alerta["afetados"] == 0
     assert alerta["texto"] == "Câmera Portaria caiu"
+
+
+async def test_telao_nao_recebe_aparelho_novo(
+    app: FastAPI, abrir_tv: AbrirTv, cliente_admin: httpx.AsyncClient
+) -> None:
+    eq = await criar_equipamento_completo(app)
+    await aparelho_novo_no_banco(app)
+    queda = await alerta_no_banco(app, eq)
+    tv = abrir_tv()
+    await emparelhar(tv, cliente_admin)
+    snap = (await tv.get(SNAPSHOT)).json()
+    sem_proibidos(snap)  # nenhum IP 10.99.*, MAC nem fabricante
+    assert [a["id"] for a in snap["alertas"]] == [queda]
 
 
 async def test_snapshot_marca_alerta_silenciado(

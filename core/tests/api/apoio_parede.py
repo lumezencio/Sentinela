@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.db.modelos import Alerta, Classe, Equipamento
+from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento
 from tests.api.test_ws import Asgi, ClienteWs
 
 PEDIDO = "/api/v1/parede/pedido"
@@ -121,6 +121,29 @@ async def alerta_no_banco(
         db.add(a)
         await db.commit()
         return a.id
+
+
+async def aparelho_novo_no_banco(
+    app: FastAPI, ip: str = "10.99.5.20", fabricante: str | None = "Fabricante X"
+) -> tuple[int, str]:
+    """Alerta ``aparelho_novo`` aberto com a sua descoberta pendente (``(alerta, descoberta)``)."""
+    async with sessoes(app)() as db:
+        d = Descoberta(
+            chave=f"ip:{ip}",
+            ip=ip,
+            mac="02:00:00:00:05:20",
+            fabricante=fabricante,
+            nome_sugerido="cam-hostil",
+            sinais={"portas": [554, 80]},
+            primeira_vez=DESDE,
+            ultima_vez=DESDE,
+        )
+        db.add(d)
+        await db.flush()
+        a = Alerta(tipo="aparelho_novo", descoberta_id=d.id, aberto_em=DESDE)
+        db.add(a)
+        await db.commit()
+        return a.id, d.id
 
 
 class ClienteWsParede(ClienteWs):

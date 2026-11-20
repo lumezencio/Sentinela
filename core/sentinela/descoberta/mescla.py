@@ -229,6 +229,19 @@ async def redes_com_varredura(db: AsyncSession) -> list[IPv4Network]:
     return redes
 
 
+async def sub_rede_com_linha_base(db: AsyncSession, ip: str) -> bool:
+    """O IP cai numa sub-rede cuja primeira varredura já terminou (``linha_base_em``): só
+    daí em diante um IP inédito é "aparelho novo"."""
+    redes: list[IPv4Network] = []
+    consulta = select(SubRede.cidr).where(SubRede.linha_base_em.is_not(None))
+    for cidr in (await db.execute(consulta)).scalars():
+        try:
+            redes.append(IPv4Network(cidr))
+        except ValueError:
+            continue
+    return na_rede(ip, redes)
+
+
 def na_rede(ip: str, redes: list[IPv4Network]) -> bool:
     try:
         endereco = IPv4Address(ip)

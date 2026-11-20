@@ -23,6 +23,7 @@ from sentinela.alertas.ajustes import (
     ler_status,
 )
 from sentinela.alertas.despachante import (
+    CONFIRMAR_NOVO_S,
     CONFIRMAR_QUEDA_S,
     DESISTIR,
     ESPERA_INICIAL_S,
@@ -33,7 +34,7 @@ from sentinela.alertas.despachante import (
 from sentinela.alertas.telegram import ClienteTelegram, ErroTelegram
 from sentinela.config import Settings
 from sentinela.db.base import Base
-from sentinela.db.modelos import Alerta, Classe, Equipamento
+from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.main import criar_app
@@ -195,6 +196,7 @@ async def _status(c: Ctx) -> dict[str, Any]:
 
 def test_constantes_da_spec() -> None:
     assert CONFIRMAR_QUEDA_S == 60
+    assert CONFIRMAR_NOVO_S == 60
     assert ESPERA_INICIAL_S == 30
     assert ESPERA_MAX_S == 1800
     assert DESISTIR == timedelta(hours=24)
@@ -783,3 +785,70 @@ async def test_edicao_erro_em_um_chat_nao_marca_enviado(ctx: Ctx) -> None:
     await ctx.despachante.ciclo()
     lido = await _ler(ctx, a)
     assert lido.envio == "pendente" and lido.envio_tentativas == 1
+
+
+# ---- aparelho novo (Fase 5) -----------------------------------------------------------------
+
+
+async def _novo(c: Ctx) -> tuple[int, str]:
+    async with c.sessoes() as s:
+        d = Descoberta(
+            chave="ip:10.99.5.20",
+            ip="10.99.5.20",
+            fabricante="Intelbras",
+            nome_sugerido="<b>cam-hostil</b>",
+            mac="02:00:00:00:05:20",
+            sinais={"portas": []},
+            primeira_vez=T0,
+            ultima_vez=T0,
+        )
+        s.add(d)
+        await s.flush()
+        a = Alerta(
+            tipo="aparelho_novo",
+            descoberta_id=d.id,
+            quedas=[],
+            afetados=[],
+            aberto_em=T0,
+        )
+        s.add(a)
+        await s.commit()
+        return a.id, d.id
+
+
+async def test_aparelho_novo_espera_60s_e_sai_com_as_portas(ctx: Ctx) -> None:
+    await _configurar(ctx)
+    a, d = await _novo(ctx)
+    ctx.em(30)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.enviados == []  # ainda esperando a sondagem trazer as portas
+    async with ctx.sessoes() as s:  # a sondagem termina dentro da espera
+        x = await s.get(Descoberta, d)
+        assert x is not None
+        x.sinais = {"portas": [554, 80]}
+        await s.commit()
+    ctx.em(CONFIRMAR_NOVO_S)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.enviados == [
+        (CHAT_A, "🆕 Novo aparelho conectou na rede às 14:00 · Intelbras · portas 80, 554")
+    ]
+    assert (await _ler(ctx, a)).envio == "enviado"
+    texto = ctx.cliente.enviados[0][1]
+    assert "cam-hostil" not in texto and "02:00:00:00:05:20" not in texto
+
+
+async def test_aparelho_novo_com_ip_ligado_leva_o_ip(ctx: Ctx) -> None:
+    await _configurar(ctx, incluir_ip=True)
+    await _novo(ctx)
+    ctx.em(CONFIRMAR_NOVO_S)
+    await ctx.despachante.ciclo()
+    assert "— 10.99.5.20 · Intelbras" in ctx.cliente.enviados[0][1]
+
+
+async def test_aparelho_novo_fechado_antes_de_enviar_nao_vai(ctx: Ctx) -> None:
+    await _configurar(ctx)
+    a, _ = await _novo(ctx)
+    await _alterar(ctx, a, envio="nao_aplica", fechado_em=T0 + timedelta(seconds=10))
+    ctx.em(CONFIRMAR_NOVO_S + 5)
+    await ctx.despachante.ciclo()
+    assert ctx.cliente.enviados == []

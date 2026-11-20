@@ -391,7 +391,7 @@ async def test_mensagem_alerta_chega_enriquecida(
     assert set(msg["alerta"]) == {
         "id", "tipo", "texto", "equipamento_id", "equipamento_nome", "classe",
         "afetados_total", "aberto_em", "fechado_em", "breve", "reconhecido_por",
-        "reconhecido_em", "silenciado", "envio",
+        "reconhecido_em", "silenciado", "envio", "descoberta_id", "ip", "fabricante", "portas",
     }  # fmt: skip
 
 
