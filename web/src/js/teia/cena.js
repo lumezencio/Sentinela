@@ -13,7 +13,8 @@ import {
 } from "./desempenho.js";
 import { calcularPosicoes, ESTILOS, RAIO_CLASSES } from "./estilos.js";
 import {
-  DIST_MAX_ROTULO, enquadrar, manterRotuloNoPalco, posicaoDoRotulo, raioEnvolvente,
+  DIST_MAX_ROTULO, enquadrar, enquadrarVistaGeral, manterRotuloNoPalco, posicaoDoRotulo, raioEnvolvente,
+  separarRotulos,
 } from "./enquadramento.js";
 import {
   brilhoParaComposicaoLinear, criarAcervo, criarAnelSelecao, criarEstrelas, criarObjetoClasse,
@@ -41,9 +42,10 @@ const RAIO_CABER = RAIO_CLASSES + 40; // classes e equipamentos em volta delas
 // meia largura / altura de um rótulo de classe já reduzido pela distância (ESCALA_ROTULO.min)
 const FOLGA_ROTULO_PX = { lado: 60, cima: 32 };
 // teto do recuo: abaixo de DIST_MAX_ROTULO, senão os rótulos das classes somem
-const RECUO_MAXIMO = DIST_MAX_ROTULO - 150;
+const RECUO_MAXIMO = 1350;
 const LEITURAS_MS = 250;
 const LIMITE_TEXTURAS_IP = 300; // texturas de IP guardadas (as da tela atual nunca saem)
+const NEVOA = 0.0012;
 const FOLGA_IP_PX = 4; // vão mínimo entre dois rótulos de IP na tela
 
 const estiloValido = (e) => (ESTILOS.includes(e) ? e : "a");
@@ -174,7 +176,7 @@ export function montarTeia(container, opcoes = {}) {
   // fundo como scene.background (não só clear color): com o EffectComposer do bloom o clear
   // color sai convertido duas vezes (cinza); o background é limpo no espaço de cor do alvo
   scene.background = new Color(FUNDO);
-  scene.fog = new FogExp2(FUNDO, 0.0012);
+  scene.fog = new FogExp2(FUNDO, NEVOA);
   const luzServidor = new PointLight(0xdfe4ff, 2.4, 0, 0);
   G.lights([new AmbientLight(0xffffff, 0.35), luzServidor]);
   const estrelas = criarEstrelas(1500);
@@ -184,7 +186,7 @@ export function montarTeia(container, opcoes = {}) {
 
   const controles = G.controls();
   controles.minDistance = 60; // não atravessar o servidor
-  controles.maxDistance = 1600;
+  controles.maxDistance = DIST_MAX_ROTULO;
   controles.enableDamping = !reduzido;
   controles.dampingFactor = 0.08;
   controles.autoRotateSpeed = 0.6;
@@ -497,6 +499,7 @@ export function montarTeia(container, opcoes = {}) {
   function atualizarRotulos() {
     const camera = G.camera();
     const largura = G.width(), altura = G.height();
+    const lista = [];
     for (const r of rotulos.values()) {
       const p = posicaoDe(r.no);
       vetor.set(p.x, p.y, p.z);
@@ -533,12 +536,24 @@ export function montarTeia(container, opcoes = {}) {
         if (!r.el.hidden) r.el.hidden = true;
         continue;
       }
-      const chave = `${dentro.x},${dentro.y},${pos.escala}`;
-      if (chave === r.ultimo) continue;
-      r.ultimo = chave;
-      r.el.style.transform = `translate3d(${dentro.x}px, ${dentro.y}px, 0)`;
-      r.el.style.setProperty("--escala", String(pos.escala));
+      lista.push({ r, pos, dentro, larg, alt, deslocado });
     }
+    // dois rótulos nunca se sobrepõem: o do servidor e os de mais equipamentos ficam onde estão,
+    // os outros deslizam na vertical o mínimo necessário
+    lista.sort((p, q) => (p.r.no === srv ? -1 : q.r.no === srv ? 1 : (q.r.no.total || 0) - (p.r.no.total || 0)));
+    const dys = separarRotulos(
+      lista.map((e) => ({ x: e.dentro.x, topo: e.dentro.y + e.deslocado, l: e.larg, a: e.alt })),
+      { limite: altura },
+    );
+    lista.forEach((e, i) => {
+      const { r, pos, dentro } = e;
+      const y = dentro.y + dys[i];
+      const chave = `${dentro.x},${y},${pos.escala}`;
+      if (chave === r.ultimo) return;
+      r.ultimo = chave;
+      r.el.style.transform = `translate3d(${dentro.x}px, ${y}px, 0)`;
+      r.el.style.setProperty("--escala", String(pos.escala));
+    });
   }
 
   function atualizarAnel(t) {
@@ -566,7 +581,17 @@ export function montarTeia(container, opcoes = {}) {
   }
 
   /** Leituras baratas para testes/diagnóstico: câmera e memória da GPU (sem tocar no DOM à toa). */
+  /** Margens dos painéis, nível e tamanho do palco: se mudaram, a vista geral é refeita. */
+  function refazerVistaSeMudou() {
+    if (!est.store || est.foco !== null || selecionado || est.transicao) return;
+    if (chaveDaVista() !== est.chaveVista) cameraGeral();
+  }
+
+  const chaveDaVista = () =>
+    `${JSON.stringify(margens() || {})}|${est.nivel}|${G.width()}x${G.height()}|${hubs.size}`;
+
   function atualizarLeituras() {
+    refazerVistaSeMudou();
     const p = G.camera().position;
     const camera = `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`;
     if (container.dataset.camera !== camera) container.dataset.camera = camera;
@@ -740,11 +765,18 @@ export function montarTeia(container, opcoes = {}) {
       aplicarDiferenca(dif);
       assin = assinaturas(store.itens);
     }
-    posicionar();
+    // só as classes com equipamento têm hub: quando o conjunto muda, os hubs se redistribuem
+    // com movimento suave e a vista geral é refeita para a nova disposição
+    const conjunto = classes.map((c) => c.slug).join(",");
+    const mudouConjunto = conjunto !== est.conjuntoClasses;
+    const primeiro = est.conjuntoClasses === undefined;
+    est.conjuntoClasses = conjunto;
+    posicionar(mudouConjunto && !primeiro ? { animar: true } : {});
     configurarForcas();
     aplicarAcessoriosDeLink();
     montarGrafo();
     atualizarAtributos();
+    if (mudouConjunto && !est.foco && !selecionado) cameraGeral();
   }
 
   function atualizarEstado(id) {
@@ -776,6 +808,8 @@ export function montarTeia(container, opcoes = {}) {
 
   /** Enquadra `alvo` (raio R) vindo de `de`, com o centro na área livre dos painéis. */
   function enquadrarAlvo(alvo, de, raio) {
+    limparDesvio();
+    ajustarNevoa(0);
     const camera = G.camera();
     const e = enquadrar({
       alvo, de, raio, fov: camera.fov || 50, largura: G.width(), altura: G.height(),
@@ -848,6 +882,7 @@ export function montarTeia(container, opcoes = {}) {
     if (est.destruido) return;
     if (selecionado) focarEquipamento(selecionado.id);
     else if (est.foco) enquadrarClasse();
+    else cameraGeral();
   }
 
   /**
@@ -888,7 +923,79 @@ export function montarTeia(container, opcoes = {}) {
   function cameraGeral() {
     const e = est.estilo === "e";
     const base = e ? CAMERA_E : CAMERA_PADRAO;
-    G.cameraPosition(caberNaTela ? recuoParaCaber(base) : base, e ? ALVO_E : { x: 0, y: 0, z: 0 }, reduzido ? 0 : CAMERA_MS);
+    const alvo = e ? ALVO_E : { x: 0, y: 0, z: 0 };
+    if (!est.store) {
+      limparDesvio();
+      G.cameraPosition(caberNaTela ? recuoParaCaber(base) : base, alvo, reduzido ? 0 : CAMERA_MS);
+      return;
+    }
+    est.chaveVista = chaveDaVista();
+    const v = enquadrarVistaGeral({
+      pontos: pontosDaVista(), alvo,
+      direcao: { x: base.x - alvo.x, y: base.y - alvo.y, z: base.z - alvo.z },
+      fov: G.camera().fov || 50, largura: G.width(), altura: G.height(),
+      margens: margens() || {}, maximo: DIST_MAX_ROTULO - 400,
+    });
+    aplicarDesvio(v.desvio);
+    ajustarNevoa(v.distancia);
+    // tela estreita: o desenho só cabe parado (em qualquer giro passaria da área livre)
+    if (!v.girar && est.girando) {
+      girar(false);
+      est.giroSuspenso = true;
+    } else if (v.girar && est.giroSuspenso) {
+      est.giroSuspenso = false;
+      girar(true);
+    }
+    G.cameraPosition(v.camera, alvo, reduzido ? 0 : CAMERA_MS);
+  }
+
+  /** Névoa proporcional à distância da câmera: de longe (telas estreitas) a Teia não pode sumir. */
+  function ajustarNevoa(distancia) {
+    if (scene.fog) scene.fog.density = Math.min(NEVOA, 1.1 / Math.max(1, distancia));
+  }
+
+  /** Posição final (fim da transição, se houver) de um nó. */
+  function posicaoFinal(no) {
+    const alvo = est.transicao && est.transicao.para.get(no);
+    return alvo || posicaoDe(no);
+  }
+
+  /** O que a vista geral precisa mostrar: servidor, hubs (com rótulo) e os equipamentos. */
+  function pontosDaVista() {
+    const pts = [{ ...posicaoFinal(srv), raio: 38, rotulo: true }];
+    const agrupado = est.nivel === "agrupado";
+    for (const h of agrupado ? grupos.values() : hubs.values()) {
+      const raio = agrupado ? raioSuperNo(h.total) : est.estilo === "a" ? 75 : 12;
+      pts.push({ ...posicaoFinal(h), raio, rotulo: true });
+    }
+    if (!agrupado) {
+      const todos = [...nos.values()];
+      const passo = Math.max(1, Math.ceil(todos.length / 1500));
+      for (let i = 0; i < todos.length; i += passo) {
+        pts.push({ ...posicaoFinal(todos[i]), raio: TAMANHO.haloEquipamento / 2 });
+      }
+    }
+    return pts;
+  }
+
+  /** Desloca a janela de projeção (px; x à direita, y para cima) sem mover o pivô da rotação. */
+  function aplicarDesvio(d) {
+    const camera = G.camera();
+    if (!camera || typeof camera.setViewOffset !== "function") return;
+    const w = G.width(), h = G.height();
+    container.dataset.desvio = d ? `${d.x},${d.y}` : "0,0";
+    if (!d || (!d.x && !d.y)) {
+      limparDesvio();
+      return;
+    }
+    camera.setViewOffset(w, h, -d.x, d.y, w, h);
+  }
+
+  function limparDesvio() {
+    const camera = G.camera();
+    if (camera && camera.view && camera.view.enabled && typeof camera.clearViewOffset === "function") {
+      camera.clearViewOffset();
+    }
   }
 
   /**
@@ -1076,7 +1183,8 @@ export function montarTeia(container, opcoes = {}) {
     const w = container.clientWidth, h = container.clientHeight;
     if (w > 0 && h > 0 && (w !== G.width() || h !== G.height())) {
       G.width(w).height(h);
-      if (caberNaTela && !selecionado && est.foco === null) cameraGeral();
+      if (!selecionado && est.foco === null) cameraGeral();
+      else limparDesvio();
     }
   }
   let observador = null;

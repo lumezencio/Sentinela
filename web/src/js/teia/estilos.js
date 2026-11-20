@@ -1,5 +1,7 @@
 // Posições determinísticas dos 5 estilos da Teia. Funções puras: a mesma entrada dá sempre
-// o mesmo resultado, sem Math.random. A classe vai para a vaga `ordem % VAGAS`.
+// o mesmo resultado, sem Math.random. Só as classes COM equipamento ganham hub: elas se distribuem por igual
+// (vaga = posição na ordem `Classe.ordem` entre as presentes), então os hubs só se movem quando
+// uma classe aparece ou some.
 //
 // Estilo A: posição inicial só pelo hash do id (a física separa depois); estável sempre.
 // Estilos B, C, D e E: alocação estável de "slots" por classe. Cada classe tem uma capacidade
@@ -26,13 +28,31 @@ const DOIS_PI = Math.PI * 2;
 // Número em [0, 1) derivado do id e de um sal (cada sal dá uma coordenada independente).
 const u = (id, sal) => hashTexto(`${id}#${sal}`) / 4294967296;
 
-const vaga = (ordem) => ((Number(ordem) || 0) % VAGAS + VAGAS) % VAGAS;
+/**
+ * Vagas das classes presentes: slug -> {i, n}. Ordem estável por (ordem, slug); classe que o
+ * backend não listou vai ao fim, por slug. `n` é o número de classes presentes.
+ */
+export function vagasDasClasses(classes, equipamentos) {
+  const presentes = new Set();
+  for (const e of equipamentos) if (e.classe !== "sentinela") presentes.add(e.classe);
+  const ordem = new Map();
+  for (const c of classes) ordem.set(c.slug, Number.isFinite(c.ordem) ? c.ordem : 0);
+  const lista = [...presentes].sort((p, q) => {
+    const op = ordem.has(p) ? ordem.get(p) : Infinity, oq = ordem.has(q) ? ordem.get(q) : Infinity;
+    if (op !== oq) return op < oq ? -1 : 1;
+    return p < q ? -1 : p > q ? 1 : 0;
+  });
+  const vagas = new Map();
+  lista.forEach((slug, i) => vagas.set(slug, { i, n: lista.length }));
+  return vagas;
+}
 
-// Casca esférica inclinada: anel de 12 vagas, elevação alternada (±60) e inclinação de 18° em x.
-function hubCasca(v) {
-  const ang = (v / VAGAS) * DOIS_PI;
+// Casca esférica inclinada: anel de n vagas, elevação alternada (±60) e inclinação de 18° em x.
+function hubCasca(v, n) {
+  const ang = (v / n) * DOIS_PI;
   const x = Math.cos(ang) * RAIO_CLASSES;
-  const y = v % 2 === 0 ? ELEVACAO : -ELEVACAO;
+  // n ímpar: a última vaga (par) encostaria na primeira (par); ela fica na altura do plano
+  const y = n > 1 && n % 2 === 1 && v === n - 1 ? 0 : v % 2 === 0 ? ELEVACAO : -ELEVACAO;
   const z = Math.sin(ang) * RAIO_CLASSES;
   return {
     x,
@@ -41,7 +61,8 @@ function hubCasca(v) {
   };
 }
 
-function estiloA(v, id, hub) {
+function estiloA(v, id, n) {
+  const hub = hubCasca(v, n);
   // posição inicial numa nuvem esférica em torno da classe (a física ajusta depois)
   const cosT = u(id, 1) * 2 - 1, sinT = Math.sqrt(1 - cosT * cosT);
   const fi = u(id, 2) * DOIS_PI, r = 18 + u(id, 3) * 28;
@@ -64,20 +85,20 @@ function aneis(K) {
   }
   return cacheAneis.get(K);
 }
-function estiloB(v, id, slot, K) {
-  const hub = hubCasca(v), { r, i, n, raio } = aneis(K)[slot];
-  const a = ((i + 0.5 * (r % 2)) / n) * DOIS_PI + r * 0.4;
+function estiloB(v, id, slot, K, n) {
+  const hub = hubCasca(v, n), { r, i, n: nAnel, raio } = aneis(K)[slot];
+  const a = ((i + 0.5 * (r % 2)) / nAnel) * DOIS_PI + r * 0.4;
   return { x: hub.x + Math.cos(a) * raio, y: hub.y + Math.sin(a * 2) * 3, z: hub.z + Math.sin(a) * raio };
 }
 
 // ---- C: braço espiral com 64 pontos ao longo e faixas (8 radiais x N verticais) ----
 const AO_LONGO = 64, FAIXA = 9;
-function hubC(v) {
-  const base = (v / VAGAS) * DOIS_PI;
+function hubC(v, n) {
+  const base = (v / n) * DOIS_PI;
   return { x: Math.cos(base + 0.9) * 120, y: 0, z: Math.sin(base + 0.9) * 120 };
 }
-function estiloC(v, id, slot) {
-  const base = (v / VAGAS) * DOIS_PI;
+function estiloC(v, id, slot, K, n) {
+  const base = (v / n) * DOIS_PI;
   const t = ((slot % AO_LONGO) + 0.5) / AO_LONGO, faixa = Math.floor(slot / AO_LONGO);
   const rr = 60 + t * 260 + (faixa % 8) * FAIXA, a = base + t * 2.6 + 0.9;
   return { x: Math.cos(a) * rr, y: Math.floor(faixa / 8) * FAIXA, z: Math.sin(a) * rr };
@@ -104,15 +125,15 @@ function estiloD(v, id, slot) {
 }
 
 // ---- E: grade de 12 colunas por classe, com recuo em z nas colunas/linhas alternadas ----
-const colunaE = (v) => (v - (VAGAS - 1) / 2) * 70;
-const hubE = (v) => ({ x: colunaE(v), y: 90, z: 0 });
-function estiloE(v, id, slot) {
+const colunaE = (v, n) => (v - (n - 1) / 2) * 70;
+const hubE = (v, n) => ({ x: colunaE(v, n), y: 90, z: 0 });
+function estiloE(v, id, slot, K, n) {
   const col = slot % 12, lin = Math.floor(slot / 12);
-  return { x: colunaE(v) + (col - 5.5) * 5.5, y: 40 - lin * 6, z: (col % 2) * 4 + (lin % 2) * 3 };
+  return { x: colunaE(v, n) + (col - 5.5) * 5.5, y: 40 - lin * 6, z: (col % 2) * 4 + (lin % 2) * 3 };
 }
 
 const ESTILO_FN = {
-  a: { hub: hubCasca, item: (v, id) => estiloA(v, id, hubCasca(v)), slots: false },
+  a: { hub: hubCasca, item: (v, id, slot, K, n) => estiloA(v, id, n), slots: false },
   b: { hub: hubCasca, item: estiloB },
   c: { hub: hubC, item: estiloC },
   d: { hub: hubD, item: estiloD },
@@ -125,22 +146,19 @@ export function calcularPosicoes(estilo, classes, equipamentos) {
   const pos = new Map();
   pos.set("srv", { x: 0, y: chave === "e" ? 200 : 0, z: 0 });
 
-  const ordemClasse = new Map();
-  for (const c of [...classes].sort((p, q) => p.ordem - q.ordem || (p.slug < q.slug ? -1 : 1))) {
-    ordemClasse.set(c.slug, c.ordem);
-    if (c.slug !== "sentinela") pos.set(`h-${c.slug}`, fn.hub(vaga(c.ordem)));
-  }
+  const vagas = vagasDasClasses(classes, equipamentos);
+  for (const [slug, { i, n }] of vagas) pos.set(`h-${slug}`, fn.hub(i, n));
 
   const grupos = new Map();
   for (const e of equipamentos) {
+    if (!vagas.has(e.classe)) continue; // classe do servidor: não entra na cena
     if (!grupos.has(e.classe)) grupos.set(e.classe, []);
     grupos.get(e.classe).push(e.id);
   }
   for (const [slug, ids] of grupos) {
-    // classe desconhecida: vaga estável pelo hash do slug
-    const v = ordemClasse.has(slug) ? vaga(ordemClasse.get(slug)) : hashTexto(String(slug)) % VAGAS;
+    const { i: v, n } = vagas.get(slug);
     if (fn.slots === false) {
-      for (const id of ids) pos.set(id, fn.item(v, id));
+      for (const id of ids) pos.set(id, fn.item(v, id, 0, 0, n));
       continue;
     }
     let K = 64;
@@ -152,7 +170,7 @@ export function calcularPosicoes(estilo, classes, equipamentos) {
       let slot = h % K;
       while (ocupados.has(slot)) slot = (slot + 1) % K;
       ocupados.add(slot);
-      pos.set(id, fn.item(v, id, slot, K));
+      pos.set(id, fn.item(v, id, slot, K, n));
     }
   }
   return pos;

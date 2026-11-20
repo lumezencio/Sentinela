@@ -108,3 +108,76 @@ test("manterRotuloNoPalco: rótulo ACIMA da âncora (desloque negativo) fica int
     assert.ok(r.y + desloque + altura <= palcoA - 4, `base ${r.y + desloque + altura}`);
   }
 });
+
+// ---------- vista geral na área livre ----------
+import { enquadrarVistaGeral, separarRotulos } from "../../src/js/teia/enquadramento.js";
+
+function hubsEmAnel(n, raio = 230) {
+  return Array.from({ length: n }, (_, i) => {
+    const a = (i / n) * Math.PI * 2;
+    return { x: Math.cos(a) * raio, y: i % 2 ? -60 : 60, z: Math.sin(a) * raio, raio: 60, rotulo: true };
+  });
+}
+
+for (const n of [1, 4, 12]) {
+  test(`enquadrarVistaGeral: ${n} classe(s) cabem na área livre (1366x900 girando; 360x740 no mínimo parado)`, () => {
+    const pontos = [{ x: 0, y: 0, z: 0, raio: 20, rotulo: true }, ...hubsEmAnel(n)];
+    for (const [largura, altura, margens] of [
+      [1366, 900, { esquerda: 300, cima: 130, baixo: 70 }],
+      [360, 740, { cima: 330, baixo: 100 }],
+    ]) {
+      const v = enquadrarVistaGeral({
+        pontos, alvo: { x: 0, y: 0, z: 0 }, direcao: { x: 0, y: 260, z: 520 }, fov: 50, largura, altura, margens,
+      });
+      assert.ok(v.coube, `${n} ${largura}`);
+      if (largura === 1366) assert.ok(v.girar, `${n} cabe girando em 1366`);
+      const livre = {
+        x0: margens.esquerda ?? 0, x1: largura - (margens.direita ?? 0),
+        y0: margens.cima ?? 0, y1: altura - (margens.baixo ?? 0),
+      };
+      for (let g = 0; g < (v.girar ? 12 : 1); g++) {
+        const c = Math.cos((g * Math.PI) / 6), s = Math.sin((g * Math.PI) / 6);
+        for (const p of pontos) {
+          const q = { x: p.x * c + p.z * s, y: p.y, z: -p.x * s + p.z * c };
+          const t = projetarNaTela(q, v.camera, v.olhar, 50, altura);
+          const px = largura / 2 + t.x + v.desvio.x, py = altura / 2 - t.y - v.desvio.y;
+          assert.ok(px >= livre.x0 && px <= livre.x1 && py >= livre.y0 && py <= livre.y1,
+            `${n} classes, ${largura}px, giro ${g}: (${px.toFixed(0)}, ${py.toFixed(0)}) fora de ${JSON.stringify(livre)}`);
+        }
+      }
+    }
+  });
+}
+
+test("enquadrarVistaGeral: o desvio centra o desenho na área livre descentrada", () => {
+  const pontos = [{ x: 0, y: 0, z: 0, raio: 20, rotulo: true }, ...hubsEmAnel(4)];
+  const v = enquadrarVistaGeral({
+    pontos, alvo: { x: 0, y: 0, z: 0 }, direcao: { x: 0, y: 260, z: 520 }, fov: 50,
+    largura: 1366, altura: 900, margens: { esquerda: 300 },
+  });
+  assert.ok(v.desvio.x > 100, `desvio x ${v.desvio.x}`); // painel à esquerda: o desenho vai para a direita
+});
+
+test("separarRotulos: sobrepostos se afastam na vertical; separados ficam; o 1º não se move", () => {
+  const dy = separarRotulos([
+    { x: 100, topo: 100, l: 80, a: 20 },
+    { x: 110, topo: 105, l: 80, a: 20 },
+    { x: 400, topo: 100, l: 80, a: 20 },
+  ], { limite: 900 });
+  assert.equal(dy[0], 0);
+  assert.notEqual(dy[1], 0);
+  assert.equal(dy[2], 0);
+  assert.ok(Math.abs(dy[1]) >= 19, `deslocamento ${dy[1]}`);
+});
+
+test("separarRotulos: vários empilhados nunca se tocam", () => {
+  const caixas = Array.from({ length: 5 }, (_, i) => ({ x: 200 + i * 3, topo: 300, l: 90, a: 18 }));
+  const dy = separarRotulos(caixas, { limite: 900, folga: 4 });
+  const fin = caixas.map((c, i) => ({ ...c, topo: c.topo + dy[i] }));
+  for (let i = 0; i < fin.length; i++) {
+    for (let j = i + 1; j < fin.length; j++) {
+      const sobrepoe = Math.abs(fin[i].x - fin[j].x) < 90 && fin[i].topo < fin[j].topo + 18 && fin[j].topo < fin[i].topo + 18;
+      assert.ok(!sobrepoe, `${i} x ${j}`);
+    }
+  }
+});
