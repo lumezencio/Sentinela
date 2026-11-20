@@ -150,6 +150,13 @@ if [[ "$MODO" == publicadas ]]; then
 fi
 
 # ---------------------------------------------------------------- .env
+# sugestao_valida VALOR: rede/gateway sugeridos pelo instalar.sh (só dígitos, ponto e barra);
+# qualquer outra coisa vira vazio (nada de quebra de linha ou texto estranho no .env)
+sugestao_valida() {
+  [[ "$1" =~ ^[0-9./]{0,18}$ ]] && printf '%s' "$1"
+  return 0
+}
+
 criar_env() {
   [[ -f .env.example ]] || falhar ".env.example não encontrado"
   local chave chave_cred tmp
@@ -165,6 +172,8 @@ criar_env() {
       SENTINELA_CHAVE_CREDENCIAIS=*) linha="SENTINELA_CHAVE_CREDENCIAIS=$chave_cred" ;;
       SENTINELA_PORTA_HTTPS=*) linha="SENTINELA_PORTA_HTTPS=${SENTINELA_PORTA_HTTPS:-443}" ;;
       SENTINELA_PORTA_HTTP=*) linha="SENTINELA_PORTA_HTTP=${SENTINELA_PORTA_HTTP:-80}" ;;
+      SENTINELA_REDE_SUGERIDA=*) linha="SENTINELA_REDE_SUGERIDA=$(sugestao_valida "${SENTINELA_REDE_SUGERIDA:-}")" ;;
+      SENTINELA_GATEWAY_SUGERIDO=*) linha="SENTINELA_GATEWAY_SUGERIDO=$(sugestao_valida "${SENTINELA_GATEWAY_SUGERIDO:-}")" ;;
       IMAGENS=*) linha="IMAGENS=$MODO" ;;
       VERSAO=*) linha="VERSAO=$VERSAO_ALVO" ;;
     esac

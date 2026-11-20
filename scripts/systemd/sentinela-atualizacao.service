@@ -14,3 +14,5 @@ WorkingDirectory=@DESTINO@
 ExecStart=@DESTINO@/update.sh --automatico
 TimeoutStartSec=45min
 Nice=10
+# texto de erro do git/compose sempre em inglês: o update.sh classifica "sem rede" por ele
+Environment=LC_ALL=C

@@ -177,6 +177,14 @@ case "$1" in
           printf '%s\n' "sentinela-20261118T030000Z-manual.tar.gz" "sentinela-20261117T030000Z-diario.tar.gz"
         fi
         ;;
+      *"sentinela.cli codigo-instalacao"*)
+        # código falso; SHIM_TEM_ADMIN=1 = já existe administrador (sai 3, sem código)
+        if [[ "${SHIM_TEM_ADMIN:-}" == "1" ]]; then
+          echo "já existe administrador" >&2
+          exit 3
+        fi
+        echo "${SHIM_CODIGO:-K7MQ2XDP}"
+        ;;
       *"sentinela.cli atualizacao-ativa"*) exit "${SHIM_ATUALIZACAO_ATIVA:-0}" ;;
       *"sentinela.__version__"*) echo "${SHIM_VERSAO_RODANDO:-0.4.0}" ;;
       *"sentinela.cli --help"*)

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# systemctl de teste: só registra a chamada em $SHIM_LOG.
+printf 'systemctl %s\n' "$*" >>"${SHIM_LOG:?}"
+exit 0
