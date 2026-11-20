@@ -33,6 +33,14 @@ prefixo_projeto() {
 
 # ULTIMO_ERRO: o texto do último "falhar" (mensagem fixa dos scripts; o update.sh o registra)
 ULTIMO_ERRO=""
+# OFFLINE=1: a falha foi falta de rede/GitHub/GHCR (nada foi tentado de fato); o update.sh
+# --automatico trata isso como "sem conexão" (sai 0) e o manual continua sendo erro
+OFFLINE=0
+falhar_sem_conexao() {
+  # shellcheck disable=SC2034  # lido pelo update.sh (finalizar)
+  OFFLINE=1
+  falhar "$*"
+}
 falhar() {
   # shellcheck disable=SC2034  # lido pelo update.sh (registrar_resultado)
   ULTIMO_ERRO="$*"
@@ -216,7 +224,7 @@ obter_digests_sem_cosign() {
   command -v cosign >/dev/null 2>&1 && return 0
   echo "aviso: 'cosign' não encontrado; vou conferir o digest das imagens com o digests.txt do release (instale o cosign para verificar a assinatura)." >&2
   DIGESTS_TXT="$(curl -fsSL --proto '=https' --max-time 30 "$URL_RELEASE/$TAG_ALVO/digests.txt")" ||
-    falhar "sem 'cosign' e sem o digests.txt do release $TAG_ALVO não dá para verificar as imagens; instale o cosign. Nada foi alterado"
+    falhar_sem_conexao "sem 'cosign' e sem o digests.txt do release $TAG_ALVO não dá para verificar as imagens; instale o cosign. Nada foi alterado"
 }
 
 # cosign_antigo: 0 se o cosign instalado é de versão principal menor que 3

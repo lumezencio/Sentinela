@@ -10,22 +10,31 @@ atualização para sempre; ``ilegivel`` deixa a API avisar). A gravação é at�
 
 import contextlib
 import json
+import logging
 import os
 import re
 import secrets
+import sys
+import time
 import unicodedata
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, get_args
 
+log = logging.getLogger("sentinela.atualizacao")
+
 ARQUIVO = "atualizacao.json"
-type Resultado = Literal["atualizado", "sem_novidade", "voltou", "falhou"]
+type Resultado = Literal["atualizado", "sem_novidade", "voltou", "falhou", "sem_conexao"]
 RESULTADOS: tuple[str, ...] = get_args(Resultado.__value__)
 AVISO_HORAS = 24
 MAX_MENSAGEM = 200
 # relógio um pouco adiantado na hora de gravar (Pi sem RTC): até 5 min de folga no aviso
 _TOLERANCIA_FUTURO = timedelta(minutes=5)
+ARQUIVO_TRAVA = ".atualizacao.lock"
+ARQUIVO_ILEGIVEL = "atualizacao.json.ilegivel"
+PRAZO_TRAVA_S = 10.0
 _VERSAO = re.compile(r"\d+\.\d+\.\d+", re.ASCII)
 
 
@@ -149,6 +158,68 @@ def gravar(pasta: Path, e: EstadoAtualizacao) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _travar(pasta: Path) -> Iterator[None]:
+    """Trava exclusiva (``flock`` em arquivo ao lado) em volta de ler-modificar-gravar, para a
+    CLI e a API não perderem a chave liga/desliga uma da outra. Prazo de 10 s; estourou, levanta
+    ``TimeoutError`` (um ``OSError``): nada é gravado, nunca se grava sem a trava."""
+    if sys.platform == "win32":
+        yield  # Windows (só desenvolvimento): sem flock; o core roda em Linux
+        return
+    import fcntl
+
+    descritor = os.open(pasta / ARQUIVO_TRAVA, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        limite = time.monotonic() + PRAZO_TRAVA_S
+        while True:
+            try:
+                fcntl.flock(descritor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= limite:
+                    raise TimeoutError("atualizacao.json ocupado") from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(descritor, fcntl.LOCK_UN)
+    finally:
+        os.close(descritor)
+
+
+def _guardar_ilegivel(pasta: Path) -> None:
+    """Antes de sobrescrever um arquivo ilegível, guarda uma cópia (``.ilegivel``) e avisa no log,
+    para o sinal não se perder (o estado lido dele é o padrão, "ligada")."""
+    if not _carregar(pasta)[1]:
+        return
+    origem = pasta / ARQUIVO
+    try:
+        copia = origem.read_bytes()
+    except OSError:
+        return
+    temporario = pasta / f".{ARQUIVO_ILEGIVEL}.{secrets.token_hex(4)}.tmp"
+    try:
+        descritor = os.open(temporario, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descritor, "wb") as f:
+            f.write(copia)
+        os.replace(temporario, pasta / ARQUIVO_ILEGIVEL)
+        log.warning("atualizacao.json ilegível: cópia guardada em %s", ARQUIVO_ILEGIVEL)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporario.unlink()
+        log.warning("atualizacao.json ilegível e a cópia não pôde ser guardada")
+
+
+def _alterar(
+    pasta: Path, mudar: Callable[[EstadoAtualizacao], EstadoAtualizacao]
+) -> EstadoAtualizacao:
+    with _travar(pasta):
+        _guardar_ilegivel(pasta)
+        novo = mudar(ler(pasta))
+        gravar(pasta, novo)
+    return novo
+
+
 def registrar(
     pasta: Path,
     resultado: Resultado,
@@ -158,28 +229,25 @@ def registrar(
     agora: datetime,
 ) -> EstadoAtualizacao:
     """Guarda o resultado da última verificação; preserva ``ativo`` e ``agendado``."""
-    novo = replace(
-        ler(pasta),
-        ultima_verificacao=agora,
-        resultado=resultado,
-        de=versao_valida(de),
-        para=versao_valida(para),
-        mensagem=sanear_mensagem(mensagem),
+    return _alterar(
+        pasta,
+        lambda e: replace(
+            e,
+            ultima_verificacao=agora,
+            resultado=resultado,
+            de=versao_valida(de),
+            para=versao_valida(para),
+            mensagem=sanear_mensagem(mensagem),
+        ),
     )
-    gravar(pasta, novo)
-    return novo
 
 
 def definir_ativo(pasta: Path, ativo: bool) -> EstadoAtualizacao:
-    novo = replace(ler(pasta), ativo=ativo)
-    gravar(pasta, novo)
-    return novo
+    return _alterar(pasta, lambda e: replace(e, ativo=ativo))
 
 
 def marcar_agendado(pasta: Path) -> EstadoAtualizacao:
-    novo = replace(ler(pasta), agendado=True)
-    gravar(pasta, novo)
-    return novo
+    return _alterar(pasta, lambda e: replace(e, agendado=True))
 
 
 def aviso(e: EstadoAtualizacao, agora: datetime) -> str | None:

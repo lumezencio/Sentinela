@@ -872,10 +872,57 @@ test_registro_usa_argv_sem_eval_e_mensagem_com_hifen() {
     _falhou "nada de eval"
 }
 
+test_automatico_sem_rede_no_fetch_sai_0_e_registra_sem_conexao() {
+  ambiente
+  git_real remote set-url origin "$SHIM_DIR/nao-existe.git"
+  automatico || _falhou "sem rede não pode falhar a unidade: $(cat "$TMP_OP/saida-update")"
+  afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
+  afirmar_log_nao_contem "--resultado falhou"
+  for p in backup-criar "docker tag" "compose up"; do afirmar_log_nao_contem "$p"; done
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+}
+
+test_manual_sem_rede_continua_sendo_erro() {
+  ambiente
+  git_real remote set-url origin "$SHIM_DIR/nao-existe.git"
+  if atualizar v0.5.0; then _falhou "o manual deve falhar sem rede"; fi
+  afirmar_log_contem "$REGISTRAR --resultado falhou"
+}
+
+test_automatico_sem_rede_no_pull_volta_arquivos_e_sai_0() {
+  ambiente
+  modo_publicadas
+  com_cosign
+  export SHIM_FALHAR="*compose pull*"
+  automatico || _falhou "sem rede no pull não pode falhar a unidade"
+  afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
+  for p in backup-criar "$COMPOSE_CORE_UP" " stop core"; do afirmar_log_nao_contem "$p"; done
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+  grep -qx 'VERSAO=0.4.0' "$TMP_OP/.env" || _falhou "o .env deveria voltar"
+}
+
+test_automatico_sem_digests_do_release_sai_0_sem_conexao() {
+  ambiente
+  modo_publicadas
+  automatico || _falhou "sem o digests.txt (rede) não pode falhar a unidade"
+  afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
+  afirmar_log_nao_contem "compose pull"
+}
+
+test_automatico_falha_de_verdade_continua_saindo_1() {
+  ambiente
+  modo_publicadas
+  digests_ok
+  SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})"
+  export SHIM_DIGEST_WEB
+  if automatico; then _falhou "digest diferente é falha, não offline"; fi
+  afirmar_log_nao_contem "sem_conexao"
+}
+
 test_unidades_systemd_da_atualizacao() {
   local s="$REPO_DIR/scripts/systemd/sentinela-atualizacao.service" t="$REPO_DIR/scripts/systemd/sentinela-atualizacao.timer"
   local l
-  for l in "Type=oneshot" "WorkingDirectory=@DESTINO@" "ExecStart=@DESTINO@/update.sh --automatico" "TimeoutStartSec=45min" "Nice=10"; do
+  for l in "Type=oneshot" "WorkingDirectory=@DESTINO@" "ExecStart=@DESTINO@/update.sh --automatico" "TimeoutStartSec=45min" "Nice=10" "User=@USUARIO@"; do
     grep -qxF "$l" "$s" || _falhou "o serviço deveria ter: $l"
   done
   for l in "OnCalendar=*-*-* 03:00:00" "RandomizedDelaySec=15min" "Persistent=false" "WantedBy=timers.target"; do

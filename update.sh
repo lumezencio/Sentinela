@@ -333,7 +333,9 @@ interrompido() {
 # texto fixo do "falhar" (ou a fase). Interrupção não registra (o estado real é o relatado).
 registrar_resultado() {
   local rc="$1" res="$RESULTADO" msg=""
-  if [[ -z "$res" ]]; then
+  if [[ "$res" == "sem_conexao" ]]; then
+    msg="sem conexão com o GitHub; tentará de novo na próxima noite"
+  elif [[ -z "$res" ]]; then
     [[ $rc -ne 0 && $INTERROMPIDO -eq 0 ]] || return 0
     if [[ $VOLTOU -eq 1 ]]; then res="voltou"; else res="falhou"; fi
     msg="${ULTIMO_ERRO:-falha na fase: $FASE}"
@@ -348,6 +350,13 @@ finalizar() {
   if [[ $rc -ne 0 && $INTERROMPIDO -eq 0 && $PROTEGIDO -eq 1 && $CONCLUIDO -eq 0 ]]; then
     voltar || true
     rc=1
+  fi
+  if [[ $rc -ne 0 && $AUTOMATICO -eq 1 && $OFFLINE -eq 1 && $TOCOU -eq 0 && $INTERROMPIDO -eq 0 ]]; then
+    # automático sem rede (ou GitHub/GHCR fora): nada foi trocado e não é falha da atualização;
+    # estado próprio, sem alarme, e a unidade do systemd não fica "failed" toda noite
+    echo "sem conexão para verificar a atualização; tenta de novo na próxima noite." >&2
+    rc=0
+    RESULTADO="sem_conexao"
   fi
   registrar_resultado "$rc"
   trava_liberar
@@ -576,7 +585,7 @@ main() {
   detectar_arquivos_compose
   saude_ok || falhar "o core não está saudável agora; corrija antes de atualizar (nada foi alterado)"
 
-  git fetch --tags --quiet || falhar "não consegui buscar as tags do repositório (nada foi alterado)"
+  git fetch --tags --quiet || falhar_sem_conexao "não consegui buscar as tags do repositório (nada foi alterado)"
   resolver_alvo "$versao_arg"
   SHA_ANTERIOR="$(git rev-parse HEAD)"
   VERSAO_ANTERIOR="$(valor_env VERSAO "")"
@@ -629,7 +638,7 @@ main() {
     ID_ALVO_WEB_ANTES="$(id_da_tag "$IMG_REPO_WEB:$VERSAO_ALVO")"
     TAGS_ALVO_BAIXADAS=1
     compose pull core web ||
-      falhar "não consegui baixar as imagens da versão $VERSAO_ALVO (rede, ghcr.io ou versão não publicada); nenhum contêiner foi trocado"
+      falhar_sem_conexao "não consegui baixar as imagens da versão $VERSAO_ALVO (rede, ghcr.io ou versão não publicada); nenhum contêiner foi trocado"
     verificar_imagem core "$IMG_REPO_CORE"
     verificar_imagem web "$IMG_REPO_WEB"
     ALVO_VERIFICADO=1

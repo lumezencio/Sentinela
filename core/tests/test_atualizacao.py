@@ -123,3 +123,37 @@ def test_gravar_atomico_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.undo()
     assert destino.read_bytes() == antigo
     assert [p.name for p in tmp_path.iterdir()] == [atualizacao.ARQUIVO]
+
+
+def test_arquivo_ilegivel_e_guardado_antes_de_ser_sobrescrito(tmp_path: Path) -> None:
+    (tmp_path / atualizacao.ARQUIVO).write_bytes(b'{"ativo": false, lixo')
+    atualizacao.registrar(tmp_path, "falhou", None, None, "x", AGORA)
+    assert (tmp_path / atualizacao.ARQUIVO_ILEGIVEL).read_bytes() == b'{"ativo": false, lixo'
+    assert atualizacao.ilegivel(tmp_path) is False
+
+
+def test_arquivo_valido_nao_gera_copia_ilegivel(tmp_path: Path) -> None:
+    atualizacao.definir_ativo(tmp_path, False)
+    atualizacao.registrar(tmp_path, "sem_conexao", None, None, None, AGORA)
+    assert not (tmp_path / atualizacao.ARQUIVO_ILEGIVEL).exists()
+    assert atualizacao.aviso(atualizacao.ler(tmp_path), AGORA) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock só existe em Linux")
+def test_trava_de_escrita_expira_e_nao_grava(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fcntl
+
+    monkeypatch.setattr(atualizacao, "PRAZO_TRAVA_S", 0.2)
+    atualizacao.definir_ativo(tmp_path, False)
+    descritor = os.open(tmp_path / atualizacao.ARQUIVO_TRAVA, os.O_RDWR)
+    try:
+        fcntl.flock(descritor, fcntl.LOCK_EX)
+        with pytest.raises(TimeoutError):
+            atualizacao.definir_ativo(tmp_path, True)
+        assert atualizacao.ler(tmp_path).ativo is False
+    finally:
+        fcntl.flock(descritor, fcntl.LOCK_UN)
+        os.close(descritor)
+    assert atualizacao.definir_ativo(tmp_path, True).ativo is True
