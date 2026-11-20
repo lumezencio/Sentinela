@@ -19,6 +19,7 @@ from sentinela.alertas.silencios import Silencios
 from sentinela.alertas.telegram import ClienteTelegram
 from sentinela.api import (
     alertas,
+    atualizacao,
     auth,
     backup,
     classes,
@@ -433,6 +434,7 @@ def criar_app(
     app.include_router(silencios.router)
     app.include_router(alertas.router)
     app.include_router(diagnostico.router)
+    app.include_router(atualizacao.router)
     app.include_router(config_descoberta.router)
     app.include_router(config_geral.router)
     app.include_router(config_telegram.router)

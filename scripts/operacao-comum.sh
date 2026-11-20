@@ -31,7 +31,11 @@ prefixo_projeto() {
   [[ -z "${SENTINELA_PROJETO:-}" ]] || printf 'SENTINELA_PROJETO=%s ' "$SENTINELA_PROJETO"
 }
 
+# ULTIMO_ERRO: o texto do último "falhar" (mensagem fixa dos scripts; o update.sh o registra)
+ULTIMO_ERRO=""
 falhar() {
+  # shellcheck disable=SC2034  # lido pelo update.sh (registrar_resultado)
+  ULTIMO_ERRO="$*"
   echo "erro: $*" >&2
   exit 1
 }
@@ -102,6 +106,11 @@ trava_adquirir() {
     fi
   fi
   if ! mkdir "$TRAVA_DIR" 2>/dev/null; then
+    # atualização automática (timer): operação em curso não é erro, só não há nada a fazer agora
+    if [[ "${AUTOMATICO:-0}" == 1 ]]; then
+      echo "outra operação em curso (backup, restauração ou atualização); a atualização automática não faz nada agora"
+      exit 0
+    fi
     falhar "outra operação (backup, restauração ou atualização) está em curso; se não houver, apague a pasta $TRAVA_DIR"
   fi
   TRAVA_MINHA=1
@@ -113,6 +122,21 @@ trava_liberar() {
     rmdir "$TRAVA_DIR" 2>/dev/null || true
     TRAVA_MINHA=0
   fi
+}
+
+# registrar_atualizacao RESULTADO DE PARA MENSAGEM: guarda o resultado em /dados/atualizacao.json
+# pela CLI do core em execução (melhor esforço: falhar só avisa em stderr e nunca muda o código de
+# saída de quem chamou). Os valores vão como itens do argv (sem eval, sem shell); DE e PARA só
+# seguem se forem X.Y.Z; vazio = omitido. A mensagem usa --mensagem=TEXTO (pode começar com "-").
+registrar_atualizacao() {
+  local resultado="$1" de="${2:-}" para="${3:-}" mensagem="${4:-}"
+  local -a args=(atualizacao-registrar --resultado "$resultado")
+  [[ "$de" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && args+=(--de "$de")
+  [[ "$para" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && args+=(--para "$para")
+  [[ -z "$mensagem" ]] || args+=("--mensagem=$mensagem")
+  compose exec -T core python -m sentinela.cli "${args[@]}" </dev/null >/dev/null 2>&1 ||
+    echo "aviso: não consegui registrar o resultado da atualização (o resultado acima continua valendo)" >&2
+  return 0
 }
 
 # --- Imagens (usadas por update.sh) -------------------------------------------------------

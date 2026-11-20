@@ -158,3 +158,44 @@ def test_permitidos_por_prefixo_e_arquivo() -> None:
         assert not _permitido("alertas/despachante.py", biblioteca)
     for nenhum in ("urllib.request", "http.client", "aiohttp", "requests"):
         assert not _permitido("main.py", nenhum)
+
+
+def test_core_nao_importa_subprocess_nem_docker() -> None:
+    """A atualização é só do update.sh no host: o core não executa processo nem fala com Docker."""
+    proibidos = {"subprocess", "docker", "pty", "pexpect", "plumbum", "sh"}
+    violacoes: list[str] = []
+    for arq in sorted(RAIZ.rglob("*.py")):
+        for no in ast.walk(ast.parse(arq.read_text(encoding="utf-8"))):
+            nomes: list[str] = []
+            if isinstance(no, ast.Import):
+                nomes = [a.name for a in no.names]
+            elif isinstance(no, ast.ImportFrom) and no.module and no.level == 0:
+                nomes = [no.module] + [f"{no.module}.{a.name}" for a in no.names]
+            elif isinstance(no, ast.Call) and no.args:
+                f = no.func
+                chamado = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+                alvo = no.args[0]
+                if chamado in {"__import__", "import_module"} and isinstance(alvo, ast.Constant):
+                    nomes = [str(alvo.value)]
+            elif (
+                isinstance(no, ast.Attribute)
+                and no.attr in {"system", "popen", "execv"}
+                and isinstance(no.value, ast.Name)
+                and no.value.id == "os"
+            ):
+                nomes = ["os." + no.attr]
+            for n in nomes:
+                if _raiz_modulo(n) in proibidos or n.startswith("os."):
+                    violacoes.append(f"{n} em sentinela/{arq.relative_to(RAIZ).as_posix()}")
+    assert violacoes == []
+
+
+def test_compose_nao_monta_socket_docker_nem_privileged() -> None:
+    raiz = Path(__file__).resolve().parents[3]
+    for nome in ("docker-compose.yml", "docker-compose.demo.yml"):
+        texto = (raiz / nome).read_text(encoding="utf-8")
+        for linha in texto.splitlines():
+            codigo = linha.split("#", 1)[0]
+            assert "docker.sock" not in codigo, nome
+            assert "privileged" not in codigo, nome
+            assert "/var/run/docker" not in codigo, nome

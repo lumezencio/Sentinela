@@ -1,0 +1,11 @@
+[Unit]
+Description=Sentinela: atualização automática (update.sh --automatico)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@DESTINO@
+ExecStart=@DESTINO@/update.sh --automatico
+TimeoutStartSec=45min
+Nice=10

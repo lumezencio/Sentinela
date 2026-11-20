@@ -2,12 +2,21 @@
 # Atualiza o Sentinela para uma versão publicada (tag vX.Y.Z), com volta automática.
 #
 #   ./update.sh [VERSÃO] [--imagens-publicadas] [--permitir-voltar-versao]
+#   ./update.sh --automatico
 #
 # VERSÃO é uma tag "vX.Y.Z" (padrão: a mais recente). Sem opção de imagem, respeita o .env:
 # IMAGENS=publicadas baixa as imagens assinadas do ghcr.io; sem IMAGENS (instalação das Fases
 # 1-3) ou IMAGENS=locais reconstrói as imagens a partir do código da tag. --imagens-publicadas
 # migra uma instalação local para as imagens publicadas (grava IMAGENS e VERSAO no .env).
 # Versão menor que a instalada é recusada, a menos que se passe --permitir-voltar-versao.
+#
+# --automatico (timer do systemd, 03:00): sem nenhuma pergunta (a entrada padrão é /dev/null) e
+# sem VERSÃO nem as outras opções (recusa com código 2); o alvo é sempre a última tag publicada.
+# Se a atualização automática foi desligada (chave em Configurações → Atualizações), sai com 0 sem
+# tocar em nada; se outra operação (backup, restauração, atualização) está em curso, sai com 0 sem
+# registrar. O resto é exatamente o caminho abaixo: mesma verificação (cosign ou digests.txt),
+# mesmo backup e mesma volta automática. Toda execução (manual ou automática) registra o resultado
+# em /dados/atualizacao.json pela CLI do core (melhor esforço; o código de saída não depende dele).
 #
 # Ordem (cada passo que falha antes do 4 não troca nenhum contêiner):
 #   1. verificações sem mudar nada: trava, árvore git limpa, Docker, 2 GiB livres, arquivos
@@ -81,6 +90,11 @@ MODO="locais"
 TAGS_ALVO_BAIXADAS=0
 ID_ALVO_CORE_ANTES=""
 ID_ALVO_WEB_ANTES=""
+AUTOMATICO=0 # 1 com --automatico (a trava ocupada não é erro)
+RESULTADO="" # resultado a registrar nos casos de sucesso (atualizado | sem_novidade)
+VOLTOU=0     # 1 quando a volta automática terminou e foi conferida
+RODANDO=""   # versão que rodava antes (para o registro)
+ALVO_PKG=""  # versão do alvo (para o registro)
 
 recuar() {
   local l
@@ -258,6 +272,7 @@ voltar() {
       if compose up -d --no-deps --no-build --pull never --wait core web >&2 && saude_ok &&
         [[ -z "$ID_CORE_ANTES" || "$(id_em_execucao core)" == "$ID_CORE_ANTES" ]] &&
         [[ -z "$ID_WEB_ANTES" || "$(id_em_execucao web)" == "$ID_WEB_ANTES" ]]; then
+        VOLTOU=1
         echo "Volta concluída: banco do backup restaurado, imagens anteriores de volta (IDs conferidos) e core saudável." >&2
       else
         echo "A volta subiu os contêineres, mas NÃO consegui confirmar a saúde do core e os IDs das imagens anteriores." >&2
@@ -313,6 +328,20 @@ interrompido() {
   exit 130
 }
 
+# registrar_resultado CODIGO: guarda o resultado desta execução (melhor esforço, nunca muda o código
+# de saída). Sucesso já vem em RESULTADO; falha: "voltou" se a volta terminou, senão "falhou" com o
+# texto fixo do "falhar" (ou a fase). Interrupção não registra (o estado real é o relatado).
+registrar_resultado() {
+  local rc="$1" res="$RESULTADO" msg=""
+  if [[ -z "$res" ]]; then
+    [[ $rc -ne 0 && $INTERROMPIDO -eq 0 ]] || return 0
+    if [[ $VOLTOU -eq 1 ]]; then res="voltou"; else res="falhou"; fi
+    msg="${ULTIMO_ERRO:-falha na fase: $FASE}"
+    msg="${msg%%. *}" # só a primeira frase (o resto são instruções de passo a passo)
+  fi
+  registrar_atualizacao "$res" "${RODANDO:-$VERSAO_ANTERIOR}" "${ALVO_PKG:-$VERSAO_ALVO}" "$msg" || true
+}
+
 finalizar() {
   local rc=$?
   trap - EXIT
@@ -320,6 +349,7 @@ finalizar() {
     voltar || true
     rc=1
   fi
+  registrar_resultado "$rc"
   trava_liberar
   if [[ -n "$PRIV" && -d "$PRIV" ]]; then rm -rf -- "$PRIV"; fi
   exit "$rc"
@@ -480,9 +510,10 @@ limpar() {
 }
 
 main() {
-  local versao_arg="" flag_publicadas=0 permitir_voltar=0 arg espaco rodando alvo_pkg
+  local versao_arg="" flag_publicadas=0 permitir_voltar=0 arg espaco rc_ativa
   for arg in "$@"; do
     case "$arg" in
+      --automatico) AUTOMATICO=1 ;;
       --imagens-publicadas) flag_publicadas=1 ;;
       --permitir-voltar-versao) permitir_voltar=1 ;;
       -h | --help)
@@ -503,10 +534,28 @@ main() {
     esac
   done
 
+  if [[ $AUTOMATICO -eq 1 ]]; then
+    if [[ -n "$versao_arg" || $flag_publicadas -eq 1 || $permitir_voltar -eq 1 ]]; then
+      echo "--automatico não aceita VERSÃO, --imagens-publicadas nem --permitir-voltar-versao: ele sempre vai para a última tag publicada" >&2
+      return 2
+    fi
+    exec </dev/null # nenhuma pergunta, nenhum comando lê o terminal
+  fi
+
   # --- 1. verificações (nada é alterado) ---
   command -v docker >/dev/null 2>&1 || falhar "'docker' não encontrado no PATH"
   command -v git >/dev/null 2>&1 || falhar "'git' não encontrado no PATH"
   docker compose version >/dev/null 2>&1 || falhar "'docker compose' indisponível"
+  if [[ $AUTOMATICO -eq 1 ]]; then
+    # chave desligada (código 3): não faz nada, nem toma a trava. Qualquer outro código (core fora
+    # do ar, core antigo sem o comando) segue: as verificações abaixo decidem, e o padrão é ligada.
+    rc_ativa=0
+    compose exec -T core python -m sentinela.cli atualizacao-ativa >/dev/null 2>&1 || rc_ativa=$?
+    if [[ $rc_ativa -eq 3 ]]; then
+      echo "atualização automática desligada (Configurações → Atualizações); nada a fazer."
+      return 0
+    fi
+  fi
   trava_adquirir
   trap finalizar EXIT
   # cópia privada do restore.sh (e da lib), antes de qualquer checkout: a volta usa SEMPRE esta
@@ -532,10 +581,10 @@ main() {
   SHA_ANTERIOR="$(git rev-parse HEAD)"
   VERSAO_ANTERIOR="$(valor_env VERSAO "")"
   IMAGENS_ANTERIOR="$(valor_env IMAGENS "")"
-  rodando="$(versao_em_execucao)"
-  alvo_pkg="$(versao_do_alvo)"
-  if [[ -n "$rodando" && -n "$alvo_pkg" && $permitir_voltar -eq 0 ]] && versao_menor "$alvo_pkg" "$rodando"; then
-    falhar "$TAG_ALVO (versão $alvo_pkg) é anterior à que está rodando ($rodando); voltar de versão pode falhar com o banco atual. Para forçar: ./update.sh $TAG_ALVO --permitir-voltar-versao (nada foi alterado)"
+  RODANDO="$(versao_em_execucao)"
+  ALVO_PKG="$(versao_do_alvo)"
+  if [[ -n "$RODANDO" && -n "$ALVO_PKG" && $permitir_voltar -eq 0 ]] && versao_menor "$ALVO_PKG" "$RODANDO"; then
+    falhar "$TAG_ALVO (versão $ALVO_PKG) é anterior à que está rodando ($RODANDO); voltar de versão pode falhar com o banco atual. Para forçar: ./update.sh $TAG_ALVO --permitir-voltar-versao (nada foi alterado)"
   fi
   if [[ "$MODO" == publicadas ]]; then
     # já está na versão? (a versão que RODA, não o checkout: VERSAO e IDs das imagens em execução)
@@ -545,6 +594,7 @@ main() {
       rw="$(id_em_execucao web)"
       if [[ -n "$rc" && "$rc" == "$(id_da_tag "$IMG_REPO_CORE:$VERSAO_ALVO")" &&
         -n "$rw" && "$rw" == "$(id_da_tag "$IMG_REPO_WEB:$VERSAO_ALVO")" ]]; then
+        RESULTADO="sem_novidade"
         echo "já está na versão $TAG_ALVO (os contêineres em execução usam as imagens dela); nada a fazer."
         return 0
       fi
@@ -590,6 +640,7 @@ main() {
     if [[ -n "$ID_CORE_ANTES" && "$(id_da_tag "$IMG_REPO_CORE:$TAG_COMPOSE_ANTERIOR")" == "$ID_CORE_ANTES" &&
       "$(id_da_tag "$IMG_REPO_WEB:$TAG_COMPOSE_ANTERIOR")" == "$ID_WEB_ANTES" ]]; then
       descartar_protecao
+      RESULTADO="sem_novidade"
       echo "já está na versão $TAG_ALVO (as imagens construídas são idênticas às em execução); nada a trocar."
       return 0
     fi
@@ -612,6 +663,7 @@ main() {
   # --- 6. limpeza: um erro aqui não desfaz uma atualização que já deu certo ---
   FASE="limpando marcações antigas"
   CONCLUIDO=1
+  RESULTADO="atualizado"
   limpar || echo "aviso: a limpeza das marcações antigas não terminou" >&2
   FASE="concluído"
   echo "Atualização concluída: $TAG_ALVO. Core e web saudáveis."
