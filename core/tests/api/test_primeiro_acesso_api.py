@@ -413,23 +413,25 @@ async def test_rede_ja_cadastrada_audita_como_edicao(
 # ---- /saude: o login só redireciona ao assistente com ele realmente ativo --------------------
 
 
-async def test_saude_primeiro_acesso_verdadeiro_so_sem_usuario_e_com_codigo_valido(
+async def test_saude_primeiro_acesso_tri_estado(
     cliente: httpx.AsyncClient, settings: Settings, criar_usuario: CriarUsuario
 ) -> None:
     pasta = pasta_dados(settings)
-    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] is False  # sem código
+    assert (await cliente.get("/api/v1/saude")).json()[
+        "primeiro_acesso"
+    ] == "expirado"  # sem código
     await instalacao.gravar(pasta, CODIGO, datetime.now(UTC))
     r = await cliente.get("/api/v1/saude")
-    assert r.status_code == 200 and r.json()["primeiro_acesso"] is True
+    assert r.status_code == 200 and r.json()["primeiro_acesso"] == "ativo"
     assert CODIGO.replace("-", "") not in r.text  # nada do código na resposta
     await instalacao.gravar(pasta, CODIGO, datetime.now(UTC) - timedelta(hours=25))
-    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] is False  # expirado
+    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] == "expirado"
     await instalacao.gravar(pasta, CODIGO, datetime.now(UTC))
     await criar_usuario("dono", SENHA_TESTE, "admin")
-    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] is False  # há usuário
+    assert (await cliente.get("/api/v1/saude")).json()["primeiro_acesso"] is None  # há usuário
 
 
-async def test_saude_primeiro_acesso_falso_na_demonstracao(tmp_path: Path) -> None:
+async def test_saude_primeiro_acesso_nulo_na_demonstracao(tmp_path: Path) -> None:
     s = Settings(
         ambiente="teste",
         banco_url=f"sqlite+aiosqlite:///{tmp_path / 'demo.db'}",
@@ -444,7 +446,7 @@ async def test_saude_primeiro_acesso_falso_na_demonstracao(tmp_path: Path) -> No
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="https://teste"
         ) as c:
-            assert (await c.get("/api/v1/saude")).json()["primeiro_acesso"] is False
+            assert (await c.get("/api/v1/saude")).json()["primeiro_acesso"] is None
 
 
 async def test_saude_degradado_nao_leva_dados_extras(

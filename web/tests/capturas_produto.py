@@ -38,6 +38,7 @@ DESTINOS = (
     "rede",
     "concluir",
     "concluir-erro",
+    "login-pendente",
 )
 CODIGO = "ABCD-2345"  # fictício
 LOGIN_64 = "operador.noc.bloco-administrativo-b.sala-de-telecom-segundo-and-01"[:64]
@@ -112,6 +113,17 @@ def _passo_admin(page: Page) -> None:
 
 
 def _abrir(page: Page, destino: str) -> None:
+    if destino == "login-pendente":  # sem usuário e sem código válido: o login avisa
+        page.route(
+            "**/api/v1/saude",
+            lambda r: _json(
+                r, 200, {"status": "ok", "versao": "0.5.0", "primeiro_acesso": "expirado"}
+            ),
+        )
+        page.goto("/login.html")
+        expect(page.locator("#aviso-instalacao")).to_be_visible()
+        page.wait_for_timeout(700)
+        return
     if destino == "codigo-bloqueio":
         page.route(
             "**/api/v1/primeiro-acesso/conferir",

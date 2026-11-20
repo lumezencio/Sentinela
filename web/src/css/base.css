@@ -323,6 +323,10 @@ select:focus-visible {
   font-size: 14px;
 }
 
+.aviso-instalacao {
+  margin-bottom: 16px;
+}
+
 .form-login {
   display: grid;
   gap: 16px;

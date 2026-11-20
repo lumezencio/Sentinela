@@ -13,7 +13,7 @@ async def test_saude_responde_ok(cliente: httpx.AsyncClient) -> None:
     assert resposta.json() == {
         "status": "ok",
         "versao": sentinela.__version__,
-        "primeiro_acesso": False,  # sem código de instalação gravado
+        "primeiro_acesso": "expirado",  # sem usuário e sem código de instalação
     }
 
 

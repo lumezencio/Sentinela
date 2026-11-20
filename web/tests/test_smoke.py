@@ -3561,7 +3561,11 @@ def test_codigo_expirado_sem_usuario_login_nao_redireciona(
     try:
         page.goto("/login.html")
         expect(page.get_by_role("button", name="Entrar")).to_be_visible()
-        page.wait_for_timeout(1500)  # a consulta ao /saude já voltou: nada de redirecionar
+        aviso = page.locator("#aviso-instalacao")
+        expect(aviso).to_be_visible()
+        expect(aviso).to_contain_text("Instalação ainda sem administrador")
+        expect(aviso).to_contain_text("python -m sentinela.cli codigo-instalacao")
+        page.wait_for_timeout(1000)  # a consulta já voltou: nada de redirecionar
         assert page.url.endswith("/login.html")
     finally:
         page.context.close()
@@ -3634,6 +3638,7 @@ def test_com_usuario_primeiro_acesso_html_volta_ao_login(browser: Browser, alvo:
         page.goto("/primeiro-acesso.html")
         page.wait_for_url("**/login.html", timeout=10_000)
         expect(page.get_by_role("button", name="Entrar")).to_be_visible()
+        expect(page.locator("#aviso-instalacao")).to_be_hidden()  # há usuário: sem aviso
         entrar(page, alvo)  # o login segue normal
     finally:
         contexto.close()

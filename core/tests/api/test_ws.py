@@ -702,7 +702,7 @@ async def test_saude_ok_com_monitor_rodando(app_com_monitor: FastAPI, settings: 
         r = await _saude(app_com_monitor)
         assert (r.status_code, r.json()) == (
             200,
-            {"status": "ok", "versao": __version__, "primeiro_acesso": False},
+            {"status": "ok", "versao": __version__, "primeiro_acesso": "expirado"},
         )
 
     await _rodar_lifespan(app_com_monitor, settings, corpo)
@@ -753,7 +753,7 @@ async def test_saude_ok_sem_monitor(cliente: httpx.AsyncClient) -> None:
     r = await cliente.get("/api/v1/saude")
     assert (r.status_code, r.json()) == (
         200,
-        {"status": "ok", "versao": __version__, "primeiro_acesso": False},
+        {"status": "ok", "versao": __version__, "primeiro_acesso": "expirado"},
     )
 
 
