@@ -72,6 +72,10 @@ git config user.email teste@exemplo.invalid
 git checkout -q -b teste-op
 git tag v0.0.1-op
 cp "$REPO/testes-operacao/falha/0098_apaga_subredes.py" "$REPO/testes-operacao/falha/0099_quebra.py" core/alembic/versions/
+# a 0098 entra em cima da migração mais nova do repositório (senão o alembic vê duas cabeças)
+CABECA="$(sed -n 's/^revision = "\(0[0-9]*\)"$//p' core/alembic/versions/0*.py | grep -v -E '^009[89]$' | sort | tail -n 1)"
+[[ -n "$CABECA" ]] || falha "não achei a migração mais nova"
+sed -i "s/^down_revision = \"[0-9]*\"$/down_revision = \"$CABECA\"/" core/alembic/versions/0098_apaga_subredes.py
 git add core/alembic/versions
 git commit -q -m "candidata que quebra"
 git tag v0.0.2-op
