@@ -55,6 +55,7 @@ class Montagem:
             ao_terminar=ao_terminar,
         )
         self.continua = VarreduraContinua(cena.sessoes, self.varredura, cena.relogio, self.agora)
+        cena.finalizar.append(self.varredura.encerrar)  # a tarefa nunca sobrevive à cena
 
     def agora(self):  # type: ignore[no-untyped-def]
         return self.parede
@@ -67,6 +68,7 @@ class Montagem:
             if self.varredura.progresso() is None:
                 return
             await self.cena.relogio.avancar(0.5)
+            await asyncio.sleep(0.005)  # o aiosqlite trabalha em thread real: cede tempo de verdade
         raise AssertionError("a varredura não terminou")
 
     async def marcos(self, cidr: str) -> tuple[object, object]:

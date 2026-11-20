@@ -890,3 +890,62 @@ async def test_demo_nasce_nao_aplica(ctx: Ctx) -> None:
     await demo.processar(_novo(d))
     [a] = await _alertas(ctx)
     assert (a.envio, a.silenciado) == ("nao_aplica", False)
+
+
+async def _silencio_de_classe(c: Ctx, classe: str) -> None:
+    async with c.sessoes() as s:
+        s.add(
+            Silencio(
+                tipo="silencio",
+                alvo_tipo="classe",
+                classe_id=c.classes[classe],
+                inicio=T0 - timedelta(hours=1),
+                fim=T0 + timedelta(hours=4),
+                pausados=[],
+            )
+        )
+        await s.commit()
+
+
+async def _classe_da_descoberta(c: Ctx, id: str, classe: str | None) -> None:
+    async with c.sessoes() as s:
+        d = await s.get(Descoberta, id)
+        assert d is not None
+        d.classe_sugerida = classe
+        await s.commit()
+
+
+async def test_classe_que_muda_na_espera_silencia_no_tick(ctx: Ctx) -> None:
+    await _silencio_de_classe(ctx, "camera")
+    d = await _descoberta(ctx, classe=None)  # nasce sem classe: ainda não coberto
+    await ctx.agrupador.processar(_novo(d))
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (False, "pendente")
+    await _classe_da_descoberta(ctx, d, "camera")  # a sondagem trouxe as portas
+    ctx.parede.agora = T0 + timedelta(seconds=10)
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio, a.fechado_em) == (True, "nao_aplica", None)
+    assert ctx.alertas_publicados()[-1]["acao"] == "atualizado"
+
+
+async def test_silencio_criado_depois_da_abertura_silencia_no_tick(ctx: Ctx) -> None:
+    d = await _descoberta(ctx, classe="camera")
+    await ctx.agrupador.processar(_novo(d))
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (False, "pendente")  # sem silêncio, segue na fila
+    await _silencio_de_classe(ctx, "camera")
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (True, "nao_aplica")
+
+
+async def test_alerta_ja_enviado_nao_e_reavaliado(ctx: Ctx) -> None:
+    d = await _descoberta(ctx, classe="camera")
+    await ctx.agrupador.processar(_novo(d))
+    await _alterar(ctx, (await _alertas(ctx))[0].id, envio="enviado")
+    await _silencio_de_classe(ctx, "camera")
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (False, "enviado")

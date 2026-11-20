@@ -44,7 +44,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.barramento import Barramento, Mensagem
-from sentinela.db.modelos import Auditoria, Classe, Descoberta, Equipamento, Fonte, Usuario
+from sentinela.db.modelos import (
+    Auditoria,
+    Classe,
+    Config,
+    Descoberta,
+    Equipamento,
+    Fonte,
+    Usuario,
+)
 from sentinela.descoberta.ajustes import ler_ajustes
 from sentinela.descoberta.canais import (
     CAUSA_CERTIFICADO_MUDOU,
@@ -106,6 +114,7 @@ MSG_GRAVAR = "falha ao gravar o resultado da coleta"
 MSG_TESTE_INESPERADO = "falha inesperada ao testar a fonte"
 MSG_TEMPO = "a fonte não respondeu a tempo"
 MSG_FABRICA = "configuração da fonte inválida"
+LINHA_BASE_FONTE = "fonte_base:"  # + id da fonte: a primeira coleta dela já passou
 MSG_TRUNCADA = "coleta truncada: limite de aparelhos por coleta ou de pendentes atingido"
 MSG_FORA = "IP fora das sub-redes monitoradas: declare a sub-rede antes de aprovar."
 MSG_NAO_PENDENTE = "A descoberta não está pendente."
@@ -503,12 +512,20 @@ class Orquestrador:
                 if fonte_id is not None:
                     fonte = await db.get(Fonte, fonte_id)
                     if fonte is not None:
-                        # a primeira coleta da fonte é a linha de base dela: lida ANTES de gravar
-                        linha_base = fonte.ultima_coleta is not None
+                        # a primeira coleta da fonte (com a marca) é a linha de base dela. Fonte
+                        # que já coletava antes da marca existir (atualização) também: a
+                        # primeira coleta depois da atualização não avisa ninguém.
+                        marca = f"{LINHA_BASE_FONTE}{fonte_id}"
+                        linha_base = await db.get(Config, marca) is not None
+                        if not linha_base:
+                            db.add(Config(chave=marca, valor=True))
                         fonte.ultima_coleta, fonte.ultimo_erro = agora, aviso
                 elif aviso is not None:
                     log.warning("achados da varredura descartados: fila de pendentes cheia")
-                novos = await self._aparelhos_novos(db, r.novas, fonte_id is None, linha_base)
+                try:
+                    novos = await self._aparelhos_novos(db, r.novas, fonte_id is None, linha_base)
+                except Exception as e:  # noqa: BLE001 - o aviso nunca descarta a gravação
+                    log.warning("decisão de aparelho novo falhou: %s", type(e).__name__)
                 await db.commit()
         except Exception as e:  # noqa: BLE001
             log.error("falha ao gravar achados: %s", type(e).__name__)

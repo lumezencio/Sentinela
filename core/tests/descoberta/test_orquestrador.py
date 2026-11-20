@@ -3,6 +3,7 @@
 import asyncio
 import secrets
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1031,3 +1032,25 @@ async def test_mac_novo_num_ip_de_equipamento_avisa(cena: Cena, cofre: Cofre) ->
     await orq.coletar_agora(f)
     [d] = await _descobertas(cena)
     assert d.mac == M2 and _novos(cena) == [d.id]
+
+
+async def test_primeira_coleta_depois_da_atualizacao_e_linha_de_base(
+    cena: Cena, cofre: Cofre
+) -> None:
+    """Fonte que já coletava antes da 0006 (``ultima_coleta`` preenchida, sem a marca): a
+    primeira coleta depois da atualização não avisa; a segunda, com aparelho inédito, avisa."""
+    f = await _fonte(cena, cofre, host="10.99.1.1")
+    async with cena.sessoes() as db:
+        fonte = await db.get(Fonte, f)
+        assert fonte is not None
+        fonte.ultima_coleta = AGORA - timedelta(days=3)
+        await db.commit()
+    coletor = ColetorFalso([Achado("10.99.1.20", M1, "arp", f), Achado("10.99.1.21", M2, "arp", f)])
+    orq = _orquestrador(cena, cofre, {f: coletor})
+    await orq.coletar_agora(f)  # a tabela inteira da fonte aparece "inédita": é a linha de base
+    assert len(await _descobertas(cena)) == 2 and _novos(cena) == []
+    coletor.achados = [*coletor.achados, Achado("10.99.1.22", "02:00:00:00:01:03", "arp", f)]
+    orq._inicio.clear()
+    await orq.coletar_agora(f)
+    ds = {d.ip: d.id for d in await _descobertas(cena)}
+    assert _novos(cena) == [ds["10.99.1.22"]]
