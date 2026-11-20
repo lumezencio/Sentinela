@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -131,3 +132,19 @@ async def test_demo_tem_incidentes_de_exemplo(settings: Settings) -> None:
     horas = r30["horas"]
     assert horas[19] >= 15 and horas[19] == max(horas)
     assert "10.99." not in str(r30)
+
+
+async def test_json_tem_limite_de_taxa(cliente_visualizador: httpx.AsyncClient) -> None:
+    codigos = [(await cliente_visualizador.get(URL)).status_code for _ in range(12)]
+    assert codigos[0] == 200 and codigos[-1] == 429
+
+
+async def test_resposta_tem_teto_de_equipamentos(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _queda_recente(app)
+    monkeypatch.setattr("sentinela.api.diagnostico.MAX_ENTRADAS_EQUIPAMENTO", 0)
+    corpo = (await cliente_visualizador.get(URL)).json()
+    assert corpo["truncado"] is True
+    assert corpo["incidentes"][0]["equipamentos"] == []
+    assert corpo["incidentes"][0]["equipamentos_total"] == 1

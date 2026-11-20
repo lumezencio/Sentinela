@@ -246,3 +246,85 @@ async def test_csv_celula_que_comeca_com_perigo_ganha_apostrofo(sessoes: Sessoes
         r = await montar(db, AGORA, "24h", SP)
     linhas = list(csv.reader(io.StringIO(csv_do(r, SP)[1:], newline=""), delimiter=";"))
     assert linhas[1][4] == "'=cmd"
+
+
+async def _fonte(db: AsyncSession, g: str, tipo: str) -> str:
+    f = Fonte(
+        tipo=tipo,
+        nome=tipo,
+        host="10.99.0.1",
+        porta=161,
+        tls=False,
+        credencial_cifrada=b"",
+        ativa=True,
+        intervalo_s=600,
+        equipamento_id=g,
+    )
+    db.add(f)
+    await db.flush()
+    return f.id
+
+
+async def test_fontes_com_contadores_defasados_nao_viram_reinicio(sessoes: Sessoes) -> None:
+    ini = AGORA - timedelta(hours=2)
+    async with sessoes() as db:
+        db.add(SubRede(cidr="10.99.0.0/24", gateway_ip="10.99.0.1"))
+        g = await _eq(db, "Roteador", "10.99.0.1", "roteador")
+        _queda(db, g, ini, 20)
+        snmp, mk = await _fonte(db, g, "snmp"), await _fonte(db, g, "mikrotik")
+        # intercaladas: o contador de uma fonte fica 3 s atrás do da outra
+        for k, (fonte, up) in enumerate(
+            [(snmp, 1000.0), (mk, 997.0), (snmp, 1600.0), (mk, 1597.0), (snmp, 2200.0)]
+        ):
+            lido = ini - timedelta(minutes=30) + timedelta(minutes=12 * k)
+            db.add(LeituraUptime(fonte_id=fonte, equipamento_id=g, lido_em=lido, uptime_s=up))
+        await db.commit()
+        r = await montar(db, AGORA, "24h", SP)
+    ((_, c),) = r.incidentes
+    assert (c.tipo, c.certeza) == ("gateway_sem_reinicio", "confirmado")
+
+
+async def test_reinicio_visto_por_uma_fonte_continua_confirmado(sessoes: Sessoes) -> None:
+    ini = AGORA - timedelta(hours=2)
+    async with sessoes() as db:
+        db.add(SubRede(cidr="10.99.0.0/24", gateway_ip="10.99.0.1"))
+        g = await _eq(db, "Roteador", "10.99.0.1", "roteador")
+        _queda(db, g, ini, 20)
+        snmp, mk = await _fonte(db, g, "snmp"), await _fonte(db, g, "mikrotik")
+        for fonte, minutos, up in (
+            (snmp, -30, 5000.0),
+            (mk, -29, 4990.0),
+            (snmp, 5, 300.0),  # o SNMP viu o uptime voltar a zero
+            (mk, 6, 5600.0),  # a outra fonte (defasada) segue alta: não esconde nem inventa
+        ):
+            lido = ini + timedelta(minutes=minutos)
+            db.add(LeituraUptime(fonte_id=fonte, equipamento_id=g, lido_em=lido, uptime_s=up))
+        await db.commit()
+        r = await montar(db, AGORA, "24h", SP)
+    ((_, c),) = r.incidentes
+    assert (c.tipo, c.certeza) == ("roteador_reiniciou", "confirmado")
+
+
+async def test_gateway_ignora_equipamento_de_gravador_com_o_mesmo_ip(sessoes: Sessoes) -> None:
+    async with sessoes() as db:
+        db.add(SubRede(cidr="10.99.0.0/24", gateway_ip="10.99.0.1"))
+        c = await db.scalar(select(Classe).where(Classe.slug == "camera"))
+        assert c is not None
+        cam = Equipamento(
+            id=str(uuid.uuid4()),
+            nome="Câmera do gravador",
+            ip="10.99.0.1",
+            classe_id=c.id,
+            checagem="gravador",
+            estado="online",
+            estado_desde=AGORA,
+            criado_em=AGORA,
+        )
+        db.add(cam)
+        await db.flush()
+        _queda(db, cam.id, AGORA - timedelta(hours=2), 60)
+        await db.commit()
+        r = await montar(db, AGORA, "24h", SP)
+    assert not r.gateway_configurado  # só havia o "IP do gateway" de uma câmera de gravador
+    ((_, c2),) = r.incidentes
+    assert c2.tipo == "queda_isolada"

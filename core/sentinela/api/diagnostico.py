@@ -21,6 +21,7 @@ from sentinela.horario import zona
 
 router = APIRouter(prefix="/api/v1/diagnostico", tags=["diagnostico"])
 MAX_EQUIPAMENTOS_POR_INCIDENTE = 200
+MAX_ENTRADAS_EQUIPAMENTO = 5000  # total na resposta, somando todos os incidentes
 
 PeriodoQuery = Annotated[Periodo, Query(description="24h, 7d ou 30d")]
 
@@ -76,8 +77,13 @@ async def _saida(db: SessaoDB, r: Relatorio) -> DiagnosticoSaida:
             ):
                 classes[eid] = slug
     itens: list[IncidenteSaida] = []
+    restante = MAX_ENTRADAS_EQUIPAMENTO
+    cortou = False
     for inc, c in r.incidentes:
         vistos = list(dict.fromkeys(q.equipamento_id for q in inc.quedas))
+        listados = vistos[: min(MAX_EQUIPAMENTOS_POR_INCIDENTE, restante)]
+        restante -= len(listados)
+        cortou = cortou or len(listados) < len(vistos)
         itens.append(
             IncidenteSaida(
                 inicio=inc.inicio,
@@ -94,7 +100,7 @@ async def _saida(db: SessaoDB, r: Relatorio) -> DiagnosticoSaida:
                         nome=r.nomes.get(eid, "(equipamento removido)"),
                         classe=classes.get(eid, "desconhecido"),
                     )
-                    for eid in vistos[:MAX_EQUIPAMENTOS_POR_INCIDENTE]
+                    for eid in listados
                 ],
                 equipamentos_total=len(vistos),
             )
@@ -109,7 +115,7 @@ async def _saida(db: SessaoDB, r: Relatorio) -> DiagnosticoSaida:
         horas=r.horas,
         incidentes=itens,
         gateway_configurado=r.gateway_configurado,
-        truncado=r.truncado,
+        truncado=r.truncado or cortou,
         aviso_energia=AVISO_ENERGIA,
         aviso_gateway=None if r.gateway_configurado else SEM_GATEWAY,
     )
@@ -122,6 +128,7 @@ async def diagnostico(
     _usuario: UsuarioAtual,
     periodo: PeriodoQuery = "24h",
 ) -> DiagnosticoSaida:
+    limitar_taxa(request, _usuario)
     r = await montar(db, agora_utc(), periodo, zona(request.app.state.settings))
     return await _saida(db, r)
 

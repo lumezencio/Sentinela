@@ -50,7 +50,11 @@ def _gateways(
     equipamentos: list[tuple[str, str, str, bool, str]],
 ) -> dict[str, frozenset[str]]:
     """Gateway (equipamento de IP igual ao ``gateway_ip``) -> monitorados da sub-rede dele."""
-    por_ip = {ip: eid for eid, _nome, ip, pausado, _chk in equipamentos if not pausado}
+    por_ip = {
+        ip: eid
+        for eid, _nome, ip, pausado, chk in equipamentos
+        if not pausado and chk != "gravador"
+    }
     saida: dict[str, frozenset[str]] = {}
     for cidr, gateway_ip in subredes:
         gateway = por_ip.get(gateway_ip or "")
@@ -146,8 +150,10 @@ async def montar(db: AsyncSession, agora: datetime, periodo: Periodo, fuso: Zone
     incidentes = [i for i in agrupar(quedas) if de <= i.inicio <= agora]
 
     inicios: dict[str, list[datetime]] = {}
+    intervalos_por: dict[str, list[tuple[datetime, datetime | None]]] = {}
     for q in quedas:
         inicios.setdefault(q.equipamento_id, []).append(q.inicio)
+        intervalos_por.setdefault(q.equipamento_id, []).append((q.inicio, q.fim))
 
     # leituras de uptime dos gateways, na ORDEM DE INSERÇÃO (id): o relógio do servidor pode
     # recuar e ``lido_em`` não serve de ordem (um recuo viraria um reinício falso)
@@ -156,7 +162,7 @@ async def montar(db: AsyncSession, agora: datetime, periodo: Periodo, fuso: Zone
     for g in gateways:
         rows = list(
             await db.execute(
-                select(LeituraUptime.lido_em, LeituraUptime.uptime_s)
+                select(LeituraUptime.lido_em, LeituraUptime.uptime_s, LeituraUptime.fonte_id)
                 .where(
                     LeituraUptime.equipamento_id == g,
                     LeituraUptime.lido_em >= de - _MARGEM_LEITURAS,
@@ -166,7 +172,12 @@ async def montar(db: AsyncSession, agora: datetime, periodo: Periodo, fuso: Zone
         )
         if rows:
             leituras[g] = [r.lido_em for r in rows]
-            reinicios_por[g] = reinicios([Leitura(r.lido_em, r.uptime_s) for r in rows])
+            # contadores de fontes diferentes (SNMP x MikroTik) têm pequenas diferenças: cada
+            # fonte é lida na sua própria sequência, nunca misturadas
+            por_fonte: dict[str, list[Leitura]] = {}
+            for r in rows:
+                por_fonte.setdefault(r.fonte_id, []).append(Leitura(r.lido_em, r.uptime_s))
+            reinicios_por[g] = sorted(b for ls in por_fonte.values() for b in reinicios(ls))
 
     usados = {q.equipamento_id for i in incidentes for q in i.quedas} | set(gateways)
     ctx = Contexto(
@@ -174,6 +185,7 @@ async def montar(db: AsyncSession, agora: datetime, periodo: Periodo, fuso: Zone
         reinicios=reinicios_por,
         leituras=leituras,
         inicios=inicios,
+        quedas=intervalos_por,
         nomes={eid: todos_nomes[eid] for eid in usados if eid in todos_nomes},
     )
     classificados = [(i, classificar(i, ctx)) for i in incidentes]

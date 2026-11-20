@@ -5,7 +5,7 @@ atrás (``uptime.reinicios``) ou foi lido antes e depois do incidente sem recuar
 laudo diz "provável" e mostra o motivo.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -38,6 +38,9 @@ class Contexto:
     leituras: dict[str, list[datetime]]  # gateway -> instantes de leitura do uptime
     inicios: dict[str, list[datetime]]  # equipamento -> inícios de queda
     nomes: dict[str, str]
+    # equipamento -> (início, fim|None) de cada queda; quem já estava fora quando o incidente
+    # começou não entra no denominador do "voltaram juntos"
+    quedas: dict[str, list[tuple[datetime, datetime | None]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -56,11 +59,16 @@ def _nome(ctx: Contexto, eid: str) -> str:
     return ctx.nomes.get(eid) or "o equipamento"
 
 
+def _fora_antes(ctx: Contexto, eid: str, inicio: datetime) -> bool:
+    """Já estava fora (queda começada antes e ainda aberta no início do incidente)."""
+    return any(i < inicio and (f is None or f > inicio) for i, f in ctx.quedas.get(eid, []))
+
+
 def _do_gateway(inc: Incidente, g: str, ctx: Contexto) -> Classificacao:
     quedas_g = [q for q in inc.quedas if q.equipamento_id == g]
     qg = quedas_g[0]
-    fim = inc.fim or inc.inicio
     ini = inc.inicio
+    fim = qg.fim or ini  # só a queda do gateway: outra queda longa não alarga a janela
     nome = _nome(ctx, g)
 
     # 1. o próprio roteador informa que reiniciou
@@ -76,7 +84,7 @@ def _do_gateway(inc: Incidente, g: str, ctx: Contexto) -> Classificacao:
         )
     # 2. lido antes e depois do incidente, sem recuo: caiu sem reiniciar
     lidas = ctx.leituras.get(g, [])
-    if any(t < ini for t in lidas) and any(t > fim for t in lidas):
+    if qg.fim is not None and any(t < ini for t in lidas) and any(t > fim for t in lidas):
         return Classificacao(
             "gateway_sem_reinicio",
             "confirmado",
@@ -89,7 +97,7 @@ def _do_gateway(inc: Incidente, g: str, ctx: Contexto) -> Classificacao:
 
     # 3. sem prova do roteador: o padrão decide, e o laudo diz "provável"
     porque: list[str] = []
-    membros = ctx.gateways.get(g, frozenset())
+    membros = frozenset(m for m in ctx.gateways.get(g, frozenset()) if not _fora_antes(ctx, m, ini))
     duracao = None if qg.fim is None else (qg.fim - qg.inicio).total_seconds()
     ok_duracao = duracao is not None and REINICIO_MIN_S <= duracao <= REINICIO_MAX_S
     por_membro: dict[str, Queda] = {}

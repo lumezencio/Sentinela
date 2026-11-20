@@ -119,3 +119,18 @@ def test_porque_nunca_vazio_e_provavel_sem_uptime() -> None:
         if not ctx.reinicios and not ctx.leituras:
             assert c.certeza == "provavel"
     assert classificar(_roteador(), _ctx()).porque[-1].startswith("Sem leitura do tempo ligado")
+
+
+def test_incidente_aberto_com_leitura_depois_do_inicio_nao_confirma() -> None:
+    inc = _inc(_q("g", 0, None))
+    c = classificar(inc, _ctx(leituras={"g": [_s(-300), _s(300)]}))
+    assert (c.tipo, c.certeza) == ("gateway_sem_reinicio", "provavel")
+
+
+def test_quem_ja_estava_fora_nao_entra_no_denominador_dos_80_por_cento() -> None:
+    # 3 dos 10 já estavam fora desde antes do incidente: 7 de 7 online voltam juntos
+    fora = {f"m{i}": [(_s(-5000), None)] for i in range(3)}
+    inc = _inc(_q("g", 0, 90), *[_q(f"m{i}", 2 + i, 95 + i) for i in range(3, 10)])
+    assert classificar(inc, _ctx()).tipo == "gateway_sem_reinicio"  # sem a informação: 7/10
+    c = classificar(inc, _ctx(quedas=fora))
+    assert (c.tipo, c.certeza) == ("roteador_reiniciou", "provavel")
