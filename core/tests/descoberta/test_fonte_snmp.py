@@ -216,3 +216,22 @@ async def test_tabela_limitada_pelo_maximo_de_linhas(
     async with agente.rodando() as porta:
         achados = await _coletor(_fonte(cofre, porta), cofre).coletar()
     assert len(_por_origem(achados)["snmp_arp"]) == 30
+
+
+async def test_snmp_le_sysuptime_na_mesma_sessao(cofre: Cofre) -> None:
+    agente = AgenteSnmp(arp_nova=ARP, uptime_ticks=123456)
+    async with agente.rodando() as porta:
+        coletor = _coletor(_fonte(cofre, porta), cofre)
+        assert coletor.ultimo_uptime_s is None
+        achados = await coletor.coletar()
+    assert coletor.ultimo_uptime_s == pytest.approx(1234.56)
+    assert [(a.ip, a.mac) for a in _por_origem(achados)["snmp_arp"]] == ARP_ESPERADO
+
+
+async def test_snmp_sem_sysuptime_coleta_igual(cofre: Cofre) -> None:
+    agente = AgenteSnmp(arp_nova=ARP)
+    async with agente.rodando() as porta:
+        coletor = _coletor(_fonte(cofre, porta), cofre)
+        achados = await coletor.coletar()
+    assert coletor.ultimo_uptime_s is None
+    assert [(a.ip, a.mac) for a in _por_origem(achados)["snmp_arp"]] == ARP_ESPERADO

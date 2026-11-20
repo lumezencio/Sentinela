@@ -68,6 +68,7 @@ from sentinela.descoberta.fontes.base import (
     CertificadoMudou,
     CertificadoNaoConfiado,
     Coletor,
+    ComUptime,
     ErroColeta,
     ResultadoTeste,
 )
@@ -90,6 +91,7 @@ from sentinela.descoberta.mescla import (
     redes_com_varredura,
     sub_rede_com_linha_base,
 )
+from sentinela.descoberta.uptime import registrar_leitura
 from sentinela.descoberta.varredura import Ping, ping_icmp
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.checagens import GRAVADOR
@@ -479,6 +481,29 @@ class Orquestrador:
             log.warning("coleta da fonte %s truncada em %d achados", fonte_id, MAX_ACHADOS_COLETA)
             achados = achados[:MAX_ACHADOS_COLETA]
         await self.processar_achados(achados, fonte_id=fonte_id, truncado=truncado)
+        await self._gravar_uptime(fonte, coletor)
+
+    async def _gravar_uptime(self, fonte: Fonte, coletor: object) -> None:
+        """Guarda o tempo ligado lido na coleta bem-sucedida (para o Diagnóstico). Equipamento:
+        o ligado à fonte ou o que tem o IP do ``host`` dela; nenhum → nada. Erro só vai ao log."""
+        if not isinstance(coletor, ComUptime) or coletor.ultimo_uptime_s is None:
+            return
+        try:
+            async with self._sessoes() as db:
+                equipamento_id = fonte.equipamento_id
+                if equipamento_id is None:
+                    eq = await equipamento_por_ip(db, fonte.host)
+                    equipamento_id = eq.id if eq is not None else None
+                if equipamento_id is None:
+                    return
+                await registrar_leitura(
+                    db, fonte.id, equipamento_id, coletor.ultimo_uptime_s, self._agora_parede()
+                )
+                await db.commit()
+        except Exception as e:  # noqa: BLE001 - leitura opcional: nunca vira erro da fonte
+            log.warning(
+                "leitura de tempo ligado da fonte %s não gravada: %s", fonte.id, type(e).__name__
+            )
 
     def _mascarar(self, fonte: Fonte, texto: str) -> str:
         segredos = self._cofre.segredos(fonte.credencial_cifrada)

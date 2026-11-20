@@ -11,7 +11,14 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
-from sentinela.db.modelos import Auditoria, Descoberta, Equipamento, Fonte, SubRede
+from sentinela.db.modelos import (
+    Auditoria,
+    Descoberta,
+    Equipamento,
+    Fonte,
+    LeituraUptime,
+    SubRede,
+)
 from sentinela.descoberta.ajustes import (
     APROVACAO_AUTOMATICA,
     LIMIAR_APROVACAO,
@@ -54,7 +61,10 @@ class ColetorFalso:
         erro: BaseException | None = None,
         teste: ResultadoTeste | BaseException | None = None,
         canais: dict[int, bool] | None = None,
+        uptime_s: float | None = None,
     ) -> None:
+        self.uptime_s = uptime_s
+        self.ultimo_uptime_s: float | None = None
         self.achados = achados or []
         self.erro = erro
         self.teste = teste or ResultadoTeste(ok=True, identidade="NVR-01")
@@ -63,6 +73,7 @@ class ColetorFalso:
 
     async def coletar(self) -> list[Achado]:
         self.coletas += 1
+        self.ultimo_uptime_s = None if self.erro is not None else self.uptime_s
         if self.erro is not None:
             raise self.erro
         return list(self.achados)
@@ -1054,3 +1065,76 @@ async def test_primeira_coleta_depois_da_atualizacao_e_linha_de_base(
     await orq.coletar_agora(f)
     ds = {d.ip: d.id for d in await _descobertas(cena)}
     assert _novos(cena) == [ds["10.99.1.22"]]
+
+
+# ---- tempo ligado -----------------------------------------------------------------------------
+
+
+async def _leituras(cena: Cena) -> list[LeituraUptime]:
+    async with cena.sessoes() as db:
+        return list((await db.execute(select(LeituraUptime))).scalars())
+
+
+async def test_orquestrador_grava_leitura_da_fonte_ligada_ou_pelo_host(
+    cena: Cena, cofre: Cofre
+) -> None:
+    async with cena.sessoes() as db:
+        ligado = await criar_equipamento(db, "Roteador", "10.99.1.50")
+        por_host = await criar_equipamento(db, "Switch", "10.99.1.2")
+        await db.commit()
+        ligado_id, por_host_id = ligado.id, por_host.id
+    f1 = await _fonte(cena, cofre, "snmp", host="10.99.1.1", equipamento=ligado_id)
+    f2 = await _fonte(cena, cofre, "snmp", host="10.99.1.2")
+    coletores = {f1: ColetorFalso(uptime_s=1234.5), f2: ColetorFalso(uptime_s=99.0)}
+    orq = _orquestrador(cena, cofre, coletores)
+    await orq.ciclo()
+    await orq.ocioso()
+    leituras = {(x.fonte_id, x.equipamento_id): x for x in await _leituras(cena)}
+    assert set(leituras) == {(f1, ligado_id), (f2, por_host_id)}
+    assert leituras[(f1, ligado_id)].uptime_s == 1234.5
+    assert leituras[(f1, ligado_id)].lido_em == AGORA
+
+
+async def test_fonte_sem_equipamento_nao_grava(cena: Cena, cofre: Cofre) -> None:
+    f = await _fonte(cena, cofre, "snmp", host="10.99.1.9")
+    orq = _orquestrador(cena, cofre, {f: ColetorFalso(uptime_s=50.0)})
+    await orq.ciclo()
+    await orq.ocioso()
+    assert await _leituras(cena) == []
+    async with cena.sessoes() as db:
+        assert (await db.get(Fonte, f)).ultimo_erro is None  # type: ignore[union-attr]
+
+
+async def test_falha_da_leitura_nao_marca_erro_na_fonte(
+    cena: Cena, cofre: Cofre, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with cena.sessoes() as db:
+        eq = await criar_equipamento(db, "Roteador", "10.99.1.50")
+        await db.commit()
+        eq_id = eq.id
+    f = await _fonte(cena, cofre, "snmp", host="10.99.1.1", equipamento=eq_id)
+
+    async def explode(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("banco recusou")
+
+    monkeypatch.setattr("sentinela.descoberta.orquestrador.registrar_leitura", explode)
+    orq = _orquestrador(cena, cofre, {f: ColetorFalso(uptime_s=10.0)})
+    await orq.ciclo()
+    await orq.ocioso()
+    async with cena.sessoes() as db:
+        fonte = await db.get(Fonte, f)
+    assert fonte is not None and fonte.ultimo_erro is None and fonte.ultima_coleta == AGORA
+    assert await _leituras(cena) == []
+
+
+async def test_coleta_com_erro_nao_grava_leitura(cena: Cena, cofre: Cofre) -> None:
+    async with cena.sessoes() as db:
+        eq = await criar_equipamento(db, "Roteador", "10.99.1.50")
+        await db.commit()
+        eq_id = eq.id
+    f = await _fonte(cena, cofre, "snmp", host="10.99.1.1", equipamento=eq_id)
+    coletor = ColetorFalso(erro=ErroColeta("sem resposta"), uptime_s=10.0)
+    orq = _orquestrador(cena, cofre, {f: coletor})
+    await orq.ciclo()
+    await orq.ocioso()
+    assert await _leituras(cena) == []

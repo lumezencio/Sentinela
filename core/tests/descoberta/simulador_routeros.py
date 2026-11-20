@@ -116,6 +116,7 @@ class SimuladorRouterOS:
         default_factory=lambda: {"somente-leitura": GRUPO_READ, "full": GRUPO_FULL}
     )
     tabelas: dict[str, list[dict[str, str]]] = field(default_factory=lambda: dict(TABELAS_V7))
+    uptime: str | None = "1w2d3h4m5s"  # None = o aparelho não informa
     login_antigo: bool = False
     ignorar_proplist: bool = False  # aparelho hostil: devolve todas as colunas
     certificado: CertificadoTeste | None = None
@@ -125,7 +126,10 @@ class SimuladorRouterOS:
         if comando == "/system/identity/print":
             return [{"name": self.identidade}]
         if comando == "/system/resource/print":
-            return [{"version": self.versao, "board-name": "RB5009"}]
+            linha = {"version": self.versao, "board-name": "RB5009"}
+            if self.uptime is not None:
+                linha["uptime"] = self.uptime
+            return [linha]
         if comando == "/user/print":
             return [{"name": n, "group": g} for n, (_, g) in self.usuarios.items()]
         if comando == "/user/group/print":

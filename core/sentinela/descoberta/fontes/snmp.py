@@ -56,6 +56,7 @@ AVISO_SEM_PRIV = "SNMP v3 sem criptografia (priv): o conteúdo trafega legível"
 Oid = tuple[int, ...]
 
 OID_SYSDESCR: Oid = (1, 3, 6, 1, 2, 1, 1, 1, 0)
+OID_SYSUPTIME: Oid = (1, 3, 6, 1, 2, 1, 1, 3, 0)  # TimeTicks (1/100 s), 32 bits
 OID_SYSNAME: Oid = (1, 3, 6, 1, 2, 1, 1, 5, 0)
 OID_ARP_NOVA: Oid = (1, 3, 6, 1, 2, 1, 4, 35, 1, 4)  # ipNetToPhysicalPhysAddress
 OID_ARP_ANTIGA: Oid = (1, 3, 6, 1, 2, 1, 4, 22, 1, 2)  # ipNetToMediaPhysAddress
@@ -120,6 +121,7 @@ class FonteSnmp:
         self._cofre = cofre
         self._guarda = guarda
         self._limitador = limitador
+        self.ultimo_uptime_s: float | None = None
 
     # --- preparo (credencial, destino, motor) -------------------------------------------
 
@@ -196,6 +198,7 @@ class FonteSnmp:
     # --- coleta -------------------------------------------------------------------------
 
     async def coletar(self) -> list[Achado]:
+        self.ultimo_uptime_s = None
         resultado, _ = await self._com_sessao(self._ler_tabelas)
         return list(resultado)
 
@@ -203,7 +206,18 @@ class FonteSnmp:
         achados = await self._arp(s)
         achados += await self._fdb(s)
         achados += await self._lldp(s)
+        self.ultimo_uptime_s = await self._uptime(s)
         return achados
+
+    @staticmethod
+    async def _uptime(s: "_Sessao") -> float | None:
+        """``sysUpTime`` na mesma sessão (um GET a mais, ao mesmo destino). Qualquer falha
+        ou ausência vira ``None``: a coleta das tabelas já está completa e não é afetada."""
+        try:
+            ticks = _inteiro((await s.obter(OID_SYSUPTIME)).get(OID_SYSUPTIME))
+        except Exception:  # noqa: BLE001 - leitura opcional; nada do aparelho é propagado
+            return None
+        return ticks / 100 if ticks is not None and ticks >= 0 else None
 
     async def _arp(self, s: "_Sessao") -> list[Achado]:
         saida: list[Achado] = []

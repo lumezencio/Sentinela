@@ -276,3 +276,24 @@ async def test_resposta_hostil_com_colunas_demais_e_recusada(
             await coletor.coletar()
     assert str(exc.value) == "resposta do RouterOS grande demais"
     assert "coluna" not in repr(exc.value)
+
+
+async def test_mikrotik_le_uptime(cofre: Cofre, certificado: CertificadoTeste) -> None:
+    sim = SimuladorRouterOS(certificado=certificado, uptime="1w2d3h4m5s")
+    async with sim.rodando() as porta:
+        coletor = _coletor(_fonte(cofre, porta, impressao=certificado.impressao), cofre)
+        assert coletor.ultimo_uptime_s is None
+        await coletor.coletar()
+    assert coletor.ultimo_uptime_s == 788645
+    assert "/system/resource/print" in sim.comandos()
+
+
+async def test_mikrotik_sem_uptime_coleta_igual(
+    cofre: Cofre, certificado: CertificadoTeste
+) -> None:
+    sim = SimuladorRouterOS(certificado=certificado, uptime=None)
+    async with sim.rodando() as porta:
+        coletor = _coletor(_fonte(cofre, porta, impressao=certificado.impressao), cofre)
+        achados = await coletor.coletar()
+    assert coletor.ultimo_uptime_s is None
+    assert achados

@@ -77,3 +77,11 @@ class Coletor(Protocol):
     async def coletar(self) -> list[Achado]: ...
 
     async def testar(self) -> ResultadoTeste: ...
+
+
+@runtime_checkable
+class ComUptime(Protocol):
+    """Fonte que, na mesma coleta, também lê o tempo ligado do próprio equipamento (segundos).
+    ``None`` quando o aparelho não informou ou a leitura falhou; nunca afeta a coleta."""
+
+    ultimo_uptime_s: float | None
