@@ -213,7 +213,7 @@ async def test_csv_neutraliza_formula_e_mantem_texto_inteiro(sessoes: Sessoes) -
     async with sessoes() as db:
         for i, nome in enumerate(nomes):
             eid = await _eq(db, nome, f"10.99.0.{21 + i}")
-            _queda(db, eid, AGORA - timedelta(hours=2), 60)
+            _queda(db, eid, AGORA - timedelta(hours=2) + timedelta(seconds=i), 60)
         await db.commit()
         r = await montar(db, AGORA, "24h", SP)
     texto = csv_do(r, SP)

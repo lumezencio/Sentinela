@@ -1,6 +1,7 @@
 """Primeiro acesso pela tela: código de instalação, rede sugerida e criação do administrador."""
 
 import asyncio
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select
 
+from sentinela.api import primeiro_acesso
 from sentinela.config import Settings, pasta_dados
 from sentinela.db.modelos import Auditoria, Classe, Equipamento, SubRede, Usuario
 from sentinela.main import criar_app
@@ -142,7 +144,8 @@ async def test_sem_json_415(cliente: httpx.AsyncClient, codigo: str) -> None:
 async def test_limite_de_20_por_ip_em_10_min(
     app: FastAPI, cliente: httpx.AsyncClient, codigo: str, relogio: RelogioFalso
 ) -> None:
-    for _ in range(20):
+    assert (await cliente.post(BASE + "/conferir", json={"codigo": CODIGO})).status_code == 200
+    for _ in range(20):  # (a 1ª chamada fixou a marca do código; sem código novo, nada reinicia)
         app.state.falhas_codigo.registrar_falha(IP_PADRAO)
     for dados in ({"codigo": "ZZZZ-ZZZZ"}, {"codigo": CODIGO}):  # reserva ANTES de verificar
         r = await cliente.post(BASE + "/conferir", json=dados)
@@ -295,12 +298,32 @@ async def test_gateway_fora_da_rede_422(
 
 
 async def test_dois_concluir_simultaneos_um_so_admin(
-    app: FastAPI, cliente: httpx.AsyncClient, codigo: str, varreduras: list[tuple[int, str]]
+    app: FastAPI,
+    cliente: httpx.AsyncClient,
+    codigo: str,
+    varreduras: list[tuple[int, str]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Barreira: os dois passam pela pré-checagem (404 de dependência) e pelo código ANTES de
+    qualquer INSERT; quem decide é o INSERT guardado por NOT EXISTS."""
+    chegaram = 0
+    ambos = asyncio.Event()
+    original = primeiro_acesso.gerar_hash_async
+
+    async def com_barreira(senha: str) -> str:
+        nonlocal chegaram
+        chegaram += 1
+        if chegaram == 2:
+            ambos.set()
+        await asyncio.wait_for(ambos.wait(), timeout=10)
+        return await original(senha)
+
+    monkeypatch.setattr(primeiro_acesso, "gerar_hash_async", com_barreira)
     a, b = await asyncio.gather(
         cliente.post(BASE + "/concluir", json=corpo(login="primeiro")),
         cliente.post(BASE + "/concluir", json=corpo(login="segundo")),
     )
+    assert chegaram == 2  # ambos passaram da pré-checagem
     assert sorted([a.status_code, b.status_code]) == [204, 404]
     assert await _contar(app, Usuario) == 1
     assert await _contar(app, SubRede) == 1 and await _contar(app, Equipamento) == 1
@@ -329,3 +352,59 @@ async def test_rede_ja_cadastrada_e_reaproveitada(
     async with sessoes(app)() as db:
         sub = (await db.execute(select(SubRede))).scalar_one()
         assert sub.permite_varredura is True and sub.gateway_ip == "192.168.1.1"
+
+
+async def test_correto_depois_de_5_erros_e_1_min_conclui(
+    app: FastAPI,
+    cliente: httpx.AsyncClient,
+    codigo: str,
+    relogio: RelogioFalso,
+    varreduras: list[tuple[int, str]],
+) -> None:
+    for _ in range(5):
+        r = await cliente.post(BASE + "/conferir", json={"codigo": "ZZZZ-ZZZZ"})
+        assert r.status_code == 401
+    await relogio.avancar(61)
+    assert (await cliente.post(BASE + "/conferir", json={"codigo": CODIGO})).status_code == 200
+    assert (await cliente.post(BASE + "/concluir", json=corpo())).status_code == 204
+
+
+async def test_codigo_novo_da_cli_zera_bloqueio_e_contadores(
+    app: FastAPI, cliente: httpx.AsyncClient, codigo: str, settings: Settings
+) -> None:
+    for _ in range(5):
+        await cliente.post(BASE + "/conferir", json={"codigo": "ZZZZ-ZZZZ"})
+    r = await cliente.post(BASE + "/conferir", json={"codigo": CODIGO})
+    assert r.status_code == 429
+    assert "codigo-instalacao" in r.json()["detail"]  # diz como obter um código novo
+    for _ in range(20):
+        app.state.falhas_codigo.registrar_falha(IP_PADRAO)
+    # a CLI (outro processo) grava um código novo: a marca do arquivo muda
+    await instalacao.gravar(pasta_dados(settings), "CD4F-7GHJ", datetime.now(UTC))
+    r = await cliente.post(BASE + "/conferir", json={"codigo": "CD4F-7GHJ"})
+    assert r.status_code == 200
+    assert (await cliente.post(BASE + "/conferir", json={"codigo": CODIGO})).status_code == 401
+
+
+async def test_codigo_recusado_vai_ao_log_sem_o_texto(
+    cliente: httpx.AsyncClient, codigo: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sentinela")
+    await cliente.post(BASE + "/conferir", json={"codigo": "QWER-TYUP"})
+    registro = [r.getMessage() for r in caplog.records if "recusado" in r.getMessage()]
+    assert registro and IP_PADRAO in registro[0] and "falhas_do_ip=1" in registro[0]
+    assert "QWER" not in caplog.text and "TYUP" not in caplog.text
+
+
+async def test_rede_ja_cadastrada_audita_como_edicao(
+    app: FastAPI, cliente: httpx.AsyncClient, codigo: str, varreduras: list[tuple[int, str]]
+) -> None:
+    async with sessoes(app)() as db:
+        db.add(SubRede(cidr="192.168.1.0/24"))
+        await db.commit()
+    assert (await cliente.post(BASE + "/concluir", json=corpo())).status_code == 204
+    async with sessoes(app)() as db:
+        auds = {a.acao: a for a in (await db.execute(select(Auditoria))).scalars()}
+    assert "subrede.criar" not in auds
+    assert auds["subrede.editar"].antes == {"permite_varredura": False, "gateway_ip": None}
+    assert auds["subrede.editar"].depois == {"permite_varredura": True, "gateway_ip": "192.168.1.1"}

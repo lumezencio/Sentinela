@@ -60,18 +60,9 @@ class BloqueioFantasma:
         self.registrar_falha(login)
         return 0.0
 
-    def liberar(self, login: str) -> None:
-        """Devolve UMA tentativa reservada que deu certo; abaixo do limiar, o bloqueio sai."""
-        atual = self._estado.get(login)
-        if atual is None:
-            return
-        falhas = atual[0] - 1
-        if falhas <= 0:
-            del self._estado[login]
-        elif falhas < FALHAS_ANTES_DO_BLOQUEIO:
-            self._estado[login] = (falhas, 0.0)
-        else:
-            self._estado[login] = (falhas, atual[1])
+    def limpar(self, login: str) -> None:
+        """Zera o estado da chave (acerto de quem tem o segredo: não deixa bloqueio novo)."""
+        self._estado.pop(login, None)
 
     def registrar_falha(self, login: str) -> None:
         falhas, _ = self._estado.pop(login, (0, 0.0))
@@ -128,6 +119,15 @@ class LimitadorIP:
             return espera
         self.registrar_falha(ip)
         return 0.0
+
+    def reiniciar(self) -> None:
+        """Esquece todas as falhas (novo código de instalação gerado)."""
+        self._falhas.clear()
+
+    def contagem(self, ip: str) -> int:
+        """Falhas (e reservas) do IP dentro da janela."""
+        instantes = self._podar(ip)
+        return 0 if instantes is None else len(instantes)
 
     def liberar(self, ip: str) -> None:
         """Devolve uma tentativa reservada que deu certo (remove o registro mais recente)."""

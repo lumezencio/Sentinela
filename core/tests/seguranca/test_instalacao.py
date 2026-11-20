@@ -103,3 +103,11 @@ async def test_invalidar_idempotente(tmp_path: Path) -> None:
     instalacao.invalidar(tmp_path)
     instalacao.invalidar(tmp_path)
     assert instalacao.estado(tmp_path, T0) == "ausente"
+
+
+async def test_criado_em_no_futuro_conta_como_expirado(tmp_path: Path) -> None:
+    await instalacao.gravar(tmp_path, "AB3K-9MNP", T0 + timedelta(minutes=10))
+    assert instalacao.estado(tmp_path, T0) == "expirado"
+    assert await instalacao.conferir(tmp_path, "AB3K-9MNP", T0) is False
+    await instalacao.gravar(tmp_path, "AB3K-9MNP", T0 + timedelta(minutes=4))  # folga de 5 min
+    assert instalacao.estado(tmp_path, T0) == "ativo"

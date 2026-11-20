@@ -12,6 +12,7 @@ commit está em ``aplicar_guarda``; a primeira varredura só começa depois dele
 
 import logging
 import math
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -34,7 +35,10 @@ from sentinela.seguranca.senhas import SENHA_MAXIMA, gerar_hash_async, validar_s
 log = logging.getLogger("sentinela.primeiro_acesso")
 
 MSG_CODIGO = "Código inválido."
-MSG_MUITAS = "Muitas tentativas. Aguarde e tente novamente."
+MSG_MUITAS = (
+    "Muitas tentativas. Aguarde, ou gere um código novo no terminal "
+    "(python -m sentinela.cli codigo-instalacao)."
+)
 CHAVE_BLOQUEIO = "instalacao"  # chave fixa: o bloqueio vale para todos os IPs
 
 
@@ -97,6 +101,20 @@ def _ip(request: Request) -> str:
     return request.client.host if request.client else "desconhecido"
 
 
+def _sincronizar_contadores(request: Request, pasta: Path) -> None:
+    """Código novo (a CLI roda noutro processo) zera o bloqueio global e os contadores por IP.
+
+    Mecanismo: o core guarda a ``marca`` (``criado_em`` gravado) vista por último; se o arquivo
+    traz outra, houve ``codigo-instalacao``. Assim o dono sai de um bloqueio provocado por
+    terceiros na LAN sem reiniciar o core; quem não tem terminal não gera código novo.
+    """
+    atual = instalacao.marca(pasta)
+    if atual != getattr(request.app.state, "marca_codigo", None):
+        request.app.state.marca_codigo = atual
+        request.app.state.falhas_codigo.reiniciar()
+        request.app.state.bloqueio_codigo.limpar(CHAVE_BLOQUEIO)
+
+
 async def _conferir_codigo(request: Request, texto: str) -> None:
     """Reserva a tentativa (IP e global) ANTES do argon2; acerto devolve as duas reservas.
 
@@ -105,18 +123,27 @@ async def _conferir_codigo(request: Request, texto: str) -> None:
     falhas_ip: LimitadorIP = request.app.state.falhas_codigo
     bloqueio: BloqueioFantasma = request.app.state.bloqueio_codigo
     ip = _ip(request)
+    pasta = pasta_dados(request.app.state.settings)
+    _sincronizar_contadores(request, pasta)
     espera = falhas_ip.reservar(ip)
     if espera:
+        log.warning("primeiro acesso: tentativa barrada pelo limite do IP (ip=%s)", ip)
         raise _muitas(espera)
     espera = bloqueio.reservar(CHAVE_BLOQUEIO)
     if espera:
         falhas_ip.liberar(ip)  # bloqueada pelo global: não gasta a cota do IP
+        log.warning("primeiro acesso: tentativa barrada pelo bloqueio global (ip=%s)", ip)
         raise _muitas(espera)
-    pasta = pasta_dados(request.app.state.settings)
     if not await instalacao.conferir(pasta, texto, agora_utc()):
+        # nunca o texto digitado: só o IP e a contagem de falhas recentes dele
+        log.warning(
+            "primeiro acesso: código recusado (ip=%s, falhas_do_ip=%d)",
+            ip,
+            falhas_ip.contagem(ip),
+        )
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=MSG_CODIGO)
     falhas_ip.liberar(ip)
-    bloqueio.liberar(CHAVE_BLOQUEIO)
+    bloqueio.limpar(CHAVE_BLOQUEIO)  # só quem tem o código chega aqui: sem bloqueio novo
 
 
 @router.get("", response_model=Estado)
@@ -139,17 +166,19 @@ async def conferir(entrada: Conferencia, request: Request) -> Sugestao:
 
 async def _subrede_da_instalacao(
     db: AsyncSession, cidr: str, varredura: bool, gateway: str | None
-) -> SubRede:
+) -> tuple[SubRede, dict[str, object] | None]:
     """Cria a sub-rede (ou reaproveita a que já existe, p.ex. criada pela CLI)."""
     sub = await db.scalar(select(SubRede).where(SubRede.cidr == cidr))
+    antes: dict[str, object] | None = None
     if sub is None:
         sub = SubRede(cidr=cidr, permite_varredura=varredura, gateway_ip=gateway)
         db.add(sub)
     else:
+        antes = {"permite_varredura": bool(sub.permite_varredura), "gateway_ip": sub.gateway_ip}
         sub.permite_varredura = varredura
         sub.gateway_ip = gateway
     await db.flush()
-    return sub
+    return sub, antes
 
 
 @router.post(
@@ -197,8 +226,12 @@ async def concluir(entrada: Conclusao, request: Request, db: SessaoDB) -> Respon
     agora = agora_utc()
 
     auditar(db, request, admin, "primeiro_acesso.concluir", f"usuario:{admin.id}")
-    sub = await _subrede_da_instalacao(db, cidr, entrada.varredura, gateway)
-    auditar(db, request, admin, "subrede.criar", cidr, depois={"cidr": cidr})
+    sub, antes = await _subrede_da_instalacao(db, cidr, entrada.varredura, gateway)
+    if antes is None:
+        auditar(db, request, admin, "subrede.criar", cidr, depois={"cidr": cidr})
+    else:  # sub-rede que já existia (p.ex. criada pela CLI): é edição, com antes e depois
+        depois = {"permite_varredura": entrada.varredura, "gateway_ip": gateway}
+        auditar(db, request, admin, "subrede.editar", cidr, antes, depois)
     if gateway is not None and (
         await db.scalar(select(Equipamento.id).where(Equipamento.ip == gateway)) is None
     ):

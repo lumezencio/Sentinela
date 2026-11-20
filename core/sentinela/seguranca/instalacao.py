@@ -26,6 +26,8 @@ ARQUIVO = "instalacao.json"
 TAMANHO = 8
 VALIDADE = timedelta(hours=24)
 _METADE = TAMANHO // 2
+# relógio adiantado na hora de gerar (Pi sem RTC): até 5 min de folga; além disso, expirado
+TOLERANCIA_FUTURO = timedelta(minutes=5)
 
 type Estado = Literal["ativo", "expirado", "ausente"]
 
@@ -40,6 +42,7 @@ __all__ = [
     "gerar_codigo",
     "gravar",
     "invalidar",
+    "marca",
     "normalizar",
 ]
 
@@ -92,18 +95,32 @@ def _ler(pasta: Path) -> tuple[str, datetime] | None:
     return hash_, criado
 
 
+def _vale(criado: datetime, agora: datetime) -> bool:
+    """Ativo: criado há no máximo 24 h; ``criado_em`` no futuro (relógio que andou para trás)
+    além da tolerância conta como expirado, senão o código viveria mais de 24 h reais."""
+    idade = agora - criado
+    return -TOLERANCIA_FUTURO <= idade <= VALIDADE
+
+
 def estado(pasta: Path, agora: datetime) -> Estado:
     lido = _ler(pasta)
     if lido is None:
         return "ausente"
-    return "ativo" if agora - lido[1] <= VALIDADE else "expirado"
+    return "ativo" if _vale(lido[1], agora) else "expirado"
+
+
+def marca(pasta: Path) -> str | None:
+    """Identidade da geração atual do código (o ``criado_em`` gravado), ``None`` se ausente.
+    A CLI roda noutro processo: o core compara esta marca para saber que há código novo."""
+    lido = _ler(pasta)
+    return None if lido is None else lido[1].isoformat()
 
 
 async def conferir(pasta: Path, texto: str, agora: datetime) -> bool:
     """True só com código ativo e igual ao gravado; qualquer outro caso gasta o mesmo tempo."""
     normal = normalizar(texto)
     lido = _ler(pasta)
-    if normal is None or lido is None or agora - lido[1] > VALIDADE:
+    if normal is None or lido is None or not _vale(lido[1], agora):
         await verificar_ficticio_async(texto[:64])
         return False
     return await verificar_async(lido[0], normal)
