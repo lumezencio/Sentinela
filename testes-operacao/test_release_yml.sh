@@ -90,6 +90,8 @@ test_smoke_arm64_so_em_tag_ou_manual() {
   grep -qF '/api/v1/saude' <<<"$s" || _falhou "smoke não confere a saúde"
   grep -qF '/login.html' <<<"$s" || _falhou "smoke não confere a página de login"
   grep -qF '204' <<<"$s" || _falhou "smoke não confere o login 204"
+  grep -qF 'uname -m' <<<"$s" || _falhou "smoke não confere a arquitetura do contêiner em execução"
+  grep -qF 'aarch64' <<<"$s" || _falhou "smoke não exige aarch64"
 }
 
 test_permissoes_minimas_por_job() {
