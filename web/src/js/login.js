@@ -188,3 +188,9 @@ alternar.addEventListener("click", () => {
 });
 
 voltar.addEventListener("click", voltarAoLogin);
+
+// Sem nenhum usuário (instalação nova) o servidor responde 200 em /primeiro-acesso e o assistente
+// assume; com usuário é 404 e o login segue normal. Qualquer falha da consulta deixa o login.
+api.estadoPrimeiroAcesso().then((r) => {
+  if (r.ok) window.location.replace("primeiro-acesso.html");
+});

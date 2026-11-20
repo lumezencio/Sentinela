@@ -12,6 +12,7 @@ URL local e ``SENTINELA_SMOKE_COMPOSE_LOCAL=1`` (senão o cenário é pulado).
 
 import gzip
 import hashlib
+import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any
 import pytest
 from playwright.sync_api import Browser, ConsoleMessage, Page, Response, Route, expect
 
-from conftest import Alvo
+from conftest import GATEWAY_DO_ASSISTENTE, REDE_DO_ASSISTENTE, Alvo, Instalacao
 
 TETO_PRIMEIRA_TELA = 150 * 1024  # gzip, §12
 TOTAL_DEMO = 300 + 7  # rede sintética + os 7 aparelhos da rede do Diagnóstico (10.99.0.0/24)
@@ -151,6 +152,9 @@ def test_primeira_tela_leve_e_sem_erros_no_console(page: Page, alvo: Alvo) -> No
 
 
 def _anotar_erro(erros: list[str], m: ConsoleMessage) -> None:
+    # o login consulta GET /primeiro-acesso; com usuário o servidor responde 404 de propósito
+    if m.location.get("url", "").endswith("/api/v1/primeiro-acesso") and "404" in m.text:
+        return
     # Alpine reporta erro de expressão como warning: os dois reprovam
     if m.type in ("error", "warning"):
         erros.append(f"{m.type}: {m.text}")
@@ -3433,3 +3437,173 @@ def test_versao_aparece_no_painel_e_no_login_em_todas_as_larguras(
             assert m["y0"] >= 0 and m["rolagem"] <= largura, (largura, m)
         finally:
             contexto.close()
+
+
+# ---------------------------------------------------------------- primeiro acesso (Fase 5)
+COMANDO_NOVO_CODIGO = "docker compose exec core python -m sentinela.cli codigo-instalacao"
+LOGIN_64_ASSISTENTE = ("administrador-geral-da-rede-do-escritorio-" + "x" * 40)[:64]
+SENHA_ASSISTENTE = "senha-ficticia-do-smoke-1"
+
+
+def abrir_instalacao(browser: Browser, inst: Instalacao, largura: int = 1280) -> Page:
+    contexto = browser.new_context(
+        viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=inst.url
+    )
+    return contexto.new_page()
+
+
+def conferir_codigo(page: Page, texto: str) -> None:
+    page.get_by_label("Código de instalação", exact=True).fill(texto)
+    page.get_by_role("button", name="Continuar").click()
+
+
+def test_sem_usuario_login_leva_ao_primeiro_acesso(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/login.html")
+        page.wait_for_url("**/primeiro-acesso.html", timeout=10_000)
+        expect(page.get_by_role("heading", name="Código de instalação")).to_be_visible()
+        expect(page.locator("[data-versao]")).to_have_text(re.compile(r"^v\d+\.\d+\.\d+"))
+    finally:
+        page.context.close()
+
+
+def test_codigo_errado_mostra_erro_generico_e_fica_no_passo(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ZZZZ-0000")  # formato inválido: nem sai do navegador
+        expect(page.locator("#erro-codigo")).to_contain_text("O código tem 8 letras e números")
+        conferir_codigo(page, "ZZZZ-9876")
+        expect(page.locator("#erro-codigo")).to_have_text("Código inválido.")
+        expect(page.locator("#codigo")).to_have_value("")  # nunca fica o que foi digitado
+        expect(page.locator("#passo-codigo")).to_be_visible()
+        expect(page.locator("#passo-administrador")).to_be_hidden()
+        assert page.locator("#erro-codigo").get_attribute("role") == "alert"
+    finally:
+        page.context.close()
+
+
+def test_codigo_expirado_mostra_o_comando_para_gerar_outro(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    instalacao_nova.regravar_codigo(horas_atras=25)
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/primeiro-acesso.html")
+        expect(page.locator("#pa-comando")).to_have_text(COMANDO_NOVO_CODIGO)
+        expect(page.locator("#pa-novo-texto")).to_contain_text("não existe ou expirou")
+        conferir_codigo(page, "ABCD-2345")  # o código certo, mas vencido: resposta genérica
+        expect(page.locator("#erro-codigo")).to_have_text("Código inválido.")
+        expect(page.locator("#passo-administrador")).to_be_hidden()
+    finally:
+        page.context.close()
+
+
+def test_muitas_tentativas_mostra_como_gerar_codigo_novo(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        texto = (
+            "Muitas tentativas. Aguarde, ou gere um código novo no terminal "
+            "(python -m sentinela.cli codigo-instalacao)."
+        )
+        page.route(
+            "**/api/v1/primeiro-acesso/conferir",
+            lambda r: r.fulfill(
+                status=429,
+                content_type="application/json",
+                body=json.dumps({"detail": texto}),
+                headers={"Retry-After": "120"},
+            ),
+        )
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ABCD-2345")
+        expect(page.locator("#erro-codigo")).to_have_text(texto)
+        expect(page.locator("#continuar-codigo")).to_be_disabled()
+        expect(page.locator("#continuar-codigo")).to_contain_text("Aguarde")
+        expect(page.locator("#pa-comando")).to_have_text(COMANDO_NOVO_CODIGO)
+        expect(page.locator("#codigo")).to_have_value("")
+    finally:
+        page.context.close()
+
+
+def test_assistente_completo_entra_no_painel_com_roteador_e_varredura(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        erros = vigiar_console(page)
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "abcd 2345")  # minúsculas e espaço valem
+        expect(page.get_by_role("heading", name="Administrador")).to_be_visible()
+        assert "2345" not in page.content()  # o código não fica na página
+        page.get_by_label("Login", exact=True).fill(LOGIN_64_ASSISTENTE)
+        page.get_by_label("Senha", exact=True).fill("curta")
+        page.get_by_label("Repita a senha").fill("curta")
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.locator("#erro-administrador")).to_contain_text("pelo menos 12 caracteres")
+        page.get_by_label("Senha", exact=True).fill(SENHA_ASSISTENTE)
+        page.get_by_label("Repita a senha").fill(SENHA_ASSISTENTE)
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.get_by_role("heading", name="Sua rede")).to_be_visible()
+        expect(page.locator("#cidr")).to_have_value(REDE_DO_ASSISTENTE)
+        expect(page.locator("#gateway")).to_have_value(GATEWAY_DO_ASSISTENTE)
+        chave = page.get_by_role("switch", name="Achar os aparelhos sozinho (varredura)")
+        expect(chave).to_have_attribute("aria-checked", "true")
+        expect(page.locator("#pa-arp")).to_contain_text("pedido ARP")
+        page.get_by_label("Sub-rede", exact=True).fill("8.8.8.0/24")
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.locator("#erro-rede")).to_have_text("A sub-rede deve ser privada (RFC 1918).")
+        page.get_by_label("Sub-rede", exact=True).fill(REDE_DO_ASSISTENTE)
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.get_by_role("heading", name="Tudo pronto?")).to_be_visible()
+        expect(page.locator("#res-login")).to_have_text(LOGIN_64_ASSISTENTE)
+        expect(page.locator("#res-cidr")).to_have_text(REDE_DO_ASSISTENTE)
+        page.get_by_role("button", name="Concluir e entrar").click()
+        page.wait_for_url("**/index.html", timeout=20_000)
+        expect(page.locator("#lista tbody tr.linha", has_text="Roteador")).to_have_count(
+            1, timeout=15_000
+        )
+        expect(page.locator("#faixa-varredura")).to_be_visible(timeout=15_000)
+        assert erros == [], erros
+        # o assistente acabou: a página volta ao login (o usuário agora existe)
+        page.goto("/primeiro-acesso.html")
+        page.wait_for_url("**/login.html", timeout=10_000)
+    finally:
+        page.context.close()
+
+
+def test_com_usuario_primeiro_acesso_html_volta_ao_login(browser: Browser, alvo: Alvo) -> None:
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        page = contexto.new_page()
+        page.goto("/primeiro-acesso.html")
+        page.wait_for_url("**/login.html", timeout=10_000)
+        expect(page.get_by_role("button", name="Entrar")).to_be_visible()
+        entrar(page, alvo)  # o login segue normal
+    finally:
+        contexto.close()
+
+
+def test_visualizador_nao_alcanca_o_primeiro_acesso(browser: Browser, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+        page.goto("/primeiro-acesso.html")
+        page.wait_for_url("**/login.html", timeout=10_000)
+        expect(page.locator("#passo-codigo")).to_have_count(0)
+        assert page.request.get("/api/v1/primeiro-acesso").status == 404
+        for rota in ("conferir", "concluir"):
+            r = page.request.post(f"/api/v1/primeiro-acesso/{rota}", data={"codigo": "ABCD2345"})
+            assert r.status == 404, (rota, r.status)
+    finally:
+        contexto.close()

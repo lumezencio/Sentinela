@@ -87,6 +87,22 @@ export const api = {
       json: recuperacao !== undefined ? { recuperacao } : { codigo },
       redirecionar401: false,
     }),
+  // ---- primeiro acesso (Fase 5): rotas sem sessão; 404 = já existe usuário ----
+  /** `estado`: "ativo" | "expirado" | "ausente" (vazio se não foi 200). 404 = o assistente acabou. */
+  estadoPrimeiroAcesso: async () => {
+    const r = await requisitar("GET", "/primeiro-acesso", { redirecionar401: false });
+    const valor = r.ok && r.dados ? r.dados.codigo : "";
+    return { ...r, estado: ["ativo", "expirado", "ausente"].includes(valor) ? valor : "" };
+  },
+  /** 200 {rede: {cidr, gateway}} (sugestão detectada); 401 genérico; 429 com a espera. */
+  conferirCodigo: (codigo) =>
+    requisitar("POST", "/primeiro-acesso/conferir", { json: { codigo }, redirecionar401: false }),
+  /** 204 = administrador criado e já logado. */
+  concluirPrimeiroAcesso: ({ codigo, login, senha, cidr, gateway, varredura }) =>
+    requisitar("POST", "/primeiro-acesso/concluir", {
+      json: { codigo, login, senha, cidr, gateway: gateway || null, varredura: Boolean(varredura) },
+      redirecionar401: false,
+    }),
   sair: () => requisitar("POST", "/auth/logout", { redirecionar401: false }),
   eu: () => requisitar("GET", "/auth/eu"),
   // ---- segundo fator, política e usuários (Fase 4B) ----

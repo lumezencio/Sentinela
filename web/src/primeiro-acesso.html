@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Sentinela: primeiro acesso, criação do administrador e da rede">
+  <title>Sentinela · Primeiro acesso</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/novos.css">
+  <link rel="stylesheet" href="css/seguranca.css">
+  <script src="js/tema.js"></script>
+  <script type="module" src="js/primeiro-acesso-pagina.js"></script>
+  <script type="module" src="js/versao-pagina.js"></script>
+</head>
+<body>
+  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div></div>
+  <main class="tela-login tela-seguranca">
+    <section class="cartao-login cartao-seguranca vidro" aria-labelledby="titulo-pa">
+      <div class="seg-cabeca">
+        <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+          <g class="giro"><ellipse class="orbita" cx="20" cy="20" rx="17" ry="7"/><circle class="eletron" cx="37" cy="20" r="2.2"/></g>
+          <g class="giro giro-2"><ellipse class="orbita orbita-2" cx="20" cy="20" rx="7" ry="17"/><circle class="eletron" cx="20" cy="3" r="1.8"/></g>
+          <circle class="nucleo" cx="20" cy="20" r="4.5"/>
+        </svg>
+        <div>
+          <h1 id="titulo-pa">Primeiro acesso</h1>
+          <p class="seg-quem">Vamos deixar o Sentinela pronto em quatro passos.</p>
+        </div>
+      </div>
+      <ol class="pa-trilha" id="pa-trilha" aria-hidden="true"><li></li><li></li><li></li><li></li></ol>
+      <p class="seg-passo" id="pa-passo" aria-live="polite">Passo 1 de 4</p>
+
+      <form class="seg-form" id="passo-codigo" data-passo="codigo" novalidate>
+        <h2 class="seg-h2" id="h-codigo" tabindex="-1">Código de instalação</h2>
+        <p class="seg-texto">Digite o código de 8 letras e números que o instalador mostrou no terminal, no fim da instalação. Ele vale por 24 horas.</p>
+        <div class="campo-form">
+          <label for="codigo">Código de instalação</label>
+          <input id="codigo" name="codigo" class="campo-codigo" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text" maxlength="9" placeholder="XXXX-XXXX" aria-describedby="erro-codigo" required autofocus>
+        </div>
+        <p class="alerta" id="erro-codigo" role="alert" hidden></p>
+        <div class="pa-novo-codigo" id="pa-novo-codigo">
+          <p class="seg-texto" id="pa-novo-texto">Não tem o código ou ele expirou? No computador onde o Sentinela está instalado, gere um novo com este comando:</p>
+          <code class="pa-comando" id="pa-comando"></code>
+        </div>
+        <div class="seg-acoes">
+          <button class="botao botao-primario" id="continuar-codigo" type="submit">Continuar</button>
+        </div>
+      </form>
+
+      <form class="seg-form" id="passo-administrador" data-passo="administrador" novalidate hidden>
+        <h2 class="seg-h2" id="h-administrador" tabindex="-1">Administrador</h2>
+        <p class="seg-texto">Crie a conta que vai administrar o Sentinela. Guarde a senha em lugar seguro.</p>
+        <div class="campo-form">
+          <label for="login-admin">Login</label>
+          <input id="login-admin" name="login" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required>
+        </div>
+        <div class="campo-form">
+          <label for="senha-admin">Senha</label>
+          <input id="senha-admin" name="senha" type="password" autocomplete="new-password" maxlength="1024" aria-describedby="dica-senha" required>
+          <p class="seg-texto" id="dica-senha">A senha deve ter pelo menos 12 caracteres.</p>
+        </div>
+        <div class="campo-form">
+          <label for="senha-confirma">Repita a senha</label>
+          <input id="senha-confirma" name="confirmacao" type="password" autocomplete="new-password" maxlength="1024" required>
+        </div>
+        <p class="alerta" id="erro-administrador" role="alert" hidden></p>
+        <div class="seg-acoes">
+          <button class="botao botao-primario" type="submit">Continuar</button>
+          <button class="botao botao-fantasma" type="button" data-voltar>Voltar</button>
+        </div>
+      </form>
+
+      <form class="seg-form" id="passo-rede" data-passo="rede" novalidate hidden>
+        <h2 class="seg-h2" id="h-rede" tabindex="-1">Sua rede</h2>
+        <p class="seg-texto">Detectamos a sub-rede e o roteador (gateway) deste servidor. Confira e corrija se for preciso: só redes privadas, de /16 a /30.</p>
+        <div class="campo-form">
+          <label for="cidr">Sub-rede</label>
+          <input id="cidr" name="cidr" class="mono" autocomplete="off" spellcheck="false" inputmode="text" maxlength="43" placeholder="192.168.0.0/24" required>
+        </div>
+        <div class="campo-form">
+          <label for="gateway">Gateway (o roteador da rede)</label>
+          <input id="gateway" name="gateway" class="mono" autocomplete="off" spellcheck="false" inputmode="decimal" maxlength="45" placeholder="192.168.0.1" aria-describedby="dica-gateway">
+          <p class="seg-texto" id="dica-gateway">Ele entra na lista como &ldquo;Roteador&rdquo;. Deixe em branco se não souber.</p>
+        </div>
+        <div class="pa-varredura">
+          <button class="chave" id="chave-varredura" type="button" role="switch" aria-checked="true" aria-describedby="pa-arp">
+            <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+            <span class="chave-rotulo">Achar os aparelhos sozinho (varredura)</span>
+          </button>
+          <p class="seg-texto" id="pa-arp"></p>
+        </div>
+        <p class="alerta" id="erro-rede" role="alert" hidden></p>
+        <div class="seg-acoes">
+          <button class="botao botao-primario" type="submit">Continuar</button>
+          <button class="botao botao-fantasma" type="button" data-voltar>Voltar</button>
+        </div>
+      </form>
+
+      <form class="seg-form" id="passo-concluir" data-passo="concluir" novalidate hidden>
+        <h2 class="seg-h2" id="h-concluir" tabindex="-1">Tudo pronto?</h2>
+        <p class="seg-texto">Confira o resumo. Ao concluir, o administrador é criado, você entra no painel e o código de instalação deixa de valer.</p>
+        <dl class="pa-resumo">
+          <div><dt>Administrador</dt><dd id="res-login"></dd></div>
+          <div><dt>Sub-rede</dt><dd id="res-cidr" class="mono"></dd></div>
+          <div><dt>Roteador (gateway)</dt><dd id="res-gateway" class="mono"></dd></div>
+          <div><dt>Varredura</dt><dd id="res-varredura"></dd></div>
+        </dl>
+        <p class="alerta" id="erro-concluir" role="alert" hidden></p>
+        <div class="seg-acoes">
+          <button class="botao botao-primario" id="concluir" type="submit">Concluir e entrar</button>
+          <button class="botao botao-fantasma" type="button" data-voltar>Voltar</button>
+        </div>
+      </form>
+
+      <p class="rodape-login">Acesso restrito. As tentativas são registradas.</p>
+      <p class="rodape-login versao" data-versao hidden></p>
+    </section>
+  </main>
+</body>
+</html>

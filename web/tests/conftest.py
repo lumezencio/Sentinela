@@ -456,10 +456,19 @@ class ServidorLocal:
     """uvicorn numa thread; ``derrubar``/``levantar`` simulam reiniciar o processo do core."""
 
     def __init__(
-        self, banco_url: str, porta: int, chave: Path, cert: Path, demo: bool = True
+        self,
+        banco_url: str,
+        porta: int,
+        chave: Path,
+        cert: Path,
+        demo: bool = True,
+        rede_sugerida: str = "",
+        gateway_sugerido: str = "",
     ) -> None:
         self._banco_url = banco_url
         self._demo = demo
+        self._rede_sugerida = rede_sugerida
+        self._gateway_sugerido = gateway_sugerido
         self.porta = porta
         self._chave = chave
         self._cert = cert
@@ -502,6 +511,12 @@ class ServidorLocal:
                 return r
 
         principal.ChecagemSimulada = ChecagemDoSmoke  # type: ignore[misc]
+        if not self._demo:
+            # sem demonstração o ping seria o ICMP real: o smoke nunca manda pacote à rede
+            async def ping_sem_rede(_destino: Any) -> bool:
+                return False
+
+            principal.ping_icmp = ping_sem_rede  # type: ignore[assignment]
 
         settings = Settings(
             ambiente="desenvolvimento",
@@ -509,6 +524,8 @@ class ServidorLocal:
             chave_sessao="chave-do-smoke-nao-secreta",  # noqa: S106 - só teste
             chave_credenciais=secrets.token_hex(32),
             demo=self._demo,
+            rede_sugerida=self._rede_sugerida,
+            gateway_sugerido=self._gateway_sugerido,
         )
         app = criar_app(settings)
 
@@ -640,6 +657,69 @@ def alvo_fila_grande(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]
     servidor.levantar()
     try:
         yield Alvo(f"https://127.0.0.1:{servidor.porta}", login, senha, servidor)
+    finally:
+        servidor.derrubar()
+
+
+REDE_DO_ASSISTENTE = "10.99.60.0/26"  # fictícia (repositório público)
+GATEWAY_DO_ASSISTENTE = "10.99.60.1"
+CODIGO_FICTICIO = "ABCD-2345"  # fictício; o arquivo guarda só o argon2id
+
+
+@dataclass
+class Instalacao:
+    """Core sem NENHUM usuário (instalação nova), com um código de instalação fictício."""
+
+    url: str
+    pasta: Path
+    codigo: str
+    servidor: ServidorLocal
+
+    def regravar_codigo(self, horas_atras: float = 0.0, codigo: str = CODIGO_FICTICIO) -> None:
+        """Grava de novo o código; ``horas_atras`` > 24 o deixa expirado."""
+        from sentinela.seguranca import instalacao
+
+        quando = dt.datetime.now(dt.UTC) - dt.timedelta(hours=horas_atras)
+        _em_thread(lambda: asyncio.run(instalacao.gravar(self.pasta, codigo, quando)))
+
+
+@pytest.fixture
+def instalacao_nova(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Instalacao]:
+    """Um core por teste, sem demonstração e sem usuário, com a rede sugerida e um código
+    fictício válido (o concluir do assistente apaga o código e cria o primeiro usuário)."""
+    if os.environ.get("SENTINELA_URL_SMOKE"):
+        pytest.skip("o assistente de primeiro acesso só roda com o core local do smoke")
+    pasta = tmp_path_factory.mktemp("instalacao")
+    banco_url = f"sqlite+aiosqlite:///{(pasta / 'novo.db').as_posix()}"
+
+    async def preparar() -> None:
+        import sentinela.db.modelos  # noqa: F401 - registra as tabelas no Base
+        from sentinela.db.base import Base
+        from sentinela.db.sessao import criar_motor
+
+        motor = criar_motor(banco_url)
+        try:
+            async with motor.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+        finally:
+            await motor.dispose()
+
+    _em_thread(lambda: asyncio.run(preparar()))
+    chave, cert = _certificado(pasta)
+    servidor = ServidorLocal(
+        banco_url,
+        _porta_livre(),
+        chave,
+        cert,
+        demo=False,
+        rede_sugerida=REDE_DO_ASSISTENTE,
+        gateway_sugerido=GATEWAY_DO_ASSISTENTE,
+    )
+    inst = Instalacao(f"https://127.0.0.1:{servidor.porta}", pasta, CODIGO_FICTICIO, servidor)
+    inst.regravar_codigo()
+    servidor.levantar()
+    try:
+        yield inst
     finally:
         servidor.derrubar()
 
