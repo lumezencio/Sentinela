@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -1599,11 +1599,11 @@ wheels = [
 
 [[package]]
 name = "pyotp"
-version = "2.10.0"
+version = "2.12.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2d/c6/c5d96a86fd0bf6fa1bbb5c5c341ff3208638b692727a683c8289068d9a11/pyotp-2.10.0.tar.gz", hash = "sha256:d01e9703443616b03c57c700b5cbffd56a1f929c1b0f8f03131bc78c1fca9d3f", size = 18625, upload-time = "2026-06-14T03:48:49.221Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/81/51/02d8f9400d6e86fa9358bc091d31d20d325ba833d209099a22fc7784e653/pyotp-2.12.0.tar.gz", hash = "sha256:638ea37341567ec01277af3a16b682590d938f54f8ed3fb31963513233fd05f2", size = 26858, upload-time = "2026-11-15T22:03:06.513Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/33/7b83bde70eddaaaaef487751a9c3a5cc0c0be54620ded0e120ebdc401ff9/pyotp-2.10.0-py3-none-any.whl", hash = "sha256:1df2f6a1bcc3bb0716172a5215ddc2f8c7c7fd26a13df9927d52e1746934836c", size = 13768, upload-time = "2026-06-14T03:48:47.831Z" },
+    { url = "https://files.pythonhosted.org/packages/93/8e/a293e976f73fed42e19cd7921175c6aac66cedbf8bed91766d3506fdea33/pyotp-2.12.0-py3-none-any.whl", hash = "sha256:d66830ab614e857c1e1b810b80384bcf7d437972f1e96625686e128e2e17ff83", size = 16734, upload-time = "2026-11-15T22:03:05.143Z" },
 ]
 
 [[package]]
@@ -1617,14 +1617,14 @@ wheels = [
 
 [[package]]
 name = "pysnmp"
-version = "7.1.30"
+version = "7.1.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyasn1" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/55/2a/ab68df5b1a2f673da731da7caf39c29d924735359e7d50eacb80d2d38e53/pysnmp-7.1.30.tar.gz", hash = "sha256:db72f439b066725d2586dff068478dc8e9b303a4dba3294462b0e76b3cb63bc2", size = 268625, upload-time = "2026-09-28T07:51:09.188Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/87/fd716527e6f0822d978c9b2bd4f4435f2a2320089938b8051c3fd72898c4/pysnmp-7.1.33.tar.gz", hash = "sha256:bce415342dac9021823c7f98325989e03868f239e899776cd31e380900d32ea5", size = 270715, upload-time = "2026-11-16T01:17:02.22Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/41/6e/5ba915d4aa285d7ca7c8c3db0dddb5d848e9f85e383de064122fb0702c7b/pysnmp-7.1.30-py3-none-any.whl", hash = "sha256:1f648b7e38fc400e63b493a45d06581d837d07cddd901e6dc9c45be03e9ed685", size = 355559, upload-time = "2026-09-28T07:51:07.606Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/60/ca62c932c986fa36b9006202d808d8b6ef9b8b47d98abccafb1c0eb04527/pysnmp-7.1.33-py3-none-any.whl", hash = "sha256:26f94496c4445cb728213964c13150552e7cc1702307cb49341e8fe88dfc4165", size = 357563, upload-time = "2026-11-16T01:17:00.785Z" },
 ]
 
 [[package]]
@@ -1846,8 +1846,8 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "icmplib", specifier = ">=3.0.4" },
     { name = "pydantic-settings", specifier = ">=2.16.3" },
-    { name = "pyotp", specifier = "==2.10.0" },
-    { name = "pysnmp", specifier = "==7.1.30" },
+    { name = "pyotp", specifier = "==2.12.0" },
+    { name = "pysnmp", specifier = "==7.1.33" },
     { name = "python-multipart", specifier = ">=0.0.34" },
     { name = "segno", specifier = "==1.6.6" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.8" },
