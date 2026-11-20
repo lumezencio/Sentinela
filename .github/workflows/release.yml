@@ -196,11 +196,13 @@ jobs:
       - name: install.sh com as imagens publicadas e assinadas (execução manual)
         if: github.event_name == 'workflow_dispatch'
         run: ./install.sh
-      - name: as imagens são mesmo arm64
+      - name: os contêineres rodam mesmo em arm64
+        # pergunta ao contêiner em execução (no store containerd, o inspect de uma imagem multi-arch
+        # devolve a arquitetura vazia); prova que é a variante arm64 que está de pé
         run: |
           for s in core web; do
-            arq="$(docker image inspect --format '{{.Architecture}}' "ghcr.io/lumezencio/sentinela-$s:$VERSAO")"
-            [ "$arq" = arm64 ] || { echo "::error::sentinela-$s é $arq, esperado arm64"; exit 1; }
+            arq="$(docker compose exec -T "$s" uname -m | tr -d '[:space:]')"
+            [ "$arq" = aarch64 ] || { echo "::error::sentinela-$s roda em '$arq', esperado aarch64"; exit 1; }
           done
       - name: saúde, página de login e login (204)
         run: |
