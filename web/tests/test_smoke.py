@@ -23,8 +23,8 @@ from playwright.sync_api import Browser, ConsoleMessage, Page, Response, Route, 
 from conftest import Alvo
 
 TETO_PRIMEIRA_TELA = 150 * 1024  # gzip, §12
-TOTAL_DEMO = 300
-CAMERAS_DEMO = 120
+TOTAL_DEMO = 300 + 7  # rede sintética + os 7 aparelhos da rede do Diagnóstico (10.99.0.0/24)
+CAMERAS_DEMO = 120 + 3  # mais as 3 câmeras da rede do Diagnóstico
 POR_PAGINA = 50
 TIPOS_PRIMEIRA_TELA = ("document", "script", "stylesheet", "image", "fetch", "font")
 
@@ -1007,7 +1007,7 @@ def test_organograma_filtros_compartilhados_recolher_e_painel(page: Page, alvo: 
     page.get_by_role("combobox", name="Classe").select_option(label="Gravadores")
     secao = abrir_organograma(page)
     expect(secao.locator(".org-cartao")).to_have_count(1)
-    expect(secao.locator('.org-cartao[data-slug="gravador"] .org-item')).to_have_count(8)
+    expect(secao.locator('.org-cartao[data-slug="gravador"] .org-item')).to_have_count(9)  # 8 da rede sintética + o da rede do Diagnóstico
     expect(secao.get_by_role("combobox", name="Classe")).to_have_value("gravador")
     secao.get_by_role("combobox", name="Classe").select_option(label="Todas")
     page.get_by_role("tab", name="Lista").click()

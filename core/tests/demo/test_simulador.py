@@ -222,6 +222,10 @@ def test_nunca_abre_socket_em_subprocesso() -> None:
     assert r.stdout.strip() == "ok"
 
 
+# 300 da rede sintética + os aparelhos da rede do Diagnóstico (10.99.0.0/24)
+TOTAL_DEMO = 300 + len(simulador.APARELHOS_DIAGNOSTICO)
+
+
 @pytest.fixture
 def settings_demo(settings: Settings) -> Settings:
     return settings.model_copy(update={"demo": True})
@@ -233,9 +237,9 @@ async def test_app_demo_semeia_300_equipamentos(settings_demo: Settings) -> None
     async with app.router.lifespan_context(app):
         sessoes: async_sessionmaker[AsyncSession] = app.state.sessoes
         async with sessoes() as db:
-            assert await db.scalar(select(func.count()).select_from(Equipamento)) == 300
+            assert await db.scalar(select(func.count()).select_from(Equipamento)) == TOTAL_DEMO
             cidrs = set((await db.execute(select(SubRede.cidr))).scalars())
-        assert cidrs == {str(s) for s in SUB_REDES}
+        assert cidrs == {str(s) for s in SUB_REDES} | {simulador.SUB_REDE_DIAGNOSTICO}
         app.state.guarda.validar("10.99.10.10", None, "icmp")
 
 
@@ -246,8 +250,8 @@ async def test_semeadura_idempotente(settings_demo: Settings) -> None:
         async with app.router.lifespan_context(app):
             sessoes: async_sessionmaker[AsyncSession] = app.state.sessoes
             async with sessoes() as db:
-                assert await db.scalar(select(func.count()).select_from(Equipamento)) == 300
-                assert await db.scalar(select(func.count()).select_from(SubRede)) == 6
+                assert await db.scalar(select(func.count()).select_from(Equipamento)) == TOTAL_DEMO
+                assert await db.scalar(select(func.count()).select_from(SubRede)) == 7
 
 
 async def test_api_equipamentos_total_300(settings_demo: Settings) -> None:
@@ -263,7 +267,7 @@ async def test_api_equipamentos_total_300(settings_demo: Settings) -> None:
             assert r.status_code == 204
             r = await c.get("/api/v1/equipamentos", params={"limit": 5})
             assert r.status_code == 200
-            assert r.json()["total"] == 300
+            assert r.json()["total"] == TOTAL_DEMO
 
 
 async def test_demo_desligado_nao_semeia(settings: Settings) -> None:
@@ -326,7 +330,7 @@ async def test_demo_reabre_banco_marcado_como_demo(settings_demo: Settings) -> N
         async with app.router.lifespan_context(app):
             async with app.state.sessoes() as db:
                 total = await db.scalar(select(func.count()).select_from(Equipamento))
-            assert total == 300  # semeado uma vez só: reabrir não duplica
+            assert total == TOTAL_DEMO  # semeado uma vez só: reabrir não duplica
             assert await simulador.banco_e_demo(app.state.sessoes)
             assert len(app.state.guarda._sub_redes) > 0
 

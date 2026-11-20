@@ -138,8 +138,8 @@ def medir(modo: str, total: int, segundos: int) -> list[tuple[str, float, str, s
             page.get_by_label("Senha").fill(senha)
             page.get_by_role("button", name="Entrar").click()
             page.wait_for_url("**/index.html")
-            expect(page.locator("#contador-total")).to_have_text("300", timeout=20_000)
-            if total > 300:
+            expect(page.locator("#contador-total")).to_have_text("307", timeout=20_000)
+            if total > 307:
                 criar = criar_sinteticos(page, banco, total)
                 print(f"criados {criar} equipamentos sintéticos", file=sys.stderr)
                 page.reload()

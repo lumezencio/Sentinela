@@ -27,6 +27,7 @@ from sentinela.api import (
     config_seguranca,
     config_telegram,
     descobertas,
+    diagnostico,
     equipamentos,
     fontes,
     importacao,
@@ -53,6 +54,7 @@ from sentinela.demo.simulador import (
     hierarquia_demo,
     semear_alertas_demo,
     semear_demo,
+    semear_diagnostico_demo,
     semear_fontes_demo,
     tem_equipamentos,
 )
@@ -124,6 +126,7 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
         await semear_demo(app.state.sessoes)
         await semear_fontes_demo(app.state.sessoes)
         await semear_alertas_demo(app.state.sessoes, agora_utc())
+        await semear_diagnostico_demo(app.state.sessoes, agora_utc())
         pai, filhos = hierarquia_demo(gerar_rede())
         simulada = ChecagemSimulada(  # uma por app, para todo tipo
             relogio=app.state.relogio,
@@ -424,6 +427,7 @@ def criar_app(
     app.include_router(varredura.router)
     app.include_router(silencios.router)
     app.include_router(alertas.router)
+    app.include_router(diagnostico.router)
     app.include_router(config_descoberta.router)
     app.include_router(config_geral.router)
     app.include_router(config_telegram.router)
