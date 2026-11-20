@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# id de teste: "-nG" responde SHIM_ID_GRUPOS (padrão "users": fora do grupo docker, mesmo que o usuário
+# real do computador/CI esteja nele); o resto vai ao id real.
+if [[ "${1:-}" == "-nG" ]]; then
+  echo "${SHIM_ID_GRUPOS:-users}"
+  exit 0
+fi
+exec "$(command -p -v id)" "$@"

@@ -46,19 +46,31 @@ FIM
 # sem_docker_no_path: PATH sem nenhum diretório com docker (o do Docker Desktop, se houver, e o shim);
 # os outros shims são copiados para uma pasta própria, onde o script oficial "instala" o docker falso
 sem_docker_no_path() {
-  local bin="$SHIM_DIR/bin-sem-docker" f d novo=""
+  local bin="$SHIM_DIR/bin-sem-docker" f d novo="" n=0 espelho
   mkdir -p "$bin"
   for f in "$LIB_DIR"/shims/*; do
     [[ "$(basename "$f")" == docker ]] || cp "$f" "$bin/"
   done
+  # hermético: todo diretório do PATH que tenha um docker (o real, no CI e no Docker Desktop) é
+  # trocado por um espelho de links para tudo o que há nele, menos o docker
   local IFS=:
   for d in $PATH; do
     [[ "$d" == "$LIB_DIR/shims" ]] && continue
-    if [[ -x "$d/docker" || -x "$d/docker.exe" ]]; then continue; fi
+    if [[ -x "$d/docker" || -x "$d/docker.exe" ]]; then
+      n=$((n + 1))
+      espelho="$SHIM_DIR/espelho-$n"
+      mkdir -p "$espelho"
+      for f in "$d"/*; do
+        case "$(basename "$f")" in docker | docker.exe | docker-*) continue ;; esac
+        ln -s "$f" "$espelho/$(basename "$f")" 2>/dev/null || true
+      done
+      d="$espelho"
+    fi
     novo+="${novo:+:}$d"
   done
   PATH="$bin:$novo"
   export PATH
+  if command -v docker >/dev/null 2>&1; then _falhou "o PATH hermético ainda acha um docker: $(command -v docker)"; fi
 }
 
 ambiente() {
