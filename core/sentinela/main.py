@@ -66,6 +66,7 @@ from sentinela.descoberta.orquestrador import (
     fabricar_coletor,
 )
 from sentinela.descoberta.varredura import Ping, Varredura, ping_icmp
+from sentinela.descoberta.varredura_continua import VarreduraContinua, registrar_fim
 from sentinela.horario import zona
 from sentinela.monitor.gravador import GravadorAmostras
 from sentinela.monitor.limpeza import limpar_periodicamente
@@ -217,6 +218,11 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
     app.state.cofre = cofre
     app.state.orquestrador = orquestrador
     app.state.leitor_canais = leitor
+    sessoes = app.state.sessoes
+
+    async def ao_terminar(sub_rede_id: int, estado: str) -> None:
+        await registrar_fim(sessoes, sub_rede_id, estado, agora_utc())
+
     app.state.varredura = Varredura(
         app.state.sessoes,
         monitor.guarda,
@@ -225,6 +231,13 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
         app.state.relogio,
         ping=ping,
         entregar=orquestrador.processar_achados,
+        ao_terminar=ao_terminar,
+    )
+    # demonstração: nenhum pacote sai, então não há varredura contínua
+    app.state.varredura_continua = (
+        None
+        if settings.demo
+        else VarreduraContinua(app.state.sessoes, app.state.varredura, app.state.relogio, agora_utc)
     )
 
 
@@ -259,6 +272,12 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         tarefas.append(
             asyncio.create_task(app.state.leitor_canais.executar(), name="sentinela-canais")
         )
+        if app.state.varredura_continua is not None:  # nunca no modo demonstração
+            tarefas.append(
+                asyncio.create_task(
+                    app.state.varredura_continua.executar(), name="sentinela-varredura-continua"
+                )
+            )
         tarefas.append(
             asyncio.create_task(app.state.silencios.executar(), name="sentinela-silencios")
         )
@@ -280,6 +299,10 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        for tarefa in tarefas:  # o laço agendado para antes: não inicia varredura nova
+            if tarefa.get_name() == "sentinela-varredura-continua":
+                tarefa.cancel()
+                await asyncio.gather(tarefa, return_exceptions=True)
         await app.state.varredura.encerrar()
         # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
         await app.state.orquestrador.encerrar()

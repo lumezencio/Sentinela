@@ -1,5 +1,6 @@
-"""Ajustes da descoberta (tabela ``config``): aprovação automática e limiar (admin; PATCH
-com CSRF e auditado). O ritmo da varredura só é lido aqui: muda só no banco/código."""
+"""Ajustes da descoberta (tabela ``config``): aprovação automática, limiar e intervalo da
+varredura contínua, 15–240 min (admin; PATCH com CSRF e auditado). O ritmo por IP da varredura
+só é lido aqui: muda só no banco/código."""
 
 from typing import Annotated
 
@@ -12,6 +13,7 @@ from sentinela.db.modelos import Usuario
 from sentinela.descoberta.ajustes import (
     APROVACAO_AUTOMATICA,
     LIMIAR_APROVACAO,
+    VARREDURA_CONTINUA,
     AjustesDescoberta,
     gravar_ajuste,
     ler_ajustes,
@@ -19,7 +21,11 @@ from sentinela.descoberta.ajustes import (
 
 router = APIRouter(prefix="/api/v1/config/descoberta", tags=["config"])
 Admin = Annotated[Usuario, Depends(exigir_admin)]
-_CHAVES = {"aprovacao_automatica": APROVACAO_AUTOMATICA, "limiar_aprovacao": LIMIAR_APROVACAO}
+_CHAVES = {
+    "aprovacao_automatica": APROVACAO_AUTOMATICA,
+    "limiar_aprovacao": LIMIAR_APROVACAO,
+    "varredura_continua_min": VARREDURA_CONTINUA,
+}
 
 
 def _saida(a: AjustesDescoberta) -> AjustesSaida:
@@ -27,6 +33,7 @@ def _saida(a: AjustesDescoberta) -> AjustesSaida:
         aprovacao_automatica=a.aprovacao_automatica,
         limiar_aprovacao=a.limiar_aprovacao,
         intervalo_varredura_ips_s=a.intervalo_varredura_ips_s,
+        varredura_continua_min=a.varredura_continua_min,
     )
 
 

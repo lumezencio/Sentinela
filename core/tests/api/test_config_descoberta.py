@@ -9,7 +9,12 @@ from fastapi import FastAPI
 from sentinela.descoberta.ajustes import ler_ajustes
 from tests.api.apoio_descoberta import CONFIG, auditorias, sessoes
 
-PADRAO = {"aprovacao_automatica": False, "limiar_aprovacao": 0.8, "intervalo_varredura_ips_s": 0.5}
+PADRAO = {
+    "aprovacao_automatica": False,
+    "limiar_aprovacao": 0.8,
+    "intervalo_varredura_ips_s": 0.5,
+    "varredura_continua_min": 30,
+}
 
 
 async def test_get_padrao(cliente_admin: httpx.AsyncClient) -> None:
@@ -63,3 +68,27 @@ async def test_patch_sem_csrf_403(cliente_admin: httpx.AsyncClient) -> None:
     del cliente_admin.headers["X-CSRF"]
     r = await cliente_admin.patch(CONFIG, json={"aprovacao_automatica": True})
     assert r.status_code == 403
+
+
+@pytest.mark.parametrize("minutos", [14, 241, 0, -5, "30", 30.5, None])
+async def test_config_varredura_continua_limites(
+    cliente_admin: httpx.AsyncClient, minutos: Any
+) -> None:
+    r = await cliente_admin.patch(CONFIG, json={"varredura_continua_min": minutos})
+    assert r.status_code == 422
+    assert (await cliente_admin.get(CONFIG)).json()["varredura_continua_min"] == 30
+
+
+@pytest.mark.parametrize("minutos", [15, 60, 240])
+async def test_config_varredura_continua_grava_e_audita(
+    app: FastAPI, cliente_admin: httpx.AsyncClient, minutos: int
+) -> None:
+    r = await cliente_admin.patch(CONFIG, json={"varredura_continua_min": minutos})
+    assert r.status_code == 200, r.text
+    assert r.json()["varredura_continua_min"] == minutos
+    async with sessoes(app)() as db:
+        assert (await ler_ajustes(db)).varredura_continua_min == minutos
+    auditoria = (await auditorias(app))[-1]
+    assert auditoria.acao == "config.descoberta"
+    assert auditoria.antes == {"varredura_continua_min": 30}
+    assert auditoria.depois == {"varredura_continua_min": minutos}

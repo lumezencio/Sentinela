@@ -612,6 +612,7 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
             "sentinela-descarga",
             "sentinela-descoberta",
             "sentinela-canais",
+            "sentinela-varredura-continua",
             "sentinela-silencios",
             "sentinela-alertas",
             "sentinela-telegram",

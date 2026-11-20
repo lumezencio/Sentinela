@@ -101,7 +101,14 @@ async def test_pula_rede_e_broadcast(cena: Cena) -> None:
     v = _varredura(cena, ping, entregas)
     sub = await _sub_rede(cena, PEQUENA)
     progresso = await v.iniciar(sub)
-    assert progresso == {"cidr": PEQUENA, "feitos": 0, "total": 8, "achados": 0}
+    assert progresso == {
+        "cidr": PEQUENA,
+        "feitos": 0,
+        "total": 8,
+        "achados": 0,
+        "origem": "manual",
+        "sub_rede_id": sub,
+    }
     await _ate_terminar(cena, v)
     assert [ip for ip, _ in ping.chamadas] == [f"10.99.2.{n}" for n in range(1, 7)]
     assert sorted(ip for ip in entregas.ips if ip) == ["10.99.2.3", "10.99.2.5"]
@@ -275,3 +282,81 @@ async def test_revogar_cancela_so_a_varredura_da_sub_rede(cena: Cena) -> None:
     await cena.relogio.avancar(10)
     assert len(ping.chamadas) == feitos
     assert cena.barramento.do_tipo("varredura")[-1]["estado"] == "cancelada"
+
+
+async def test_progresso_tem_origem_e_sub_rede(cena: Cena) -> None:
+    v = _varredura(cena, PingEspiao(cena))
+    sub = await _sub_rede(cena, PEQUENA)
+    await v.iniciar(sub, "agendada")
+    progresso = v.progresso()
+    assert progresso is not None
+    assert progresso["origem"] == "agendada" and progresso["sub_rede_id"] == sub
+    await _ate_terminar(cena, v)
+    fim = cena.barramento.do_tipo("varredura")[-1]
+    assert fim["origem"] == "agendada" and fim["sub_rede_id"] == sub
+
+
+def _com_gancho(cena: Cena, fins: list[tuple[int, str]]) -> Varredura:
+    async def ao_terminar(sub_rede_id: int, estado: str) -> None:
+        fins.append((sub_rede_id, estado))
+
+    return Varredura(
+        cena.sessoes,
+        cena.guarda,
+        cena.limitador,
+        cena.barramento,
+        cena.relogio,
+        ping=PingEspiao(cena),
+        ao_terminar=ao_terminar,
+    )
+
+
+async def test_ao_terminar_uma_vez_com_o_estado(
+    cena: Cena, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fins: list[tuple[int, str]] = []
+    v = _com_gancho(cena, fins)
+    pequena = await _sub_rede(cena, PEQUENA)
+    await v.iniciar(pequena)
+    assert fins == []  # só no fim
+    await _ate_terminar(cena, v)
+    assert fins == [(pequena, "concluida")]
+    # cancelada por revogar
+    grande = await _sub_rede(cena, SUB_VARREDURA)
+    await v.iniciar(grande)
+    await cena.relogio.avancar(2)
+    assert await v.revogar(grande) is True
+    assert fins == [(pequena, "concluida"), (grande, "cancelada")]
+
+    # falhou: o limitador estoura no meio
+    async def estoura(*_a: object, **_k: object) -> None:
+        raise RuntimeError("limitador")
+
+    monkeypatch.setattr(cena.limitador, "adquirir", estoura)
+    await v.iniciar(pequena)
+    await _ate_terminar(cena, v)
+    assert fins == [(pequena, "concluida"), (grande, "cancelada"), (pequena, "falhou")]
+    assert cena.barramento.do_tipo("varredura")[-1]["estado"] == "falhou"
+
+
+async def test_ao_terminar_com_erro_nao_quebra_a_varredura(
+    cena: Cena, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def quebra(_sub: int, _estado: str) -> None:
+        raise RuntimeError("detalhe-interno")
+
+    v = Varredura(
+        cena.sessoes,
+        cena.guarda,
+        cena.limitador,
+        cena.barramento,
+        cena.relogio,
+        ping=PingEspiao(cena),
+        ao_terminar=quebra,
+    )
+    await v.iniciar(await _sub_rede(cena, PEQUENA))
+    await _ate_terminar(cena, v)
+    assert cena.barramento.do_tipo("varredura")[-1]["estado"] == "concluida"
+    assert "RuntimeError" in caplog.text and "detalhe-interno" not in caplog.text
+    await v.iniciar(await _sub_rede(cena, PEQUENA))  # a próxima ainda começa
+    await _ate_terminar(cena, v)
