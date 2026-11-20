@@ -128,14 +128,20 @@ def test_gravar_atomico_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 def test_arquivo_ilegivel_e_guardado_antes_de_ser_sobrescrito(tmp_path: Path) -> None:
     (tmp_path / atualizacao.ARQUIVO).write_bytes(b'{"ativo": false, lixo')
     atualizacao.registrar(tmp_path, "falhou", None, None, "x", AGORA)
-    assert (tmp_path / atualizacao.ARQUIVO_ILEGIVEL).read_bytes() == b'{"ativo": false, lixo'
+    copias = atualizacao.copias_ilegiveis(tmp_path)
+    assert len(copias) == 1
+    assert (tmp_path / copias[0]).read_bytes() == b'{"ativo": false, lixo'
+    # uma segunda corrupção não apaga a primeira cópia
+    (tmp_path / atualizacao.ARQUIVO).write_bytes(b"outro lixo")
+    atualizacao.registrar(tmp_path, "falhou", None, None, "x", AGORA)
+    assert len(atualizacao.copias_ilegiveis(tmp_path)) == 2
     assert atualizacao.ilegivel(tmp_path) is False
 
 
 def test_arquivo_valido_nao_gera_copia_ilegivel(tmp_path: Path) -> None:
     atualizacao.definir_ativo(tmp_path, False)
     atualizacao.registrar(tmp_path, "sem_conexao", None, None, None, AGORA)
-    assert not (tmp_path / atualizacao.ARQUIVO_ILEGIVEL).exists()
+    assert atualizacao.copias_ilegiveis(tmp_path) == []
     assert atualizacao.aviso(atualizacao.ler(tmp_path), AGORA) is None
 
 
@@ -157,3 +163,41 @@ def test_trava_de_escrita_expira_e_nao_grava(
         fcntl.flock(descritor, fcntl.LOCK_UN)
         os.close(descritor)
     assert atualizacao.definir_ativo(tmp_path, True).ativo is True
+
+
+def test_aviso_de_mais_de_7_dias_sem_verificar_com_sucesso() -> None:
+    ok = AGORA - timedelta(days=8)
+    base = EstadoAtualizacao(agendado=True, ultimo_sucesso=ok, resultado="sem_conexao")
+    assert (
+        atualizacao.aviso(base, AGORA)
+        == f"O Sentinela não conseguiu verificar atualizações desde {ok:%d/%m}"
+    )
+    recente = AGORA - timedelta(days=6)
+    assert (
+        atualizacao.aviso(EstadoAtualizacao(agendado=True, ultimo_sucesso=recente), AGORA) is None
+    )
+    # desligada, sem timer ou sem nenhum sucesso registrado: sem alarme
+    desligada = EstadoAtualizacao(agendado=True, ativo=False, ultimo_sucesso=ok)
+    assert atualizacao.aviso(desligada, AGORA) is None
+    assert atualizacao.aviso(EstadoAtualizacao(ultimo_sucesso=ok), AGORA) is None
+    assert atualizacao.aviso(EstadoAtualizacao(agendado=True), AGORA) is None
+
+
+def test_ultimo_sucesso_so_muda_com_atualizado_ou_sem_novidade(tmp_path: Path) -> None:
+    t1, t2, t3 = AGORA - timedelta(days=9), AGORA - timedelta(days=8), AGORA - timedelta(days=7)
+    primeiro = atualizacao.registrar(tmp_path, "sem_novidade", None, None, None, t1)
+    assert primeiro.ultimo_sucesso == t1
+    for r in ("sem_conexao", "falhou", "voltou"):
+        e = atualizacao.registrar(tmp_path, r, None, None, None, t2)  # type: ignore[arg-type]
+        assert e.ultimo_sucesso == t1
+    e = atualizacao.registrar(tmp_path, "atualizado", "0.4.0", "0.5.0", None, t3)
+    assert e.ultimo_sucesso == t3
+    assert atualizacao.ler(tmp_path).ultimo_sucesso == t3
+
+
+def test_arquivo_antigo_sem_ultimo_sucesso_deriva_do_resultado(tmp_path: Path) -> None:
+    (tmp_path / atualizacao.ARQUIVO).write_text(
+        json.dumps({"resultado": "sem_novidade", "ultima_verificacao": AGORA.isoformat()}),
+        encoding="utf-8",
+    )
+    assert atualizacao.ler(tmp_path).ultimo_sucesso == AGORA

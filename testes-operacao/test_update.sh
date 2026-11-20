@@ -872,9 +872,11 @@ test_registro_usa_argv_sem_eval_e_mensagem_com_hifen() {
     _falhou "nada de eval"
 }
 
+DNS_GIT="fatal: unable to access 'https://github.com/x/sentinela.git/': Could not resolve host: github.com"
+
 test_automatico_sem_rede_no_fetch_sai_0_e_registra_sem_conexao() {
   ambiente
-  git_real remote set-url origin "$SHIM_DIR/nao-existe.git"
+  export SHIM_GIT_FETCH_ERRO="$DNS_GIT"
   automatico || _falhou "sem rede não pode falhar a unidade: $(cat "$TMP_OP/saida-update")"
   afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
   afirmar_log_nao_contem "--resultado falhou"
@@ -882,9 +884,23 @@ test_automatico_sem_rede_no_fetch_sai_0_e_registra_sem_conexao() {
   afirmar_igual "$(versao_atual)" "v0.4.0"
 }
 
+test_automatico_fetch_com_erro_que_nao_e_de_rede_e_falha() {
+  ambiente
+  local erro
+  for erro in "fatal: unable to access 'https://github.com/x/': SSL certificate problem: unable to get local issuer certificate" \
+    "remote: Permission denied to x. fatal: unable to access 'https://github.com/x/': The requested URL returned error: 403" \
+    "fatal: 'origin' does not appear to be a git repository"; do
+    : >"$SHIM_LOG"
+    export SHIM_GIT_FETCH_ERRO="$erro"
+    if automatico; then _falhou "não é erro de rede, deveria falhar: $erro"; fi
+    afirmar_log_contem "$REGISTRAR --resultado falhou"
+    afirmar_log_nao_contem "sem_conexao"
+  done
+}
+
 test_manual_sem_rede_continua_sendo_erro() {
   ambiente
-  git_real remote set-url origin "$SHIM_DIR/nao-existe.git"
+  export SHIM_GIT_FETCH_ERRO="$DNS_GIT"
   if atualizar v0.5.0; then _falhou "o manual deve falhar sem rede"; fi
   afirmar_log_contem "$REGISTRAR --resultado falhou"
 }
@@ -893,7 +909,7 @@ test_automatico_sem_rede_no_pull_volta_arquivos_e_sai_0() {
   ambiente
   modo_publicadas
   com_cosign
-  export SHIM_FALHAR="*compose pull*"
+  export SHIM_PULL_ERRO='Get "https://ghcr.io/v2/": dial tcp: lookup ghcr.io on 127.0.0.53:53: no such host'
   automatico || _falhou "sem rede no pull não pode falhar a unidade"
   afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
   for p in backup-criar "$COMPOSE_CORE_UP" " stop core"; do afirmar_log_nao_contem "$p"; done
@@ -901,12 +917,58 @@ test_automatico_sem_rede_no_pull_volta_arquivos_e_sai_0() {
   grep -qx 'VERSAO=0.4.0' "$TMP_OP/.env" || _falhou "o .env deveria voltar"
 }
 
-test_automatico_sem_digests_do_release_sai_0_sem_conexao() {
+test_automatico_pull_com_erro_que_nao_e_de_rede_e_falha() {
   ambiente
   modo_publicadas
-  automatico || _falhou "sem o digests.txt (rede) não pode falhar a unidade"
+  com_cosign
+  local erro
+  for erro in "unauthorized: authentication required" "manifest unknown: manifest unknown" \
+    'tls: failed to verify certificate: x509: certificate signed by unknown authority'; do
+    : >"$SHIM_LOG"
+    export SHIM_PULL_ERRO="$erro"
+    if automatico; then _falhou "não é erro de rede, deveria falhar: $erro"; fi
+    afirmar_log_contem "$REGISTRAR --resultado falhou"
+    afirmar_log_nao_contem "sem_conexao"
+    afirmar_igual "$(versao_atual)" "v0.4.0"
+    rm -rf "$TMP_OP/.operacao.lock"
+  done
+}
+
+test_automatico_sem_digests_do_release_por_dns_sai_0_sem_conexao() {
+  ambiente
+  modo_publicadas
+  export SHIM_CURL_RC=6
+  automatico || _falhou "sem o digests.txt (DNS) não pode falhar a unidade"
   afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
   afirmar_log_nao_contem "compose pull"
+}
+
+test_automatico_digests_com_http_ou_tls_e_falha() {
+  ambiente
+  modo_publicadas
+  local rc
+  for rc in 22 35 51 58 60; do
+    : >"$SHIM_LOG"
+    export SHIM_CURL_RC="$rc"
+    if automatico; then _falhou "curl $rc não é rede fora do ar, deveria falhar"; fi
+    afirmar_log_contem "$REGISTRAR --resultado falhou"
+    afirmar_log_nao_contem "sem_conexao"
+    afirmar_log_nao_contem "compose pull"
+    rm -rf "$TMP_OP/.operacao.lock"
+  done
+}
+
+test_automatico_offline_com_arquivos_nao_revertidos_continua_falha() {
+  ambiente
+  modo_publicadas
+  com_cosign
+  export SHIM_PULL_ERRO='Get "https://ghcr.io/v2/": dial tcp: lookup ghcr.io on 127.0.0.53:53: no such host'
+  # as duas marcações de proteção (chamadas 1 e 2 de "tag") passam; a devolução delas (3 e 4) falha
+  export SHIM_FALHAR="3-4:tag *"
+  if automatico; then _falhou "sem devolver os arquivos não pode virar sem_conexao"; fi
+  grep -qF "não consegui restaurar tudo" "$TMP_OP/saida-update" || _falhou "deveria relatar a volta incompleta"
+  afirmar_log_contem "$REGISTRAR --resultado falhou"
+  afirmar_log_nao_contem "sem_conexao"
 }
 
 test_automatico_falha_de_verdade_continua_saindo_1() {

@@ -21,6 +21,7 @@ async def test_sem_arquivo_sem_agendamento(cliente_visualizador: httpx.AsyncClie
         "ativo": True,
         "agendado": False,
         "ultima_verificacao": None,
+        "ultima_verificacao_ok": None,
         "resultado": None,
         "de": None,
         "para": None,

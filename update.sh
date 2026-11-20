@@ -351,8 +351,10 @@ finalizar() {
     voltar || true
     rc=1
   fi
-  if [[ $rc -ne 0 && $AUTOMATICO -eq 1 && $OFFLINE -eq 1 && $TOCOU -eq 0 && $INTERROMPIDO -eq 0 ]]; then
-    # automático sem rede (ou GitHub/GHCR fora): nada foi trocado e não é falha da atualização;
+  if [[ $rc -ne 0 && $AUTOMATICO -eq 1 && $OFFLINE -eq 1 && $TOCOU -eq 0 && $INTERROMPIDO -eq 0 &&
+    ($PROTEGIDO -eq 0 || $ARQUIVOS_REVERTIDOS -eq 1) ]]; then
+    # automático sem rede (erro inequívoco de DNS/conexão/tempo): nada foi trocado e os arquivos
+    # foram devolvidos (ou nunca mudaram); não é falha da atualização;
     # estado próprio, sem alarme, e a unidade do systemd não fica "failed" toda noite
     echo "sem conexão para verificar a atualização; tenta de novo na próxima noite." >&2
     rc=0
@@ -585,7 +587,11 @@ main() {
   detectar_arquivos_compose
   saude_ok || falhar "o core não está saudável agora; corrija antes de atualizar (nada foi alterado)"
 
-  git fetch --tags --quiet || falhar_sem_conexao "não consegui buscar as tags do repositório (nada foi alterado)"
+  if ! saida_rede="$(git fetch --tags --quiet 2>&1)"; then
+    [[ -z "$saida_rede" ]] || echo "$saida_rede" >&2
+    if texto_de_rede "$saida_rede"; then OFFLINE=1; fi
+    falhar "não consegui buscar as tags do repositório (nada foi alterado)"
+  fi
   resolver_alvo "$versao_arg"
   SHA_ANTERIOR="$(git rev-parse HEAD)"
   VERSAO_ANTERIOR="$(valor_env VERSAO "")"
@@ -637,8 +643,13 @@ main() {
     ID_ALVO_CORE_ANTES="$(id_da_tag "$IMG_REPO_CORE:$VERSAO_ALVO")"
     ID_ALVO_WEB_ANTES="$(id_da_tag "$IMG_REPO_WEB:$VERSAO_ALVO")"
     TAGS_ALVO_BAIXADAS=1
-    compose pull core web ||
-      falhar_sem_conexao "não consegui baixar as imagens da versão $VERSAO_ALVO (rede, ghcr.io ou versão não publicada); nenhum contêiner foi trocado"
+    if saida_rede="$(compose pull core web 2>&1)"; then
+      [[ -z "$saida_rede" ]] || echo "$saida_rede"
+    else
+      [[ -z "$saida_rede" ]] || echo "$saida_rede" >&2
+      if texto_de_rede "$saida_rede"; then OFFLINE=1; fi
+      falhar "não consegui baixar as imagens da versão $VERSAO_ALVO (rede, ghcr.io ou versão não publicada); nenhum contêiner foi trocado"
+    fi
     verificar_imagem core "$IMG_REPO_CORE"
     verificar_imagem web "$IMG_REPO_WEB"
     ALVO_VERIFICADO=1

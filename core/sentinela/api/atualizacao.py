@@ -4,6 +4,7 @@ A API só lê e grava o ``atualizacao.json``; quem atualiza é o ``update.sh`` n
 systemd). O core não tem socket do Docker nem executa processo.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ class AtualizacaoSaida(BaseModel):
     ativo: bool
     agendado: bool
     ultima_verificacao: datetime | None
+    ultima_verificacao_ok: datetime | None
     resultado: str | None
     de: str | None
     para: str | None
@@ -58,6 +60,7 @@ def _saida(request: Request, e: EstadoAtualizacao, ilegivel: bool) -> Atualizaca
         ativo=e.ativo,
         agendado=e.agendado,
         ultima_verificacao=e.ultima_verificacao,
+        ultima_verificacao_ok=e.ultimo_sucesso,
         resultado=e.resultado,
         de=e.de,
         para=e.para,
@@ -82,7 +85,8 @@ async def definir(
     pasta = _pasta(request)
     antes = atualizacao.ler(pasta)
     try:
-        novo = atualizacao.definir_ativo(pasta, corpo.ativo)
+        # a trava em arquivo pode esperar até 10 s: fora do laço de eventos
+        novo = await asyncio.to_thread(atualizacao.definir_ativo, pasta, corpo.ativo)
     except OSError:
         log.error("não foi possível gravar o atualizacao.json")
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=MSG_FALHA) from None

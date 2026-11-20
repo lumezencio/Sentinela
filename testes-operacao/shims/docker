@@ -16,6 +16,7 @@
 #   SHIM_SEM_IMAGEM=1              "image inspect" de tag (ID) falha até o primeiro pull: a tag ainda não existia
 #   SHIM_DIR                       pasta de estado do shim (padrão: dirname de SHIM_LOG)
 #   SHIM_ATUALIZACAO_ATIVA=0|3     código de saída de "sentinela.cli atualizacao-ativa" (3 = desligada)
+#   SHIM_PULL_ERRO="texto"          o pull falha com este texto em stderr
 #   SHIM_VIGIAR_STDIN=1            registra em $SHIM_DIR/stdin.lido se havia dados na entrada padrão
 #   SHIM_DORMIR="padrão"           chamadas que casam esperam 2 s (testes de sinal)
 #   "compose ps" responde "core: <estado>" com o estado deixado pelo último stop/up do core
@@ -73,6 +74,12 @@ fi
 
 # o update.sh --automatico não pode ler a entrada padrão: com SHIM_VIGIAR_STDIN=1 vê se havia dados
 if [[ "${SHIM_VIGIAR_STDIN:-}" == "1" ]] && IFS= read -r -t 0.3 _linha; then : >"$SHIM_DIR/stdin.lido"; fi
+
+# SHIM_PULL_ERRO="texto": o pull falha com este texto em stderr (rede, autenticação, TLS...)
+if [[ -n "${SHIM_PULL_ERRO:-}" && "$linha" =~ ^(compose( -[^ ]+ [^ ]+)* )?pull[[:space:]] ]]; then
+  echo "$SHIM_PULL_ERRO" >&2
+  exit 1
+fi
 
 # primeiro pull (docker pull ou compose pull): a partir daí a imagem "existe" (SHIM_SEM_IMAGEM)
 if [[ "$linha" =~ ^(compose( -[^ ]+ [^ ]+)* )?pull[[:space:]] ]]; then : >"$SHIM_DIR/.baixou"; fi

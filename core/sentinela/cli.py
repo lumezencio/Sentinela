@@ -316,7 +316,9 @@ def _atualizacao_registrar(
             raise ErroCli("não foi possível gravar o estado da atualização", 1) from None
         return
     if resultado not in atualizacao.RESULTADOS:
-        raise ErroCli("informe --resultado (atualizado, sem_novidade, voltou ou falhou)", 2)
+        raise ErroCli(
+            "informe --resultado (atualizado, sem_novidade, voltou, falhou ou sem_conexao)", 2
+        )
     for versao in (de, para):
         if versao is not None and atualizacao.versao_valida(versao) is None:
             raise ErroCli("versão inválida: use X.Y.Z", 2)

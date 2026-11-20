@@ -2,6 +2,11 @@
 # git de teste: registra a chamada em $SHIM_LOG e repassa ao git de verdade (o primeiro fora desta pasta).
 aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 printf 'git %s\n' "$*" >>"${SHIM_LOG:?}"
+# SHIM_GIT_FETCH_ERRO="texto": "git fetch" falha com este texto em stderr (simula rede/servidor)
+if [[ "${1:-}" == fetch && -n "${SHIM_GIT_FETCH_ERRO:-}" ]]; then
+  echo "$SHIM_GIT_FETCH_ERRO" >&2
+  exit 128
+fi
 IFS=: read -r -a partes <<<"$PATH"
 for d in "${partes[@]}"; do
   [[ "$d" == "$aqui" ]] && continue

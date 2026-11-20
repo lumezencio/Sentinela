@@ -19,7 +19,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, get_args
 
@@ -33,7 +33,10 @@ MAX_MENSAGEM = 200
 # relógio um pouco adiantado na hora de gravar (Pi sem RTC): até 5 min de folga no aviso
 _TOLERANCIA_FUTURO = timedelta(minutes=5)
 ARQUIVO_TRAVA = ".atualizacao.lock"
-ARQUIVO_ILEGIVEL = "atualizacao.json.ilegivel"
+SUFIXO_ILEGIVEL = ".ilegivel"  # atualizacao.json.<UTC>.ilegivel: uma cópia por corrupção
+MAX_COPIAS_ILEGIVEL = 5
+DIAS_SEM_VERIFICAR = 7  # sem verificação bem-sucedida há mais que isto, o painel avisa
+_BEM_SUCEDIDOS = ("atualizado", "sem_novidade")
 PRAZO_TRAVA_S = 10.0
 _VERSAO = re.compile(r"\d+\.\d+\.\d+", re.ASCII)
 
@@ -47,6 +50,7 @@ class EstadoAtualizacao:
     de: str | None = None
     para: str | None = None
     mensagem: str | None = None
+    ultimo_sucesso: datetime | None = None  # última verificação atualizado/sem_novidade
 
 
 def versao_valida(texto: object) -> str | None:
@@ -114,7 +118,11 @@ def _carregar(pasta: Path) -> tuple[EstadoAtualizacao, bool]:
         de=campo("de", versao_valida(dados.get("de")), None),
         para=campo("para", versao_valida(dados.get("para")), None),
         mensagem=campo("mensagem", sanear_mensagem(dados.get("mensagem")), None),
+        ultimo_sucesso=campo("ultimo_sucesso", _data(dados.get("ultimo_sucesso")), None),
     )
+    if estado.ultimo_sucesso is None and estado.resultado in _BEM_SUCEDIDOS:
+        # arquivo de antes do campo: o último resultado bem-sucedido é a própria verificação
+        estado = replace(estado, ultimo_sucesso=estado.ultima_verificacao)
     if isinstance(dados.get("mensagem"), str) and dados["mensagem"] != estado.mensagem:
         ok = False  # havia caracteres de controle ou excesso
     return estado, not ok
@@ -142,6 +150,7 @@ def gravar(pasta: Path, e: EstadoAtualizacao) -> None:
             "de": e.de,
             "para": e.para,
             "mensagem": e.mensagem,
+            "ultimo_sucesso": e.ultimo_sucesso.isoformat() if e.ultimo_sucesso else None,
         },
         ensure_ascii=False,
     )
@@ -188,8 +197,9 @@ def _travar(pasta: Path) -> Iterator[None]:
 
 
 def _guardar_ilegivel(pasta: Path) -> None:
-    """Antes de sobrescrever um arquivo ilegível, guarda uma cópia (``.ilegivel``) e avisa no log,
-    para o sinal não se perder (o estado lido dele é o padrão, "ligada")."""
+    """Antes de sobrescrever um arquivo ilegível, guarda uma cópia com data
+    (``atualizacao.json.<UTC>.ilegivel``, as 5 mais recentes) e avisa no log (o stderr da CLI
+    vai para o journal), para o sinal não se perder (o estado lido dele é "ligada")."""
     if not _carregar(pasta)[1]:
         return
     origem = pasta / ARQUIVO
@@ -197,17 +207,26 @@ def _guardar_ilegivel(pasta: Path) -> None:
         copia = origem.read_bytes()
     except OSError:
         return
-    temporario = pasta / f".{ARQUIVO_ILEGIVEL}.{secrets.token_hex(4)}.tmp"
+    marca = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(2)}"
+    nome = f"{ARQUIVO}.{marca}{SUFIXO_ILEGIVEL}"
+    temporario = pasta / f".{nome}.tmp"
     try:
         descritor = os.open(temporario, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descritor, "wb") as f:
             f.write(copia)
-        os.replace(temporario, pasta / ARQUIVO_ILEGIVEL)
-        log.warning("atualizacao.json ilegível: cópia guardada em %s", ARQUIVO_ILEGIVEL)
+        os.replace(temporario, pasta / nome)
+        log.warning("atualizacao.json ilegível: cópia guardada em %s", nome)
+        for velha in copias_ilegiveis(pasta)[:-MAX_COPIAS_ILEGIVEL]:
+            with contextlib.suppress(OSError):
+                (pasta / velha).unlink()
     except OSError:
         with contextlib.suppress(OSError):
             temporario.unlink()
         log.warning("atualizacao.json ilegível e a cópia não pôde ser guardada")
+
+
+def copias_ilegiveis(pasta: Path) -> list[str]:
+    return sorted(p.name for p in pasta.glob(f"{ARQUIVO}.*{SUFIXO_ILEGIVEL}"))
 
 
 def _alterar(
@@ -234,6 +253,7 @@ def registrar(
         lambda e: replace(
             e,
             ultima_verificacao=agora,
+            ultimo_sucesso=agora if resultado in _BEM_SUCEDIDOS else e.ultimo_sucesso,
             resultado=resultado,
             de=versao_valida(de),
             para=versao_valida(para),
@@ -251,7 +271,21 @@ def marcar_agendado(pasta: Path) -> EstadoAtualizacao:
 
 
 def aviso(e: EstadoAtualizacao, agora: datetime) -> str | None:
-    """Aviso do painel por 24 h depois de ``atualizado`` ou ``voltou``; senão ``None``."""
+    """Aviso do painel: por 24 h depois de ``atualizado`` ou ``voltou``; ou, com a atualização
+    automática ligada e agendada, o alerta de que a última verificação bem-sucedida é de mais de
+    7 dias (``sem_conexao`` sozinho nunca alarma)."""
+    recente = _aviso_recente(e, agora)
+    if recente is not None:
+        return recente
+    if e.ativo and e.agendado and e.ultimo_sucesso is not None:
+        if agora - e.ultimo_sucesso > timedelta(days=DIAS_SEM_VERIFICAR):
+            return (
+                f"O Sentinela não conseguiu verificar atualizações desde {e.ultimo_sucesso:%d/%m}"
+            )
+    return None
+
+
+def _aviso_recente(e: EstadoAtualizacao, agora: datetime) -> str | None:
     if e.ultima_verificacao is None or e.resultado not in {"atualizado", "voltou"}:
         return None
     idade = agora - e.ultima_verificacao

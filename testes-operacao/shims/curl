@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # curl de teste: só serve o digests.txt do release (conteúdo em $SHIM_DIGESTS_TXT); sem ele, falha como rede fora.
 printf 'curl %s\n' "$*" >>"${SHIM_LOG:?}"
+[[ -z "${SHIM_CURL_RC:-}" ]] || exit "$SHIM_CURL_RC"
 [[ -n "${SHIM_DIGESTS_TXT:-}" ]] || exit 22
 printf '%s\n' "$SHIM_DIGESTS_TXT"
