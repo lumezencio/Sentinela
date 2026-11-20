@@ -180,3 +180,51 @@ def test_downgrade_apaga_aparelho_novo_colunas_tabela_e_ajuste(tmp_path: Path) -
     with pytest.raises(IntegrityError):
         _alerta(banco, 9, "aparelho_novo")
     _alembic(banco, "upgrade", "head")
+
+
+def _popular_alertas_ligados(banco: Path) -> None:
+    _executar(
+        banco,
+        "INSERT INTO usuario (id, login, hash_senha, papel, falhas)"
+        " VALUES (1, 'u', 'h', 'admin', 0)",
+    )
+    _alerta(banco, 1, "queda")
+    _alerta(banco, 2, "volta")
+    _alerta(banco, 3, "queda")
+    _alerta(banco, 4, "volta")
+    _executar(banco, "UPDATE alerta SET alerta_origem_id = 1 WHERE id = 2")
+    _executar(banco, "UPDATE alerta SET alerta_origem_id = 3, reconhecido_por = 1 WHERE id = 4")
+
+
+def _tudo(banco: Path) -> dict[str, list[tuple[object, ...]]]:
+    tabelas = [
+        t[0] for t in _consultar(banco, "SELECT name FROM sqlite_master WHERE type = 'table'")
+    ]
+    return {
+        t: _consultar(banco, f"SELECT * FROM {t} ORDER BY 1")  # noqa: S608
+        for t in sorted(tabelas)
+        if t not in {"alembic_version", "sub_rede", "leitura_uptime"}
+    }
+
+
+def test_upgrade_e_downgrade_preservam_ids_vinculos_e_linhas(tmp_path: Path) -> None:
+    banco = tmp_path / "m6.db"
+    _alembic(banco, "upgrade", "0005")
+    _popular_alertas_ligados(banco)
+    antes = _tudo(banco)
+    _alembic(banco, "upgrade", "0006")
+    assert _consultar(banco, "SELECT id, alerta_origem_id FROM alerta ORDER BY id") == [
+        (1, None),
+        (2, 1),
+        (3, None),
+        (4, 3),
+    ]
+    depois = _tudo(banco)
+    # as linhas de `alerta` ganham só a coluna nova (descoberta_id, nula): o resto é idêntico
+    assert {t: len(v) for t, v in depois.items()} == {t: len(v) for t, v in antes.items()}
+    assert _consultar(banco, "SELECT reconhecido_por FROM alerta WHERE id = 4") == [(1,)]
+    assert _consultar(banco, "PRAGMA foreign_key_check") == []
+    _alembic(banco, "downgrade", "0005")
+    assert _tudo(banco) == antes
+    assert _consultar(banco, "PRAGMA foreign_key_check") == []
+    assert _consultar(banco, "SELECT name FROM sqlite_temp_master") == []

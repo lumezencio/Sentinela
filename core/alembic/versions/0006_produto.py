@@ -25,6 +25,30 @@ _CHECK_NOVO = "tipo IN ('queda', 'volta', 'instavel', 'fonte_falhou', 'aparelho_
 _CHECK_ANTIGO = "tipo IN ('queda', 'volta', 'instavel', 'fonte_falhou')"
 
 
+def _guardar_origens() -> None:
+    """Guarda `alerta_origem_id` antes de recriar `alerta`.
+
+    O DROP da tabela original dispara o ON DELETE SET NULL da FK auto-referente (as FKs ficam
+    ligadas no SQLite do Sentinela e `PRAGMA foreign_keys` não muda dentro de transação), o que
+    apagaria o vínculo volta -> queda. Restaurar depois é mais robusto do que mexer no pragma.
+    Nenhuma outra tabela aponta para `alerta.id`.
+    """
+    op.execute(
+        sa.text("CREATE TEMP TABLE _alerta_origem AS SELECT id, alerta_origem_id FROM alerta")
+    )
+
+
+def _restaurar_origens() -> None:
+    op.execute(
+        sa.text(
+            "UPDATE alerta SET alerta_origem_id = (SELECT o.alerta_origem_id FROM _alerta_origem o"
+            " WHERE o.id = alerta.id) WHERE id IN (SELECT id FROM _alerta_origem"
+            " WHERE alerta_origem_id IS NOT NULL)"
+        )
+    )
+    op.execute(sa.text("DROP TABLE _alerta_origem"))
+
+
 def upgrade() -> None:
     with op.batch_alter_table("sub_rede") as lote:
         lote.add_column(sa.Column("gateway_ip", sa.String(length=45), nullable=True))
@@ -32,6 +56,7 @@ def upgrade() -> None:
             sa.Column("ultima_varredura_em", sentinela.db.base.UTCDateTime(), nullable=True)
         )
         lote.add_column(sa.Column("linha_base_em", sentinela.db.base.UTCDateTime(), nullable=True))
+    _guardar_origens()
     # recria `alerta` (SQLite não troca CHECK no lugar); o `alerta_origem_id` aponta para a
     # própria tabela e as FKs são religadas pela recriação
     with op.batch_alter_table("alerta", recreate="always") as lote:
@@ -46,6 +71,7 @@ def upgrade() -> None:
             ondelete="SET NULL",
         )
         lote.create_index(op.f("ix_alerta_descoberta_id"), ["descoberta_id"], unique=False)
+    _restaurar_origens()
     op.create_table(
         "leitura_uptime",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -80,12 +106,14 @@ def downgrade() -> None:
     op.drop_index("ix_leitura_uptime_equipamento_lido", table_name="leitura_uptime")
     op.drop_table("leitura_uptime")
     op.execute(sa.text("DELETE FROM alerta WHERE tipo = 'aparelho_novo'"))
+    _guardar_origens()
     with op.batch_alter_table("alerta", recreate="always") as lote:
         lote.drop_index(op.f("ix_alerta_descoberta_id"))
         lote.drop_constraint(op.f("fk_alerta_descoberta_id_descoberta"), type_="foreignkey")
         lote.drop_column("descoberta_id")
         lote.drop_constraint(op.f("ck_alerta_tipo"), type_="check")
         lote.create_check_constraint("tipo", sa.text(_CHECK_ANTIGO))
+    _restaurar_origens()
     # DROP COLUMN nativo (SQLite >= 3.35), como na 0005
     op.execute(sa.text("ALTER TABLE sub_rede DROP COLUMN linha_base_em"))
     op.execute(sa.text("ALTER TABLE sub_rede DROP COLUMN ultima_varredura_em"))
