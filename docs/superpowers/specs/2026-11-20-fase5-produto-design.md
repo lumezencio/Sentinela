@@ -1,6 +1,6 @@
 # Fase 5: produto instalável e vigilância contínua
 
-Aprovado pelo dono em: _pendente_
+Aprovado pelo dono em: 2026-11-20
 
 ## Por quê
 
