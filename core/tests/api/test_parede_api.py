@@ -105,7 +105,7 @@ async def test_snapshot_sem_ip_mac_fabricante_latencia(
     assert r.status_code == 200
     snap = r.json()
     sem_proibidos(snap)
-    assert set(snap) == {"nome", "fuso", "classes", "equipamentos", "alertas"}
+    assert set(snap) == {"nome", "versao", "fuso", "classes", "equipamentos", "alertas"}
     assert snap["fuso"] == "America/Sao_Paulo"
     assert set(snap["classes"][0]) == {"slug", "nome", "cor", "icone", "ordem"}
     assert snap["equipamentos"] == [

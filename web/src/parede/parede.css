@@ -600,6 +600,14 @@ ul {
   background: var(--superficie);
 }
 
+/* versão em execução, no rodapé do telão */
+.pr-versao {
+  margin: 4px 0 0;
+  color: var(--texto-suave);
+  font-size: 0.875rem;
+  text-align: right;
+}
+
 .pr-alertas {
   display: flex;
   flex-wrap: wrap;

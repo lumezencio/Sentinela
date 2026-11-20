@@ -4,7 +4,7 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fases 1, 2, 3, 4A e 4B concluídas, versão 0.4.0** (núcleo de monitoramento, lista ao
+> Status: **Fases 1, 2, 3, 4A e 4B concluídas, versão 0.4.1** (núcleo de monitoramento, lista ao
 > vivo, Docker, Teia 3D, Organograma, descoberta automática com classificador, alertas por Telegram,
 > telão para TV, segundo fator TOTP, backup e restauração, atualização com volta automática e
 > imagens multi-arquitetura assinadas). Veja
@@ -440,6 +440,21 @@ vínculo é por IP.
 **IP nas bolinhas e cartão de alerta.** No painel, cada bolinha da Teia e do Organograma mostra o IP
 do equipamento; o telão não. Quando um equipamento cai, o painel abre um cartão de alerta na
 tela com todos os dados; o telão abre um cartão reduzido, sem IP. O som vem desligado.
+
+## Versão em execução
+
+O número da versão aparece ao lado do nome Sentinela no topo do painel, na tela de login e no
+rodapé do telão. Vem do servidor (`GET /api/v1/saude` devolve `{"status": "ok", "versao": "X.Y.Z"}`;
+o telão recebe no snapshot já autenticado), então mostra o que está de fato rodando.
+
+### Notas da versão
+
+**0.4.1** (correções de interface): classe sem nenhum equipamento deixa de aparecer na Teia 3D
+(nós e painel "Classes") e no Organograma, e volta quando chega o primeiro; na Teia, os grupos
+se redistribuem por igual entre as classes presentes, a vista geral cabe inteira na área livre
+(sem painéis por cima, em qualquer giro da rotação) e os rótulos das classes não se sobrepõem; o
+cartão de alerta ao vivo passa a respeitar 16 px de cada lado da janela, mesmo com barra de
+rolagem clássica; versão visível no painel, no login e no telão.
 
 ## Documentação
 

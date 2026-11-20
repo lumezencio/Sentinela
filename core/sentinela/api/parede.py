@@ -17,6 +17,7 @@ from fastapi.requests import HTTPConnection
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinela import __version__
 from sentinela.alertas.textos import dados_do_alerta, texto_painel
 from sentinela.api.deps import SessaoDB, agora_utc, isento_de_csrf
 from sentinela.db.modelos import Alerta, Classe, Equipamento, Parede
@@ -120,6 +121,7 @@ async def montar_snapshot(db: AsyncSession, nome: str, fuso: str) -> dict[str, A
     ).scalars()
     return {
         "nome": nome,
+        "versao": __version__,
         "fuso": fuso,
         "classes": [
             {"slug": c.slug, "nome": c.nome, "cor": c.cor, "icone": c.icone, "ordem": c.ordem}
