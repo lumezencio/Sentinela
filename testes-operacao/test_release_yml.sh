@@ -78,7 +78,13 @@ test_smoke_arm64_so_em_tag_ou_manual() {
   s="$(trecho_job smoke-arm64)"
   [[ -n "$s" ]] || _falhou "job smoke-arm64 ausente"
   grep -qF 'timeout-minutes: 30' <<<"$s" || _falhou "smoke sem timeout de 30 min"
-  grep -qF 'DOCKER_DEFAULT_PLATFORM: linux/arm64' <<<"$s" || _falhou "smoke sem plataforma arm64"
+  grep -qF 'DOCKER_DEFAULT_PLATFORM=linux/arm64' <<<"$s" || _falhou "smoke sem plataforma arm64"
+  # a plataforma arm64 só pode valer depois do setup-qemu (senão o binfmt arm64 não roda no runner x86)
+  local q p
+  q="$(grep -n 'setup-qemu-action' <<<"$s" | head -n 1 | cut -d: -f1)"
+  p="$(grep -n 'DOCKER_DEFAULT_PLATFORM=linux/arm64' <<<"$s" | head -n 1 | cut -d: -f1)"
+  (( q < p )) || _falhou "DOCKER_DEFAULT_PLATFORM definida antes do setup-qemu"
+  ! grep -qF 'DOCKER_DEFAULT_PLATFORM: linux/arm64' <<<"$s" || _falhou "DOCKER_DEFAULT_PLATFORM no env do job"
   grep -qF 'setup-qemu-action@' <<<"$s" || _falhou "smoke sem QEMU"
   grep -qF 'workflow_dispatch' <<<"$s" || _falhou "smoke precisa aceitar a execução manual"
   grep -qF '/api/v1/saude' <<<"$s" || _falhou "smoke não confere a saúde"
