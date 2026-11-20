@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from sentinela.alertas.telegram import ErroTelegram
+from sentinela.config import Settings
 from sentinela.db.modelos import Auditoria, Config, Fonte, Usuario
 from sentinela.descoberta.fontes.base import CertificadoNaoConfiado, ErroColeta, ResultadoTeste
 from sentinela.relogio import RelogioFalso
@@ -326,3 +327,68 @@ async def test_segredo_totp_codigo_e_etapa_nao_vazam(
         assert not [a for a in auditoria if segredo in a]
         assert not [c for c in config if segredo in c]
         assert segredo not in usuario  # o segredo só existe cifrado
+
+
+async def test_codigo_de_instalacao_nunca_aparece(
+    app: FastAPI,
+    cliente: httpx.AsyncClient,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """O código vive só no terminal: nunca em resposta, log, auditoria nem no arquivo."""
+    from datetime import UTC, datetime
+
+    from sentinela.config import pasta_dados
+    from sentinela.seguranca import instalacao
+
+    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="sentinela")
+    codigo = instalacao.gerar_codigo()
+    variantes = (codigo, codigo.replace("-", ""), codigo.lower(), codigo.lower().replace("-", ""))
+    await instalacao.gravar(pasta_dados(settings), codigo, datetime.now(UTC))
+    guardado = (pasta_dados(settings) / instalacao.ARQUIVO).read_text()  # some ao concluir
+    base = "/api/v1/primeiro-acesso"
+    respostas = [
+        await cliente.get(base),
+        await cliente.post(base + "/conferir", json={"codigo": "ZZZZ-ZZZZ"}),
+        await cliente.post(base + "/conferir", json={"codigo": codigo}),
+        await cliente.post(base + "/conferir", content=codigo.encode()),
+        await cliente.post(
+            base + "/concluir",
+            json={
+                "codigo": codigo,
+                "login": "dono",
+                "senha": "curta",
+                "cidr": "192.168.1.0/24",
+                "gateway": None,
+                "varredura": False,
+            },
+        ),
+        await cliente.post(
+            base + "/concluir",
+            json={
+                "codigo": codigo,
+                "login": "dono",
+                "senha": SENHA_TESTE,
+                "cidr": "192.168.1.0/24",
+                "gateway": "192.168.1.1",
+                "varredura": False,
+            },
+        ),
+        await cliente.get(base),  # já com usuário: 404
+        await cliente.post(base + "/conferir", json={"codigo": codigo}),
+    ]
+    assert [r.status_code for r in respostas] == [200, 401, 200, 415, 422, 204, 404, 404]
+    textos = [r.text for r in respostas] + [str(dict(r.headers)) for r in respostas]
+    async with sessoes(app)() as db:
+        auditoria = [
+            repr((a.acao, a.alvo, a.antes, a.depois, a.ip))
+            for a in (await db.execute(select(Auditoria))).scalars()
+        ]
+    assert len(auditoria) == 3
+    assert guardado and not (pasta_dados(settings) / instalacao.ARQUIVO).exists()
+    for variante in variantes:
+        assert not [t for t in textos if variante in t], variante
+        assert not [a for a in auditoria if variante in a], variante
+        assert variante not in caplog.text
+        assert variante not in guardado

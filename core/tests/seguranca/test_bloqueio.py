@@ -71,3 +71,17 @@ async def test_bloqueio_fantasma_reserva() -> None:
     assert esperas[:5] == [0, 0, 0, 0, 0]
     assert esperas[5] == pytest.approx(60)
     assert esperas[6] == pytest.approx(60)  # bloqueado não acumula falha
+
+
+def test_fantasma_liberar_devolve_uma_reserva_e_tira_o_bloqueio() -> None:
+
+    b = BloqueioFantasma(RelogioFalso())
+    for _ in range(5):
+        assert b.reservar("k") == 0
+    assert b.restante("k") > 0  # a 5ª falha já bloqueia
+    b.liberar("k")
+    assert b.restante("k") == 0  # voltou a 4 falhas: sem bloqueio
+    b.liberar("nunca-vista")  # sem efeito
+    for _ in range(4):
+        b.liberar("k")
+    assert len(b) == 0

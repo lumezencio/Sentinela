@@ -33,6 +33,7 @@ from sentinela.api import (
     importacao,
     parede,
     paredes,
+    primeiro_acesso,
     saude,
     silencios,
     subredes,
@@ -403,6 +404,9 @@ def criar_app(
     app.state.config_ws = ws.ConfigWs()
     app.state.falhas_ip = LimitadorIP(relogio)
     app.state.falhas_fantasma = BloqueioFantasma(relogio)
+    # código de instalação: 20 falhas por IP em 10 min + bloqueio progressivo global
+    app.state.falhas_codigo = LimitadorIP(relogio)
+    app.state.bloqueio_codigo = BloqueioFantasma(relogio)
     # testar/coletar/sondar/varredura: 10 por minuto por usuário (mesma janela do login)
     app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
     # telão: no máximo 10 pedidos de emparelhamento por IP por hora (rota sem sessão)
@@ -414,6 +418,7 @@ def criar_app(
     app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
+    app.include_router(primeiro_acesso.router)
     app.include_router(totp.router)
     app.include_router(usuarios.router)
     app.include_router(config_seguranca.router)

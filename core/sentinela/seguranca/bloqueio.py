@@ -60,6 +60,19 @@ class BloqueioFantasma:
         self.registrar_falha(login)
         return 0.0
 
+    def liberar(self, login: str) -> None:
+        """Devolve UMA tentativa reservada que deu certo; abaixo do limiar, o bloqueio sai."""
+        atual = self._estado.get(login)
+        if atual is None:
+            return
+        falhas = atual[0] - 1
+        if falhas <= 0:
+            del self._estado[login]
+        elif falhas < FALHAS_ANTES_DO_BLOQUEIO:
+            self._estado[login] = (falhas, 0.0)
+        else:
+            self._estado[login] = (falhas, atual[1])
+
     def registrar_falha(self, login: str) -> None:
         falhas, _ = self._estado.pop(login, (0, 0.0))
         falhas += 1

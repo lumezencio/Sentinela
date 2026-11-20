@@ -477,6 +477,9 @@ async def test_csrf_global_em_toda_escrita_da_api(app: FastAPI, cliente: httpx.A
             LOGIN_URL,
             "/api/v1/auth/totp/entrar",
             "/api/v1/parede/pedido",
+            # primeiro acesso: sem sessão, 404 depois do primeiro usuário
+            "/api/v1/primeiro-acesso/conferir",
+            "/api/v1/primeiro-acesso/concluir",
         ):
             continue
         concreto = re.sub(r"\{[^}]+\}", "1", caminho)

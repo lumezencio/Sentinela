@@ -1,6 +1,7 @@
 """Linha de comando administrativa.
 
     python -m sentinela.cli criar-admin --login X
+    python -m sentinela.cli codigo-instalacao
     python -m sentinela.cli sub-rede adicionar|remover CIDR
     python -m sentinela.cli sub-rede listar
     python -m sentinela.cli totp-zerar LOGIN
@@ -19,6 +20,10 @@ com o core no ar). ``backup-verificar`` sai com 1 e mensagem genérica se o arqu
 pelo nome de serviço ``core`` na rede do compose (``compose run``); fora do compose a sonda não vê
 o core, e a trava final é o banco ter escritor ativo. O caminho seguro é o ``restore.sh``, que
 para o core antes. O ``.env`` nunca entra no backup: os comandos repetem o aviso em texto fixo.
+
+``codigo-instalacao`` gera o código do primeiro acesso pela tela, grava só o hash argon2id em
+``<pasta do banco>/instalacao.json`` (0600, substitui o anterior) e imprime SÓ o código no
+stdout. Com algum usuário já criado, sai com 3 e não grava nada.
 
 ``sub-rede`` usa a mesma validação da API, grava a auditoria com ``usuario_id`` nulo e ação
 ``cli:subrede.*`` e pausa/retoma os equipamentos como a API faz. Ela escreve só no banco: com
@@ -57,13 +62,14 @@ from sentinela.backup.arquivo import (
     verificar_backup,
 )
 from sentinela.backup.porta import HOSTS_DO_CORE, porta_responde
-from sentinela.config import Settings, obter_settings
+from sentinela.config import Settings, obter_settings, pasta_dados
 from sentinela.db.modelos import Auditoria, SubRede, Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.descoberta.classificador.oui import CAMINHO_PADRAO as OUI_PADRAO
 from sentinela.descoberta.classificador.oui import atualizar_de_csv
 from sentinela.monitor.montagem import sub_redes_do_banco
 from sentinela.rede.guarda import DestinoProibido, Guarda
+from sentinela.seguranca import instalacao
 from sentinela.seguranca.politica import zerar_totp
 from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 
@@ -114,6 +120,30 @@ async def _criar_admin(settings: Settings, login: str) -> None:
                 raise ErroCli(f"o login {login!r} já existe; nada foi alterado", 1) from None
     finally:
         await motor.dispose()
+
+
+MSG_JA_HA_ADMIN = "já existe um administrador; o primeiro acesso está encerrado"
+
+
+async def _codigo_instalacao(settings: Settings) -> None:
+    """Gera o código do primeiro acesso: só o hash vai ao disco; o código só ao stdout."""
+    try:
+        pasta = pasta_dados(settings)
+    except ValueError:
+        raise ErroCli("o banco configurado não é um arquivo", 2) from None
+    motor = criar_motor(settings.banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            if await db.scalar(select(Usuario.id).limit(1)) is not None:
+                raise ErroCli(MSG_JA_HA_ADMIN, 3)
+    finally:
+        await motor.dispose()
+    codigo = instalacao.gerar_codigo()
+    try:
+        await instalacao.gravar(pasta, codigo, datetime.now(UTC))
+    except OSError:
+        raise ErroCli("não foi possível gravar o código de instalação", 1) from None
+    print(codigo)
 
 
 AVISO_REINICIO = (
@@ -269,6 +299,9 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     comandos = parser.add_subparsers(dest="comando", required=True)
     criar = comandos.add_parser("criar-admin", help="cria um usuário administrador")
     criar.add_argument("--login", required=True)
+    comandos.add_parser(
+        "codigo-instalacao", help="gera o código do primeiro acesso pela tela (8 caracteres)"
+    )
     sub = comandos.add_parser("sub-rede", help="declara as sub-redes privadas monitoradas")
     sub.add_argument("acao", choices=["adicionar", "remover", "listar"])
     sub.add_argument("cidr", nargs="?", help="ex. 10.99.0.0/24")
@@ -295,6 +328,9 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     try:
         if args.comando == "oui-atualizar":
             _oui_atualizar(args.arquivos, args.saida)
+            return 0
+        if args.comando == "codigo-instalacao":
+            await _codigo_instalacao(settings)
             return 0
         if args.comando == "backup-criar":
             _backup_criar(settings, args.origem)
