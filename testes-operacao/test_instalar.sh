@@ -22,7 +22,7 @@ publicar_origem() {
   # install.sh de mentira: registra e cria o .env como o verdadeiro (só a sugestão de rede importa aqui)
   cat >"$trab/install.sh" <<'FIM'
 #!/usr/bin/env bash
-printf 'install.sh %s\n' "$*" >>"${SHIM_LOG:?}"
+printf 'install.sh %s nomes=%s via=%s\n' "$*" "${SENTINELA_NOMES:-}" "${SENTINELA_VIA_INSTALADOR:-}" >>"${SHIM_LOG:?}"
 if [[ ! -f .env ]]; then
   printf 'SENTINELA_PORTA_HTTPS=%s\nSENTINELA_REDE_SUGERIDA=%s\nSENTINELA_GATEWAY_SUGERIDO=%s\n' \
     "${SENTINELA_PORTA_HTTPS:-443}" "${SENTINELA_REDE_SUGERIDA:-}" "${SENTINELA_GATEWAY_SUGERIDO:-}" >.env
@@ -187,11 +187,62 @@ test_rede_em_env_existente_so_preenche_o_que_falta() {
 
 test_barra_8_sugere_o_24_do_host() {
   ambiente
+  export SHIM_IP_ROUTE="default via 10.1.2.1 dev eth0"
+  export SHIM_IP_ADDR="2: eth0    inet 10.1.2.3/8 brd 10.255.255.255 scope global eth0"
+  rodar_instalar || _falhou "deveria instalar"
+  afirmar_igual "$(valor_do_env SENTINELA_REDE_SUGERIDA)" "10.1.2.0/24"
+  afirmar_igual "$(valor_do_env SENTINELA_GATEWAY_SUGERIDO)" "10.1.2.1"
+}
+
+test_gateway_fora_da_rede_sugerida_nao_e_gravado() {
+  ambiente
   export SHIM_IP_ROUTE="default via 10.0.0.1 dev eth0"
   export SHIM_IP_ADDR="2: eth0    inet 10.1.2.3/8 brd 10.255.255.255 scope global eth0"
   rodar_instalar || _falhou "deveria instalar"
   afirmar_igual "$(valor_do_env SENTINELA_REDE_SUGERIDA)" "10.1.2.0/24"
-  afirmar_igual "$(valor_do_env SENTINELA_GATEWAY_SUGERIDO)" "10.0.0.1"
+  afirmar_igual "$(valor_do_env SENTINELA_GATEWAY_SUGERIDO)" ""
+}
+
+test_nomes_do_certificado_so_na_criacao() {
+  ambiente
+  local h
+  h="$(hostname | cut -d. -f1)"
+  rodar_instalar || _falhou "deveria instalar"
+  grep -qF "nomes=$h.local " "$SHIM_LOG" || _falhou "o primeiro install.sh deveria receber SENTINELA_NOMES=$h.local: $(grep '^install.sh' "$SHIM_LOG")"
+  grep -qF "via=1" "$SHIM_LOG" || _falhou "deveria avisar o install.sh que veio do instalador"
+  grep -qF "Ou pelo nome: https://$h.local/" "$TMP_OP/saida-instalar" || _falhou "o nome .local vem depois do IP"
+  # com certificado já emitido, não repassa (nada é regenerado)
+  : >"$SHIM_LOG"
+  mkdir -p "$DESTINO/certs/web"
+  : >"$DESTINO/certs/web/servidor.crt"
+  rodar_instalar || _falhou "deveria rodar de novo"
+  grep -qF "nomes= " "$SHIM_LOG" || _falhou "não deveria passar o nome com certificado existente: $(grep '^install.sh' "$SHIM_LOG")"
+  # sem avahi: nada de nome
+  rm -rf "$DESTINO"
+  SHIM_AVAHI_INATIVO=1 rodar_instalar || _falhou "deveria instalar sem avahi"
+  grep -qF ".local" "$TMP_OP/saida-instalar" && _falhou "sem avahi não mostra nome .local"
+  return 0
+}
+
+test_env_continua_do_dono_com_600_depois_da_rodada() {
+  ambiente
+  export SHIM_IP_ROUTE=""
+  rodar_instalar || _falhou "deveria instalar"
+  export SHIM_IP_ROUTE="default via 192.168.15.1 dev eth0"
+  : >"$SHIM_LOG"
+  rodar_instalar || _falhou "deveria rodar de novo"
+  grep -qE "^sudo chown $(id -un):[^ ]+ $DESTINO/.env\$" "$SHIM_LOG" || _falhou "deveria devolver o .env ao dono: $(grep '^sudo' "$SHIM_LOG")"
+  if fs_suporta_modo; then afirmar_igual "$(stat -c %a "$DESTINO/.env")" "600"; fi
+}
+
+test_ordem_de_versoes_ignora_prelancamento() {
+  ambiente
+  git_real -C "$SHIM_DIR/trabalho" tag v0.10.0
+  git_real -C "$SHIM_DIR/trabalho" tag v0.11.0-rc1
+  git_real -C "$SHIM_DIR/trabalho" tag v0.9.0
+  git_real -C "$SHIM_DIR/trabalho" push -q origin v0.10.0 v0.11.0-rc1 v0.9.0
+  rodar_instalar || _falhou "deveria instalar"
+  afirmar_igual "$(git_real -C "$DESTINO" describe --tags --exact-match HEAD)" "v0.10.0"
 }
 
 test_barra_16_e_barra_22_ficam_como_estao() {

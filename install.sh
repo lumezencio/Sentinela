@@ -484,6 +484,9 @@ if [[ $DEMO -eq 1 ]]; then
   if [[ -n "$SENHA_DEMO" ]]; then
     echo "  Login: admin   Senha: $SENHA_DEMO   (mostrada só agora; guarde-a)"
   fi
+elif [[ "${SENTINELA_VIA_INSTALADOR:-}" == "1" ]]; then
+  # chamado pelo instalar.sh: ele mostra o endereço e o código; sem passos pela CLI aqui
+  echo "  Continue pelo navegador."
 else
   echo "  1) Crie o primeiro administrador:"
   echo "    docker compose run --rm core python -m sentinela.cli criar-admin --login <seu-login>"

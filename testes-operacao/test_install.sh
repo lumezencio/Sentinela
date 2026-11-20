@@ -140,6 +140,21 @@ X=1' SENTINELA_GATEWAY_SUGERIDO="abc" instalar --build ||
   if grep -q '^X=1' "$TMP_OP/.env"; then _falhou "injeção no .env"; fi
 }
 
+test_via_instalador_suprime_os_passos_da_cli() {
+  ambiente novo
+  com_cosign
+  SENTINELA_VIA_INSTALADOR=1 instalar --build || _falhou "$(cat "$TMP_OP/saida-install")"
+  grep -qF "Continue pelo navegador." "$TMP_OP/saida-install" || _falhou "deveria mandar continuar pelo navegador"
+  grep -qF "criar-admin" "$TMP_OP/saida-install" && _falhou "não deveria sugerir o criar-admin pela CLI"
+  grep -qF "Sub-redes" "$TMP_OP/saida-install" && _falhou "não deveria sugerir sub-redes pela CLI"
+  # sem a variável, o comportamento de sempre
+  rm -f "$TMP_OP/.env"
+  instalar --build || _falhou "$(cat "$TMP_OP/saida-install")"
+  grep -qF "1) Crie o primeiro administrador" "$TMP_OP/saida-install" || _falhou "o install.sh puro mantém os passos"
+  grep -qF "Continue pelo navegador" "$TMP_OP/saida-install" && _falhou "sem a variável não há essa frase"
+  return 0
+}
+
 test_versao_vem_do_pyproject() {
   ambiente novo
   com_cosign

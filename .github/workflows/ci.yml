@@ -128,7 +128,8 @@ jobs:
         run: |
           shellcheck -x backup.sh restore.sh update.sh instalar.sh scripts/operacao-comum.sh \
             testes-operacao/lib.sh testes-operacao/rodar.sh testes-operacao/test_*.sh \
-            testes-operacao/shims/docker testes-operacao/shims/git testes-operacao/shims/curl \n            testes-operacao/shims/uname testes-operacao/shims/ip testes-operacao/shims/systemctl testes-operacao/shims/sudo \
+            testes-operacao/shims/docker testes-operacao/shims/git testes-operacao/shims/curl \
+            testes-operacao/shims/uname testes-operacao/shims/ip testes-operacao/shims/systemctl testes-operacao/shims/sudo \
             testes-operacao/shims-cosign/cosign
       - name: testes com docker falso
         run: |

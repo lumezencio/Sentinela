@@ -61,7 +61,7 @@ privilegio() {
       falhar "rode como usuário comum com sudo (não direto como root): a instalação fica com dono não-root"
     command -v runuser >/dev/null 2>&1 || falhar "'runuser' não encontrado"
   else
-    command -v sudo >/dev/null 2>&1 || falhar "'sudo' não encontrado: instale o sudo ou rode com 'sudo bash'"
+    command -v sudo >/dev/null 2>&1 || falhar "'sudo' não encontrado: instale o sudo e adicione seu usuário a ele (ou rode com um usuário que o tenha)"
     SUDO=(sudo)
     USUARIO="$(id -un)"
   fi
@@ -199,19 +199,19 @@ ip_privado() {
 # detectar_rede: imprime "<cidr> <gateway> <ip>" ou nada. Só lê (ip route/addr); nenhum pacote.
 detectar_rede() {
   command -v ip >/dev/null 2>&1 || return 0
-  local rota gw ifc linha cidr o1 o2 o3 o4 pref ipn mask net
+  local rota gw ifc linha cidr o1 o2 o3 o4 pref ipn mask net g1 g2 g3 g4 gwn
   rota="$(ip -4 route show default 2>/dev/null | head -n 1 || true)"
   [[ -n "$rota" ]] || return 0
   gw="$(awk '{for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit }}' <<<"$rota")"
   ifc="$(awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}' <<<"$rota")"
   [[ -n "$gw" && "$ifc" =~ ^[A-Za-z0-9_.:@-]+$ ]] || return 0
   [[ "$gw" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 0
-  o1=$((10#${BASH_REMATCH[1]}))
-  o2=$((10#${BASH_REMATCH[2]}))
-  o3=$((10#${BASH_REMATCH[3]}))
-  o4=$((10#${BASH_REMATCH[4]}))
-  ((o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255)) || return 0
-  ip_privado "$o1" "$o2" || return 0
+  g1=$((10#${BASH_REMATCH[1]}))
+  g2=$((10#${BASH_REMATCH[2]}))
+  g3=$((10#${BASH_REMATCH[3]}))
+  g4=$((10#${BASH_REMATCH[4]}))
+  ((g1 <= 255 && g2 <= 255 && g3 <= 255 && g4 <= 255)) || return 0
+  ip_privado "$g1" "$g2" || return 0
   linha="$(ip -4 -o addr show dev "$ifc" 2>/dev/null | head -n 1 || true)"
   cidr="$(awk '{for (i = 1; i < NF; i++) if ($i == "inet") { print $(i + 1); exit }}' <<<"$linha")"
   [[ "$cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 0
@@ -227,6 +227,9 @@ detectar_rede() {
   ipn=$(((o1 << 24) | (o2 << 16) | (o3 << 8) | o4))
   mask=$(((0xFFFFFFFF << (32 - pref)) & 0xFFFFFFFF))
   net=$((ipn & mask))
+  # gateway fora da rede sugerida (ex.: /8 reduzida a /24): sem gateway ("-"), o core o ignoraria
+  gwn=$(((g1 << 24) | (g2 << 16) | (g3 << 8) | g4))
+  (((gwn & mask) == net)) || gw="-"
   printf '%d.%d.%d.%d/%d %s %d.%d.%d.%d\n' \
     $((net >> 24 & 255)) $((net >> 16 & 255)) $((net >> 8 & 255)) $((net & 255)) "$pref" \
     "$gw" "$o1" "$o2" "$o3" "$o4"
@@ -240,20 +243,54 @@ gravar_sugestao() {
   read -r rede gw _ <<<"$1"
   if [[ -f .env ]]; then
     [[ -n "$(valor_env SENTINELA_REDE_SUGERIDA "")" ]] || definir_env SENTINELA_REDE_SUGERIDA "${SENTINELA_REDE_SUGERIDA:-$rede}"
-    [[ -n "$(valor_env SENTINELA_GATEWAY_SUGERIDO "")" ]] || definir_env SENTINELA_GATEWAY_SUGERIDO "${SENTINELA_GATEWAY_SUGERIDO:-$gw}"
+    if [[ "$gw" != "-" ]]; then
+      [[ -n "$(valor_env SENTINELA_GATEWAY_SUGERIDO "")" ]] || definir_env SENTINELA_GATEWAY_SUGERIDO "${SENTINELA_GATEWAY_SUGERIDO:-$gw}"
+    fi
+    devolver_env_ao_dono
   else
     export SENTINELA_REDE_SUGERIDA="${SENTINELA_REDE_SUGERIDA:-$rede}"
-    export SENTINELA_GATEWAY_SUGERIDO="${SENTINELA_GATEWAY_SUGERIDO:-$gw}"
+    [[ "$gw" == "-" ]] || export SENTINELA_GATEWAY_SUGERIDO="${SENTINELA_GATEWAY_SUGERIDO:-$gw}"
   fi
 }
 
+# devolver_env_ao_dono: o .env é do dono da árvore (0600), mesmo numa nova rodada como root
+# (o definir_env cria um arquivo novo com o usuário que roda)
+devolver_env_ao_dono() {
+  [[ -f "$DESTINO/.env" ]] || return 0
+  "${SUDO[@]+"${SUDO[@]}"}" chown "$USUARIO:$(id -gn "$USUARIO")" "$DESTINO/.env" 2>/dev/null || true
+  chmod 600 "$DESTINO/.env" 2>/dev/null || "${SUDO[@]+"${SUDO[@]}"}" chmod 600 "$DESTINO/.env" || true
+}
+
 # ---------------------------------------------------------------- install.sh, código, timer
+avahi_ativo() {
+  command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet avahi-daemon 2>/dev/null
+}
+
+# nome_mdns: "<hostname>.local" (o que o avahi anuncia), vazio se não há avahi ou o nome é estranho
+nome_mdns() {
+  local h
+  avahi_ativo || return 0
+  h="$(hostname 2>/dev/null | cut -d. -f1 || true)"
+  [[ "$h" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || return 0
+  printf '%s.local\n' "$h"
+}
+
+# nomes_do_certificado: só na criação do certificado (certs/web ainda não existe) o nome .local
+# entra no SAN; com certificado já emitido nada é regenerado
+nomes_do_certificado() {
+  local n
+  [[ ! -f certs/web/servidor.crt ]] || return 0
+  n="$(nome_mdns)"
+  [[ -z "$n" ]] || export SENTINELA_NOMES="${SENTINELA_NOMES:+$SENTINELA_NOMES,}$n"
+}
+
 rodar_install() {
   local -a vars=()
   local v
   for v in SENTINELA_REDE_SUGERIDA SENTINELA_GATEWAY_SUGERIDO SENTINELA_PORTA_HTTPS SENTINELA_PORTA_HTTP SENTINELA_IPS SENTINELA_NOMES; do
     [[ -z "${!v:-}" ]] || vars+=("$v=${!v}")
   done
+  vars+=("SENTINELA_VIA_INSTALADOR=1")
   echo "[..] rodando o install.sh (baixa e verifica as imagens publicadas)"
   como_dono_docker env ${vars[@]+"${vars[@]}"} ./install.sh </dev/null
 }
@@ -292,8 +329,11 @@ instalar_timer() {
     }
     rm -f "$tmp"
   done
-  "${SUDO[@]+"${SUDO[@]}"}" systemctl daemon-reload
-  "${SUDO[@]+"${SUDO[@]}"}" systemctl enable --now sentinela-atualizacao.timer
+  if ! { "${SUDO[@]+"${SUDO[@]}"}" systemctl daemon-reload &&
+    "${SUDO[@]+"${SUDO[@]}"}" systemctl enable --now sentinela-atualizacao.timer; }; then
+    echo "[!] não consegui ativar o timer; ative depois com: sudo systemctl enable --now sentinela-atualizacao.timer"
+    return 0
+  fi
   como_dono_docker docker compose exec -T core python -m sentinela.cli atualizacao-registrar --agendado >/dev/null 2>&1 </dev/null ||
     echo "[!] não consegui registrar o timer no painel (a atualização às 03:00 funciona assim mesmo)"
   TIMER_OK=1
@@ -306,19 +346,17 @@ resumo() {
   ip=""
   [[ -z "$REDE_DETECTADA" ]] || ip="${REDE_DETECTADA##* }"
   if [[ -z "$ip" ]]; then
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)[0-9.]+$' | head -n 1 || true)"
   fi
   [[ -n "$ip" ]] || ip=localhost
   porta="${SENTINELA_PORTA_HTTPS:-$(valor_env SENTINELA_PORTA_HTTPS 443)}"
   sufixo=""
   [[ "$porta" == 443 ]] || sufixo=":$porta"
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet avahi-daemon 2>/dev/null; then
-    nome="$(hostname -s 2>/dev/null || true)"
-  fi
+  nome="$(nome_mdns)"
   echo
   echo "Sentinela instalado."
   echo "  Abra no navegador: https://$ip$sufixo/"
-  [[ -z "$nome" ]] || echo "                     https://$nome.local$sufixo/"
+  [[ -z "$nome" ]] || echo "  Ou pelo nome: https://$nome$sufixo/ (o navegador pode avisar do certificado)"
   echo "  (o navegador avisa do certificado até você instalar a CA: $DESTINO/certs/ca/sentinela-ca.crt)"
   if [[ $JA_HA_ADMIN -eq 1 ]]; then
     echo "  Já existe administrador: entre pelo login."
@@ -353,6 +391,7 @@ main() {
   source "$DESTINO/scripts/operacao-comum.sh"
   REDE_DETECTADA="$(detectar_rede)"
   gravar_sugestao "$REDE_DETECTADA"
+  nomes_do_certificado
   rodar_install
   codigo_instalacao
   instalar_timer

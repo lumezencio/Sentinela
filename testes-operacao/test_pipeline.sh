@@ -18,6 +18,15 @@ trecho_job() {
     dentro { print }' "$1"
 }
 
+test_shims_e_scripts_sao_executaveis_no_indice() {
+  local linha modo arq
+  while IFS= read -r linha; do
+    modo="${linha%% *}"
+    arq="${linha#*$'	'}"
+    [[ "$modo" == 100755 ]] || _falhou "$arq está com modo $modo no índice do git (deveria ser 100755): no Linux o PATH o ignoraria e o teste chamaria o binário real"
+  done < <(git -C "$REPO_DIR" ls-files -s -- 'testes-operacao/shims' 'testes-operacao/shims-cosign' instalar.sh install.sh update.sh)
+}
+
 test_ci_tem_npm_audit_omit_dev() {
   trecho_job "$CI" web | grep -qF 'npm audit --omit=dev --audit-level=high' || _falhou "npm audit ausente no job web"
 }
