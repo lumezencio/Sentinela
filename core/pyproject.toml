@@ -1,6 +1,6 @@
 [project]
 name = "sentinela"
-version = "0.4.1"
+version = "0.5.0"
 description = "Monitor de dispositivos de rede local (LAN), somente leitura e de baixo impacto."
 requires-python = ">=3.12"
 dependencies = [

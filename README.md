@@ -4,10 +4,11 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 
 **Sem broadcast. Sem lentidão. Sem nuvem.**
 
-> Status: **Fases 1, 2, 3, 4A e 4B concluídas, versão 0.4.1** (núcleo de monitoramento, lista ao
-> vivo, Docker, Teia 3D, Organograma, descoberta automática com classificador, alertas por Telegram,
-> telão para TV, segundo fator TOTP, backup e restauração, atualização com volta automática e
-> imagens multi-arquitetura assinadas). Veja
+> Status: **Fases 1, 2, 3, 4A, 4B e 5 concluídas, versão 0.5.0** (núcleo de monitoramento, lista ao
+> vivo, Docker, Teia 3D, Organograma, descoberta automática com varredura contínua e aviso de
+> aparelho novo, alertas por Telegram, telão para TV, segundo fator TOTP, backup e restauração,
+> instalador de uma linha, assistente de primeiro acesso, atualização automática com volta,
+> diagnóstico de quedas e linguagem visual "Nebulosa com Aurora"). Veja
 > [`docs/arquitetura/ARQUITETURA.md`](docs/arquitetura/ARQUITETURA.md).
 
 ## Como funciona
@@ -19,6 +20,44 @@ Monitor de equipamentos de rede local — câmeras, gravadores, access points Wi
 - **Um único processo:** o core roda com um só worker do uvicorn (o login em duas etapas e os limites de tentativas ficam em memória); `WEB_CONCURRENCY` maior que 1 faz o core recusar subir.
 
 ## Instalação
+
+### Instalar em uma linha (Linux 64 bits e Raspberry Pi 4/5 64 bits)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lumezencio/Sentinela/main/instalar.sh | bash
+```
+
+O `instalar.sh` cuida de tudo sem precisar digitar comandos de Docker:
+
+1. Confere o sistema (Linux 64 bits `x86_64` ou `arm64`; recusa 32 bits/armv7 e sistemas fora do Linux).
+2. Instala o Docker pelo script oficial (`get.docker.com`), se faltar, e garante o `git`.
+3. Clona a **última versão publicada** (`vX.Y.Z`, não a `main`) em `/opt/sentinela`.
+4. Lê a rota padrão do próprio host para detectar a sub-rede privada e o gateway como sugestão no `.env` (`SENTINELA_REDE_SUGERIDA` e `SENTINELA_GATEWAY_SUGERIDO`), sem enviar nada para a rede.
+5. Executa o `./install.sh` com as imagens publicadas e verificadas (`cosign` ou `digests.txt`).
+6. Gera o **código de instalação** (8 caracteres) e grava só o hash argon2id em `/dados/instalacao.json`.
+7. Instala o timer systemd da atualização automática às **03:00** (+ até 15 min aleatórios), chamando `update.sh --automatico`.
+8. Mostra o endereço `https://<IP>` (e `<hostname>.local` quando o `avahi-daemon` já estiver ativo — o Sentinela não instala nem anuncia mDNS, mas inclui o nome no certificado na primeira instalação) e o código de instalação.
+
+O script é **idempotente**: rodar de novo não apaga nada nem troca a versão já instalada, apenas completa o que faltar.
+
+### Primeiro acesso pela tela
+
+Enquanto não existir nenhum administrador, abrir o endereço do Sentinela leva ao assistente `primeiro-acesso.html`:
+
+1. **Código de instalação:** digite os 8 caracteres exibidos no terminal pelo instalador (vale por **24 horas** e só até o primeiro administrador existir; nunca vai para log, `.env` ou resposta da API).
+2. **Administrador:** escolha login e senha (mínimo 12 caracteres).
+3. **Sua rede:** confira ou ajuste a sub-rede (RFC 1918, de /16 a /30) e o gateway detectados, e decida se liga a chave **"Achar os aparelhos sozinho (varredura)"** (ligada por padrão, com o aviso de ARP visível).
+4. **Concluir:** numa única transação, cria o administrador, cadastra a sub-rede, adiciona o gateway como equipamento da classe **Roteadores**, invalida o código, inicia a primeira varredura (se ligada) e entra logado.
+
+Depois do primeiro usuário, as rotas de primeiro acesso respondem `404` e o código deixa de servir. Se o código expirar antes de concluir, gere um novo no servidor:
+
+```bash
+docker compose exec core python -m sentinela.cli codigo-instalacao
+```
+
+O caminho técnico pela linha de comando (`criar-admin` e `sub-rede`) continua disponível abaixo.
+
+### Caminho técnico (`install.sh`, Windows / Docker Desktop e `--demo`)
 
 Requisitos: **Docker Engine 25 ou mais novo** e **Docker Compose 2.24.4 ou mais novo**
 (o instalador confere e recusa versões antigas), `openssl` e `bash`.
@@ -133,9 +172,20 @@ sobe o core e espera a saúde; se a saúde falhar, devolve o banco anterior.
 
 ## Atualização
 
+### Atualização automática (Linux com systemd)
+
+Em instalações feitas pelo `instalar.sh`, o timer `sentinela-atualizacao.timer` dispara todo dia às **03:00** (hora local, com atraso aleatório de até 15 minutos) e roda `./update.sh --automatico` — exatamente o mesmo fluxo verificado do `update.sh` manual (verificação `cosign`/`digests.txt`, backup `atualizacao` e volta automática em caso de falha), sem perguntar nada e saindo sem mexer se outra operação estiver em curso ou se a chave estiver desligada.
+
+- **Controle pela tela:** em **Configurações → Atualizações** (ligada por padrão), você vê a versão atual, a data e o resultado da última verificação e a chave liga/desliga.
+- **Avisos no painel:** por **24 horas** depois de atualizar ou de voltar por falha, aparece uma faixa discreta abaixo do cabeçalho (`"Atualizado para 0.5.0"` ou `"A atualização para X falhou; o Sentinela voltou para Y"`). Se passar mais de **7 dias** sem uma verificação bem-sucedida, a tela também avisa.
+- **Segurança:** o core **nunca** recebe `/var/run/docker.sock`, privilégios nem `subprocess`; quem atualiza é o timer do host, e o resultado é registrado em `/dados/atualizacao.json` pela CLI do core.
+- **Windows / Docker Desktop / instalação manual:** não há timer systemd; o cartão **Atualizações** informa isso e mostra o comando manual `./update.sh`.
+
+### Atualização manual
+
 ```bash
 ./update.sh                          # para a versão publicada mais recente
-./update.sh v0.4.0                   # para uma versão específica
+./update.sh v0.5.0                   # para uma versão específica
 ./update.sh --imagens-publicadas     # migra uma instalação local (Fases 1 a 3) para as imagens publicadas
 ```
 
@@ -183,14 +233,11 @@ pacotes do GHCR nascem privados:** depois da primeira publicação, torne `senti
 ## Raspberry Pi
 
 Funciona em **Raspberry Pi 4 ou 5 com 2 GB ou mais**, com **Raspberry Pi OS de 64 bits** (as imagens
-são `arm64`; 32 bits/armv7 não é suportado e o instalador recusa). Instale o Docker pelo script
-oficial e rode o instalador:
+são `arm64`; 32 bits/armv7 não é suportado e o instalador recusa). Basta rodar o instalador de uma
+linha (ele instala o Docker oficial, clona a última versão publicada e configura o timer):
 
 ```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker "$USER"   # saia e entre de novo
-git clone https://github.com/lumezencio/Sentinela.git && cd Sentinela
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/lumezencio/Sentinela/main/instalar.sh | bash
 ```
 
 A meta é menos de **10 minutos** entre "Docker instalado" e a "tela de login" (a maior parte é o
@@ -295,12 +342,13 @@ texto claro.
   gravador) recebem contato e, portanto, um ARP no primeiro pacote. Fora desses casos, nenhum
   ARP é provocado. Desligar "permite varredura" (ou remover a sub-rede) cancela na hora a
   varredura em curso nela.
+- **Varredura contínua e aviso de aparelho novo.** Nas sub-redes com "Permitir varredura" ligada, o núcleo repete a varredura lenta automaticamente a cada **30 minutos** (ajustável de **15 a 240 minutos** em **Configurações → Sub-redes e varredura lenta**), uma sub-rede de cada vez, respeitando varreduras manuais e cancelamentos. A primeira varredura concluída de cada sub-rede e a primeira coleta de cada fonte formam a **linha de base** (nada gera enxurrada de avisos — tudo só cai em **Novos**). Dali em diante, cada aparelho inédito (IP ou MAC nunca visto e não ignorado) abre o alerta **`"novo aparelho conectou na rede"`** na tela e no Telegram (com fabricante e portas quando houver e o botão **"Ver em Novos"**), respeitando silêncios. O aparelho só passa a ser monitorado depois de aprovado (a aprovação automática continua desligada por padrão). Ignorar ou aprovar em Novos fecha o alerta.
 - Um aparelho fora das sub-redes declaradas aparece com o selo "fora das sub-redes
   monitoradas" e o botão para declarar o /24; aprovar fica bloqueado até lá.
 
 A garantia é testada: no CI, o job `captura` sobe o núcleo e simuladores de MikroTik, switch
 SNMP e gravador numa rede isolada, grava todo quadro com `tcpdump`, faz coleta, aprovação,
-sondagem e uma varredura, e reprova qualquer broadcast ou multicast do Sentinela além do ARP
+sondagem, a **varredura agendada** e uma varredura manual, e reprova qualquer broadcast ou multicast do Sentinela além do ARP
 desses casos (detalhes em [`testes-rede/README.md`](testes-rede/README.md)).
 
 A demonstração (`./install.sh --demo`) traz um MikroTik, um switch SNMP e um gravador de 16
@@ -441,6 +489,24 @@ vínculo é por IP.
 do equipamento; o telão não. Quando um equipamento cai, o painel abre um cartão de alerta na
 tela com todos os dados; o telão abre um cartão reduzido, sem IP. O som vem desligado.
 
+## Diagnóstico de quedas
+
+A aba **Diagnóstico** transforma os eventos de queda já gravados no banco em **incidentes** (quedas que começam com até **30 s** de diferença após o início do incidente) e explica em português o que provavelmente aconteceu, sempre mostrando o **porquê**:
+
+| Classificação | Como o Sentinela identifica |
+|---|---|
+| **Roteador reiniciou (provável / confirmado)** | O gateway configurado na sub-rede e ≥ 80% dos aparelhos atrás dele caem juntos e voltam juntos depois de **30 a 180 s**. Quando há fonte SNMP ou MikroTik do roteador e o `sysUpTime` / `uptime` comprova o reinício, o texto passa para **(confirmado)**; sem leitura de uptime, diz sempre **(provável)**. |
+| **Queda do gateway sem reinício** | O gateway sumiu, mas o `sysUpTime` continuou crescendo (confirmado) ou o padrão não bate com reinício (provável). |
+| **Equipamento pai derrubou os filhos** | Um switch, AP ou gravador caiu e os dependentes ficaram inalcançáveis pela correlação pai/filho. |
+| **Instabilidade** | O mesmo aparelho caiu mais de 3 vezes em 1 hora. |
+| **Queda isolada** | Um aparelho caiu sozinho. |
+| **Quedas simultâneas** | Vários aparelhos caíram juntos sem pai nem gateway comum cadastrado. |
+
+- **Resumo e padrão de horário:** escolha **24 h**, **7 dias** ou **30 dias** para ver o total de incidentes por tipo, o tempo total fora do ar (sem dupla contagem) e o gráfico de barras por hora do dia (no fuso de `SENTINELA_FUSO`).
+- **Sugestões práticas:** cada tipo traz orientações objetivas em português (por exemplo, para "Roteador reiniciou": trocar a fonte, ligar num nobreak, atualizar o firmware e tirar do calor).
+- **Cruzar com energia:** o Sentinela não mede tensão elétrica. Quando o gráfico mostra concentração em certos horários, cruze os horários dos incidentes com um nobreak que registra eventos ou com uma tomada que mede energia.
+- **Exportar laudo:** baixe em **CSV** (UTF-8 com BOM, separador `;`, proteção contra fórmulas de planilha, sem IP nem MAC) ou clique em **Imprimir laudo** para entregar ao técnico ou à operadora. Para classificar reinícios do roteador, informe o gateway em **Configurações → Sub-redes e varredura lenta**.
+
 ## Versão em execução
 
 O número da versão aparece ao lado do nome Sentinela no topo do painel, na tela de login e no
@@ -448,6 +514,20 @@ rodapé do telão. Vem do servidor (`GET /api/v1/saude` devolve `{"status": "ok"
 o telão recebe no snapshot já autenticado), então mostra o que está de fato rodando.
 
 ### Notas da versão
+
+**0.5.0** (Fase 5 — produto instalável, vigilância contínua, diagnóstico e repaginação visual):
+instalador de uma linha (`instalar.sh`) para Linux 64 bits e Raspberry Pi 4/5 64 bits; assistente de
+primeiro acesso pela tela (`primeiro-acesso.html`) protegido por código de instalação de 8 caracteres
+(24 h, argon2id); varredura contínua agendada a cada 30 min (15–240 min) com linha de base e aviso
+`"novo aparelho conectou na rede"` na tela e no Telegram ("Ver em Novos"); atualização automática de
+madrugada via timer systemd (`update.sh --automatico`), cartão **Configurações → Atualizações** e
+avisos de 24 h / 7 dias; leitura de `sysUpTime`/MikroTik e aba **Diagnóstico** com incidentes,
+classificação provável/confirmada, padrão de horário, sugestões, exportação CSV e laudo para
+impressão; linguagem visual **"Nebulosa com Aurora"** com fontes próprias (Inter, Sora, JetBrains
+Mono), coluna de alertas ao vivo reservada sem deslocamento de layout (de 1280 a 1599 px a coluna
+"Desde" sai da tabela para acomodar a coluna fixa, continuando na ficha e no título da linha) e
+correção da permissão de execução de `update.sh` (as versões `0.4.0`/`0.4.1` enviaram `update.sh`
+como `100644`, onde `./update.sh` falhava em Linux e exigia `bash update.sh`).
 
 **0.4.1** (correções de interface): classe sem nenhum equipamento deixa de aparecer na Teia 3D
 (nós e painel "Classes") e no Organograma, e volta quando chega o primeiro; na Teia, os grupos
