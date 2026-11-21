@@ -667,8 +667,11 @@ html[data-aba="configuracoes"] {
 /* celular: a faixa rola junto com a página (presa no alto, cobriria o que passa por baixo) */
 @media (max-width: 559px) {
   /* rótulos mais curtos: o MAC (17 caracteres em mono) cabe inteiro com folga */
-  .ca-dados > div {
-    grid-template-columns: 88px minmax(0, 1fr);
+  .ca .ca-dados > div {
+    grid-template-columns: 84px minmax(0, 1fr);
+  }
+  .ca .ca-dados dd.mono {
+    font-size: 12px;
   }
   .ca-aberta .ca-painel {
     max-height: calc(100vh - 88px);
