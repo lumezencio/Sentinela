@@ -666,6 +666,10 @@ html[data-aba="configuracoes"] {
 
 /* celular: a faixa rola junto com a página (presa no alto, cobriria o que passa por baixo) */
 @media (max-width: 559px) {
+  /* rótulos mais curtos: o MAC (17 caracteres em mono) cabe inteiro com folga */
+  .ca-dados > div {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
   .ca-aberta .ca-painel {
     max-height: calc(100vh - 88px);
   }
@@ -1084,7 +1088,7 @@ html[data-aba="configuracoes"] {
   border-radius: 14px;
 }
 
-.ca-acoes .botao:not(.botao-primario):not(.botao-fantasma) {
+.ca-acoes .botao:not(.botao-primario) {
   border-color: transparent;
   background: var(--ca-botao);
   color: var(--ca-titulo);
