@@ -155,9 +155,9 @@ export function montarTeia(container, opcoes = {}) {
   if (caixaDica) {
     Object.assign(caixaDica.style, {
       position: "absolute", pointerEvents: "none", padding: "4px 8px", borderRadius: "8px",
-      font: "12px system-ui, sans-serif", color: "#E8EBF2", background: "rgba(27,31,40,.85)",
-      // nome longo não estoura a cena: uma linha cortada com reticências
-      whiteSpace: "nowrap", maxWidth: "min(360px, 80vw)", overflow: "hidden", textOverflow: "ellipsis",
+      font: "12px Inter, system-ui, sans-serif", color: "#E2E8F0", background: "rgba(15,23,42,.92)",
+      // nome longo não estoura a cena nem vira reticências: quebra linha dentro da largura máxima
+      whiteSpace: "normal", overflowWrap: "anywhere", maxWidth: "min(360px, 80vw)",
     });
   }
   const info = container.querySelector(".graph-info-msg");

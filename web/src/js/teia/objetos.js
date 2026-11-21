@@ -11,9 +11,10 @@ import {
 import { aparenciaDe } from "./aparencia.js";
 import { COR_FUNDO_ROTULO, COR_TEXTO_ROTULO } from "./rotulo-ip.js";
 
-export const FUNDO = "#0e1016";
-const PRIMARIA = "#8793E8";
-const ACENTO = "#68C7BC";
+// paleta "Nebulosa com Aurora": céu azul-marinho profundo, halo violeta e anéis teal
+export const FUNDO = "#060a19";
+const PRIMARIA = "#A78BFA";
+const ACENTO = "#2DD4BF";
 const NUCLEO = "#dfe4ff";
 
 /** Opacidade das partes esmaecidas quando outra classe está em foco. */
@@ -340,7 +341,7 @@ export function criarEstrelas(quantidade = 1500, semente = 366) {
   const geo = new BufferGeometry();
   geo.setAttribute("position", new Float32BufferAttribute(pos, 3));
   const mat = new PointsMaterial({
-    color: "#c8d0ff", size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.55,
+    color: "#c4b5fd", size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.55,
     depthWrite: false, fog: false,
   });
   const pontos = new Points(geo, mat);

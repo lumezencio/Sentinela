@@ -1,22 +1,43 @@
-/* Telão /parede: sempre escuro, letras que crescem com a tela, cursor escondido, nada
-   clicável. CSS compatível com o Chromium 63 das TVs Tizen 5: sem clamp()/min()/max(),
-   sem "gap" em flex (só em grid), sem "inset". Espaçamentos em múltiplos de 4 px. */
+/* Telão /parede: sempre escuro ("Nebulosa com Aurora", sem animação de fundo), letras que crescem
+   com a tela, cursor escondido, nada clicável. CSS compatível com o Chromium 63 das TVs Tizen 5:
+   sem clamp()/min()/max(), sem "gap" em flex (só em grid), sem "inset", sem depender de
+   backdrop-filter (todo fundo de texto é opaco o bastante sozinho). Espaçamentos em múltiplos de
+   4 px. Fontes servidas pelo próprio telão (/parede/fontes/, a porta HTTP só libera /parede/). */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/parede/fontes/inter.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/parede/fontes/sora-700.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
-  --fundo: #0e1016;
-  --superficie: #161a22;
-  --superficie-2: #1d222d;
-  --borda: #2b3140;
-  --texto: #e8ebf2;
-  --texto-suave: #a9b0c0;
-  --acento: #68c7bc;
-  --online: #4ca878;
-  --instavel: #d9a441;
-  --offline: #d97373;
-  --pausado: #7a8194;
-  --desconhecido: #8a90a0;
-  --fonte: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Inter", "Helvetica Neue",
+  --fundo: #060a19;
+  --superficie: #0f1729;
+  --superficie-2: #18223a;
+  --borda: rgba(148, 163, 184, 0.18);
+  --texto: #e2e8f0;
+  --texto-suave: #9aa8bd;
+  --acento: #2dd4bf;
+  --online: #34d399;
+  --instavel: #fbbf24;
+  --offline: #fb7185;
+  --inalcancavel: #a78bfa;
+  --pausado: #94a3b8;
+  --desconhecido: #94a3b8;
+  --vidro: linear-gradient(160deg, rgba(30, 41, 59, 0.92), rgba(15, 23, 42, 0.92));
+  --fonte: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue",
     Arial, sans-serif;
+  --fonte-titulo: "Sora", "Inter", "Segoe UI", system-ui, sans-serif;
   --fonte-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
   --margem: 16px;
 }
@@ -35,10 +56,16 @@ html {
   text-size-adjust: 100%;
 }
 
+/* aurora parada (três brilhos suaves pintados uma vez; nada se move atrás do texto) */
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--fundo);
+  background-color: var(--fundo);
+  background-image:
+    radial-gradient(circle at 8% 0%, rgba(20, 184, 166, 0.2), rgba(20, 184, 166, 0) 45%),
+    radial-gradient(circle at 96% 4%, rgba(139, 92, 246, 0.22), rgba(139, 92, 246, 0) 45%),
+    radial-gradient(circle at 50% 110%, rgba(236, 72, 153, 0.12), rgba(236, 72, 153, 0) 45%);
+  background-attachment: fixed;
   color: var(--texto);
   font-family: var(--fonte);
   line-height: 1.4;
@@ -86,7 +113,7 @@ ul {
 .st-online { color: var(--online); }
 .st-instavel { color: var(--instavel); }
 .st-offline { color: var(--offline); }
-.st-inalcancavel,
+.st-inalcancavel { color: var(--inalcancavel); }
 .st-pausado { color: var(--pausado); }
 .st-desconhecido { color: var(--desconhecido); }
 
@@ -104,8 +131,9 @@ ul {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  font-family: var(--fonte-titulo);
   font-size: 1.25rem;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 
@@ -136,6 +164,7 @@ ul {
   padding: var(--margem);
 }
 
+/* cartão do código: borda de 2 px em degradê teal -> violeta, miolo opaco */
 .pr-cartao {
   display: grid;
   grid-gap: 16px;
@@ -144,13 +173,16 @@ ul {
   width: 100%;
   max-width: 880px;
   padding: 32px 24px;
-  border: 1px solid var(--borda);
-  border-radius: 16px;
-  background: var(--superficie);
+  border: 2px solid transparent;
+  border-radius: 24px;
+  background: linear-gradient(160deg, #141d31, #0d1424) padding-box,
+    linear-gradient(135deg, #14b8a6, #8b5cf6) border-box;
+  box-shadow: 0 0 48px -12px rgba(139, 92, 246, 0.55);
   text-align: center;
 }
 
 .pr-codigo-titulo {
+  font-family: var(--fonte-titulo);
   font-size: 1.5rem;
   line-height: 1.25;
 }
@@ -200,7 +232,7 @@ ul {
   align-items: center;
   padding: 12px var(--margem);
   border-bottom: 1px solid var(--borda);
-  background: var(--superficie);
+  background: rgba(6, 10, 25, 0.88);
 }
 
 .pr-topo .pr-marca {
@@ -236,31 +268,51 @@ ul {
   flex-wrap: wrap;
   grid-column: 1 / -1;
   grid-row: 2;
-  margin: -4px -12px;
+  margin: -4px;
 }
 
+/* contadores em pílulas de degradê vivo (o mesmo dos cartões do painel), texto branco */
 .pr-conta {
   display: flex;
   align-items: baseline;
-  margin: 4px 12px;
+  margin: 4px;
+  padding: 4px 16px;
+  border-radius: 999px;
+  background: linear-gradient(145deg, #0f766e, #065f46);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  color: #ffffff;
   font-size: 1.125rem;
   white-space: nowrap;
+}
+
+.pr-conta.st-instavel {
+  background: linear-gradient(145deg, #b45309, #78350f);
+}
+
+.pr-conta.st-offline {
+  background: linear-gradient(145deg, #be123c, #831843);
+}
+
+.pr-conta.st-inalcancavel {
+  background: linear-gradient(145deg, #6d28d9, #4c1d95);
 }
 
 .pr-conta .icone-status {
   align-self: center;
   margin-right: 8px;
+  color: #ffffff;
 }
 
 .pr-conta strong {
   margin-right: 4px;
-  color: var(--texto);
+  color: #ffffff;
+  font-family: var(--fonte-titulo);
   font-size: 1.375rem;
   font-variant-numeric: tabular-nums;
 }
 
 .pr-conta span {
-  color: var(--texto-suave);
+  color: rgba(255, 255, 255, 0.9);
 }
 
 /* telas largas (TV): uma linha só; o nome quebra antes de empurrar contadores e relógio */
@@ -332,7 +384,7 @@ ul {
   display: block;
   padding: 2px 12px;
   border-radius: 999px;
-  background: rgba(14, 16, 22, 0.6);
+  background: rgba(6, 10, 25, 0.66);
   color: #eef0f7;
   font-size: 0.875rem;
   font-weight: 600;
@@ -350,7 +402,7 @@ ul {
 
 .teia-rotulo.servidor > span {
   background: transparent;
-  color: #c9cff8;
+  color: #ddd6fe;
   font-size: 0.75rem;
   letter-spacing: 0.2em;
   transform: translate(-50%, 30px) scale(var(--escala, 1));
@@ -368,8 +420,8 @@ ul {
   padding: 16px;
   border: 1px solid var(--borda);
   border-left: 4px solid var(--cor-classe, var(--acento));
-  border-radius: 12px;
-  background: var(--superficie);
+  border-radius: 20px;
+  background: var(--vidro);
 }
 
 .pr-org-cabeca {
@@ -384,6 +436,7 @@ ul {
   display: flex;
   align-items: center;
   margin: 4px 8px;
+  font-family: var(--fonte-titulo);
   font-size: 1.25rem;
 }
 
@@ -475,7 +528,7 @@ ul {
   overflow: hidden;
   /* fundo cheio: nada do Organograma/Teia aparece entre os cartões nem atrás deles */
   background: var(--fundo);
-  border-radius: 14px;
+  border-radius: 24px;
   pointer-events: none;
 }
 
@@ -483,28 +536,33 @@ ul {
   display: none;
 }
 
+/* cartão de queda: borda de 2 px em degradê (rosa -> violeta), miolo quase preto */
 .pr-ca {
   margin-bottom: 12px;
   padding: 12px 16px;
-  border: 1px solid var(--borda);
-  border-left: 6px solid var(--offline);
-  border-radius: 14px;
-  background: #1b1f28;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  border: 2px solid transparent;
+  border-radius: 24px;
+  background: linear-gradient(#12081a, #12081a) padding-box,
+    linear-gradient(135deg, #f43f5e, #a855f7) border-box;
+  box-shadow: 0 0 40px -12px rgba(244, 63, 94, 0.6);
 }
 
 .pr-ca-aviso {
-  border-left-color: var(--instavel);
+  background: linear-gradient(#140d06, #140d06) padding-box,
+    linear-gradient(135deg, #f59e0b, #ec4899) border-box;
+  box-shadow: 0 0 40px -12px rgba(245, 158, 11, 0.5);
 }
 
 .pr-ca-ok {
-  border-left-color: var(--online);
+  background: linear-gradient(#06140f, #06140f) padding-box,
+    linear-gradient(135deg, #14b8a6, #10b981) border-box;
+  box-shadow: 0 0 40px -12px rgba(20, 184, 166, 0.5);
 }
 
 .pr-ca-marca {
   display: flex;
   align-items: center;
-  color: var(--texto-suave);
+  color: #c4b5fd;
   font-size: 0.8125rem;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -526,6 +584,8 @@ ul {
 
 .pr-ca-nome {
   margin: 4px 0 8px;
+  color: #ffffff;
+  font-family: var(--fonte-titulo);
   font-size: 1.375rem;
   line-height: 1.25;
   overflow-wrap: break-word;
@@ -577,7 +637,7 @@ ul {
   flex: none;
   width: 7.5em;
   margin-right: 8px;
-  color: var(--texto-suave);
+  color: #c4b5fd;
 }
 
 .pr-ca-dados dd {
@@ -597,7 +657,7 @@ ul {
 .pr-faixa {
   padding: 8px var(--margem);
   border-top: 1px solid var(--borda);
-  background: var(--superficie);
+  background: rgba(6, 10, 25, 0.88);
 }
 
 /* versão em execução, no rodapé do telão */
@@ -621,15 +681,15 @@ ul {
   max-width: 100%;
   margin: 4px;
   padding: 4px 12px;
-  border: 1px solid rgba(217, 115, 115, 0.5);
-  border-radius: 8px;
-  background: rgba(217, 115, 115, 0.12);
+  border: 1px solid rgba(244, 63, 94, 0.45);
+  border-radius: 12px;
+  background: rgba(244, 63, 94, 0.14);
   font-size: 1rem;
 }
 
 .pr-al-instavel {
-  border-color: rgba(217, 164, 65, 0.5);
-  background: rgba(217, 164, 65, 0.12);
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.12);
 }
 
 .pr-alerta .icone-status {
@@ -677,8 +737,8 @@ ul {
   max-width: 880px;
   padding: 24px;
   border: 2px solid var(--offline);
-  border-radius: 16px;
-  background: #3a1a1f;
+  border-radius: 24px;
+  background: #2a0f1a;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
   font-size: 1.125rem;
   transform: translate(-50%, -50%);

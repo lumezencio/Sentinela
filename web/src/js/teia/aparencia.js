@@ -23,7 +23,7 @@ export function aparenciaDe(estado) {
   return { ...VISUAL[chave], rotulo: ESTADOS[chave].rotulo };
 }
 
-/** 8 cores suaves e distintas, com contraste AA (>= 4.5:1) sobre o fundo #0e1016. */
+/** 8 cores suaves e distintas, com contraste AA (>= 4.5:1) sobre o fundo #060a19 (e o antigo #0e1016). */
 export const PALETA_RESERVA = [
   "#7FB2E5", "#B79CE8", "#E58FB8", "#E8A27C",
   "#C9C46A", "#6CC6B8", "#9AA7F0", "#D69AD6",

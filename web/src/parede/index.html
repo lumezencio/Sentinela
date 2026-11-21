@@ -8,6 +8,7 @@
   <meta name="description" content="Telão do Sentinela: estado dos equipamentos da rede local para exibir numa TV.">
   <title>Sentinela · Telão</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/parede/fontes/inter.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/parede/parede.css">
   <script defer src="/parede/parede.bundle.js"></script>
 </head>
@@ -20,7 +21,8 @@
     <symbol id="i-pausado" viewBox="0 0 16 16"><rect x="3.5" y="3" width="3" height="10" rx="1" fill="currentColor"/><rect x="9.5" y="3" width="3" height="10" rx="1" fill="currentColor"/></symbol>
     <symbol id="i-inalcancavel" viewBox="0 0 16 16"><path d="M6.2 5.2H4.8a2.8 2.8 0 0 0 0 5.6h1.4M9.8 5.2h1.4a2.8 2.8 0 0 1 0 5.6H9.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.9 3.2L7.1 12.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
     <symbol id="i-desconhecido" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="2.6 2.4"/></symbol>
-    <symbol id="i-logo" viewBox="0 0 40 40"><ellipse cx="20" cy="20" rx="15" ry="6" fill="none" stroke="#8793E8" stroke-width="2"/><ellipse cx="20" cy="20" rx="6" ry="15" fill="none" stroke="#68C7BC" stroke-width="2"/><circle cx="20" cy="20" r="4" fill="#68C7BC"/></symbol>
+    <linearGradient id="pr-logo-nucleo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+    <symbol id="i-logo" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="none" stroke="#94a3b8" stroke-opacity="0.34" stroke-width="1.5"/><path d="M7.27 7.27A18 18 0 0 1 32.73 7.27" fill="none" stroke="#2dd4bf" stroke-width="2.4" stroke-linecap="round"/><path d="M32.73 7.27A18 18 0 0 1 32.73 32.73" fill="none" stroke="#a78bfa" stroke-width="2.4" stroke-linecap="round"/><circle cx="20" cy="20" r="7" fill="url(#pr-logo-nucleo)"/></symbol>
   </svg>
 
   <main class="pr">

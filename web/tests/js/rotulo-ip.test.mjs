@@ -83,7 +83,7 @@ function compor(fundo, sob) {
 
 test("rótulo: contraste AA (>= 4.5) sobre a esfera de todo estado, até sob brilho branco", () => {
   const estados = ["online", "instavel", "suspeito", "offline", "pausado", "inalcancavel", "desconhecido"];
-  const cores = [...new Set(estados.map((e) => aparenciaDe(e).cor)), "#FFFFFF", "#0E1016", "#7A8194"];
+  const cores = [...new Set(estados.map((e) => aparenciaDe(e).cor)), "#FFFFFF", "#060A19", "#7A8194"];
   for (const cor of cores) {
     const r = razao(COR_TEXTO_ROTULO, compor(COR_FUNDO_ROTULO, cor));
     assert.ok(r >= 4.5, `${cor}: ${r.toFixed(2)}`);

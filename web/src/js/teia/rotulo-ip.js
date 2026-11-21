@@ -19,7 +19,7 @@ const LETRA_MAX_PX = 15;
  * borra quando o bloom liga.
  */
 export const COR_TEXTO_ROTULO = "#BCC2CE";
-export const COR_FUNDO_ROTULO = "rgba(14,16,22,0.94)";
+export const COR_FUNDO_ROTULO = "rgba(6,10,25,0.94)";
 
 /** Diâmetro na tela (px) de uma esfera de `raio` a `distancia` da câmera perspectiva. */
 export function diametroProjetadoPx({ raio, distancia, fovGraus, alturaPx }) {
