@@ -1,0 +1,635 @@
+/* Fase 5: aba Diagnóstico e laudo para imprimir. Mesmo sistema do painel (tokens, cartões,
+   espaçamentos de 4 px). Tipo de incidente nunca só por cor: cada incidente leva ícone e o rótulo
+   em texto ("provável"/"confirmado" vem do servidor); o gráfico distingue o pico por contorno e
+   luminosidade, e os números reais ficam em texto (valor sobre a barra e tabela para leitor de
+   tela). Nome de equipamento cresce em altura, nunca é cortado nem vira reticências. */
+
+/* link direto para #diagnostico: a Lista não pisca antes do Alpine */
+html[data-aba="diagnostico"] #conteudo-lista {
+  display: none;
+}
+
+html[data-aba="diagnostico"] .aviso-sem-alpine {
+  display: block;
+  animation: surgir-aviso 0.3s ease 3s both;
+}
+
+html[data-aba="diagnostico"] .conteudo {
+  display: flow-root;
+}
+
+html[data-aba="diagnostico"] {
+  scrollbar-gutter: stable;
+  background: var(--fundo);
+}
+
+#conteudo-diagnostico:not([hidden]) {
+  display: flow-root;
+}
+
+.dg-laudo-cabeca {
+  display: none; /* só no papel */
+}
+
+/* período novo a caminho: os números antigos ficam, esmaecidos, até chegarem os novos */
+.dg-atualizando .dg-resumo,
+.dg-atualizando .dg-bloco {
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+
+/* ---------- ferramentas: período em texto, CSV e impressão ---------- */
+.dg-ferramentas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin: 0 0 12px;
+}
+
+.dg-periodo {
+  margin: 0;
+  max-width: 720px;
+  color: var(--texto);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dg-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dg-nota {
+  margin: 0 0 16px;
+  max-width: 760px;
+  font-size: 14px;
+}
+
+.dg-nota strong {
+  color: var(--texto);
+}
+
+#conteudo-diagnostico .alerta {
+  margin-bottom: 16px;
+}
+
+.dg-tentar {
+  margin: 0 0 16px;
+}
+
+.dg-aviso {
+  border-left-color: var(--instavel);
+}
+
+/* ---------- estado vazio (tom positivo) ---------- */
+.dg-vazio {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 24px;
+  padding: 20px 24px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--online);
+  border-radius: 16px;
+  background: var(--superficie);
+}
+
+.dg-vazio .icone-status {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+
+.dg-vazio-titulo {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.dg-energia-fim {
+  margin: 0 0 24px;
+  max-width: 760px;
+}
+
+/* ---------- resumo ---------- */
+.dg-resumo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 176px), 1fr));
+  gap: 12px;
+  margin: 0 0 24px;
+}
+
+.dg-cartao {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 16px 20px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  background: var(--superficie);
+}
+
+.dg-cartao-total {
+  border-color: color-mix(in srgb, var(--primaria) 45%, var(--borda));
+}
+
+.dg-rot {
+  color: var(--texto-suave);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dg-num {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.dg-num-tipo {
+  font-size: 24px;
+}
+
+.dg-leg {
+  color: var(--texto-suave);
+  font-size: 13px;
+}
+
+/* ---------- gráfico por hora ---------- */
+.dg-bloco {
+  margin-bottom: 24px;
+}
+
+.dg-pico-texto {
+  margin: 0;
+  padding: 4px 12px;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+  background: var(--superficie-2);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dg-pico-texto:empty {
+  display: none;
+}
+
+.dg-grafico {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 2px;
+  padding-top: 4px;
+}
+
+.dg-coluna {
+  display: grid;
+  grid-template-rows: 16px 160px 20px;
+  justify-items: center;
+  min-width: 0;
+}
+
+.dg-numero {
+  display: block;
+  visibility: hidden; /* o valor sobre cada barra só quando cabe (768 px em diante e no papel); o espaço fica */
+  align-self: end;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.dg-trilho {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  height: 160px;
+  padding-top: 4px; /* o contorno do pico não encosta no número */
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--borda);
+}
+
+.dg-barra {
+  display: block;
+  width: 100%;
+  height: var(--altura, 0%);
+  border-radius: 4px 4px 0 0;
+  /* barras comuns mais escuras que o pico: a diferença não depende de matiz */
+  background: color-mix(in srgb, var(--primaria) 55%, var(--superficie-2));
+}
+
+.dg-barra.dg-barra-pico {
+  background: var(--primaria);
+  outline: 2px solid var(--texto);
+  outline-offset: 1px;
+}
+
+.dg-eixo {
+  color: var(--texto-suave);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.dg-legenda-eixo {
+  margin: 8px 0 0;
+}
+
+/* ---------- sugestões ---------- */
+.dg-sug-grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 12px;
+}
+
+.dg-sug {
+  padding: 16px 20px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--cor-tipo, var(--borda));
+  border-radius: var(--raio);
+  background: var(--superficie);
+}
+
+.dg-sug h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.dg-sug ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+}
+
+.dg-energia {
+  margin: 16px 0 0;
+  max-width: 760px;
+  font-size: 14px;
+}
+
+/* cor do tipo (reforça o ícone e o rótulo; nunca é o único sinal) */
+.dg-tipo-roteador_reiniciou,
+.dg-tipo-gateway_sem_reinicio,
+.dg-tipo-pai_derrubou_filhos {
+  --cor-tipo: var(--offline);
+}
+
+.dg-tipo-instabilidade,
+.dg-tipo-quedas_simultaneas {
+  --cor-tipo: var(--instavel);
+}
+
+.dg-tipo-queda_isolada,
+.dg-tipo-outro {
+  --cor-tipo: var(--pausado);
+}
+
+/* ---------- incidentes ---------- */
+.dg-lista {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dg-inc {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px 24px;
+  padding: 16px 20px;
+  border: 1px solid var(--borda);
+  border-left: 4px solid var(--cor-tipo, var(--borda));
+  border-radius: 16px;
+  background: var(--superficie);
+}
+
+.dg-inc-cabeca {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.dg-inc-rotulo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.dg-inc-rotulo .icone-status {
+  color: var(--cor-tipo, var(--texto-suave));
+  flex: none;
+}
+
+.dg-inc-meta {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dg-inc-sub {
+  margin: 0 0 4px;
+  color: var(--texto-suave);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dg-inc-porque ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.dg-nomes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dg-nomes li {
+  max-width: 100%;
+  padding: 4px 12px;
+  border: 1px solid var(--borda);
+  border-radius: 12px;
+  background: var(--superficie-2);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.dg-inc-equip .dica {
+  margin-top: 8px;
+}
+
+.dg-mais {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+@media (min-width: 768px) {
+  .dg-grafico {
+    gap: 4px;
+  }
+
+  .dg-numero {
+    visibility: visible;
+  }
+
+  .dg-inc {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .dg-inc-cabeca {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 767px) {
+  .dg-resumo {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  }
+
+  .dg-acoes,
+  .dg-acoes .botao,
+  .dg-periodos {
+    width: 100%;
+  }
+
+  .dg-periodos .segmento {
+    flex: 1;
+    padding: 0 8px;
+  }
+
+  .dg-vazio {
+    padding: 16px;
+  }
+
+  .dg-cartao {
+    padding: 12px 16px;
+  }
+}
+
+/* ---------- laudo no papel (A4): só o conteúdo do diagnóstico, em preto sobre branco ---------- */
+@media print {
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+
+  :root:root:root {
+    color-scheme: light;
+    --fundo: #fff;
+    --superficie: #fff;
+    --superficie-2: #f1f2f5;
+    --borda: #8a8f9c;
+    --texto: #000;
+    --texto-suave: #333;
+    --primaria: #2f3a8f;
+    --acento: #0f5c54;
+    --vidro: #fff;
+    --sombra: none;
+    --online: #1d6b43;
+    --instavel: #7a5410;
+    --offline: #9a2f2f;
+    --pausado: #444;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000;
+    font-size: 11pt;
+  }
+
+  .campo,
+  .topo,
+  .aviso-sem-alpine,
+  #aviso-atualizacao,
+  #cartoes-alerta,
+  .banner,
+  dialog,
+  .dg-ferramentas,
+  .dg-periodos,
+  .dg-tentar,
+  .dg-mais {
+    display: none !important;
+  }
+
+  .vidro,
+  .cfg-bloco {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+    background: #fff;
+  }
+
+  .casca,
+  .conteudo {
+    width: 100%;
+    padding: 0;
+  }
+
+  .secao-cabeca {
+    margin: 0 0 8pt;
+  }
+
+  .secao-titulo {
+    background: none;
+    color: #000;
+    font-size: 16pt;
+    -webkit-text-fill-color: #000;
+  }
+
+  .dg-laudo-cabeca {
+    display: block;
+    margin: 0 0 12pt;
+    padding: 0 0 8pt;
+    border-bottom: 1.5pt solid #000;
+  }
+
+  .dg-laudo-cabeca p,
+  .dg-laudo-cabeca h2 {
+    margin: 0;
+  }
+
+  .dg-laudo-marca {
+    font-size: 10pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .dg-laudo-cabeca h2 {
+    font-size: 18pt;
+  }
+
+  .dg-cabeca {
+    display: none;
+  }
+
+  .dg-nota,
+  .dg-aviso,
+  .dg-energia {
+    max-width: none;
+    font-size: 10pt;
+  }
+
+  .dg-aviso {
+    border: 0.75pt solid #000;
+    border-left-width: 3pt;
+  }
+
+  .dg-resumo {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6pt;
+  }
+
+  .dg-cartao,
+  .dg-sug,
+  .dg-inc,
+  .cfg-bloco {
+    border: 0.75pt solid #000;
+    border-radius: 4pt;
+    break-inside: avoid;
+  }
+
+  #dg-incidentes {
+    break-inside: auto; /* a lista é longa: corre pelas páginas */
+  }
+
+  .cfg-bloco {
+    padding: 8pt 10pt;
+    margin-bottom: 12pt;
+  }
+
+  .dg-inc,
+  .dg-sug {
+    border-left: 3pt solid #000;
+    padding: 8pt 10pt;
+  }
+
+  .dg-lista {
+    gap: 6pt;
+  }
+
+  .dg-inc {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6pt 12pt;
+  }
+
+  .dg-inc-cabeca {
+    grid-column: 1 / -1;
+  }
+
+  .dg-num {
+    font-size: 18pt;
+  }
+
+  .dg-sug-grade {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6pt;
+  }
+
+  .dg-grafico {
+    gap: 2pt;
+  }
+
+  .dg-numero {
+    visibility: visible;
+    font-size: 8pt;
+  }
+
+  .dg-coluna {
+    grid-template-rows: 12pt 90pt 14pt;
+  }
+
+  .dg-trilho {
+    height: 90pt;
+    border-bottom-color: #000;
+  }
+
+  .dg-barra {
+    background: #7b82b8;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .dg-barra.dg-barra-pico {
+    background: #2f3a8f;
+    outline: 1.5pt solid #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .dg-nomes li {
+    border-color: #000;
+    background: #fff;
+    font-size: 9pt;
+    line-height: 12pt;
+  }
+
+  .dg-inc-porque ul,
+  .dg-sug ul {
+    font-size: 10pt;
+  }
+
+  a {
+    color: #000;
+    text-decoration: none;
+  }
+}

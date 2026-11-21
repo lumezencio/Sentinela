@@ -2,6 +2,7 @@
 import { alertasDoPainel } from "./alertas.js";
 import { api, irParaLogin } from "./api.js";
 import { cartoesDoPainel } from "./cartoes-painel.js";
+import { diagnosticoDoPainel } from "./diagnostico-pagina.js";
 import { paredesDoPainel } from "./config-paredes.js";
 import { telegramDoPainel } from "./config-telegram.js";
 import { atualizacaoDoPainel, backupDoPainel, configuracoesDoPainel, segurancaDoPainel } from "./configuracoes.js";
@@ -562,6 +563,7 @@ function painel() {
     configuracoesDoPainel(),
     alertasDoPainel(store),
     cartoesDoPainel(store),
+    diagnosticoDoPainel(),
     telegramDoPainel(),
     paredesDoPainel(),
     segurancaDoPainel(),

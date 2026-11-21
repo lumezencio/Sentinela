@@ -5,7 +5,7 @@ import {
   ESTILOS as ESTILOS_TEIA, NOMES_ESTILO as NOMES_TEIA,
 } from "../../src/js/teia/estilos.js";
 import {
-  abaDoHash, CHAVE_ESTILO, carregarTeia, equipamentosDaClasse, ESTILOS, estiloSalvo,
+  ABAS, abaDoHash, CHAVE_ESTILO, carregarTeia, equipamentosDaClasse, ESTILOS, estiloSalvo,
   fichaDoEquipamento, formatarDuracao, margensDosPaineis, NOMES_ESTILO, quedasDoHistorico, resumoDasClasses, salvarEstilo,
   URL_BUNDLE_TEIA, webglDisponivel,
 } from "../../src/js/visoes.js";
@@ -55,6 +55,12 @@ test("abaDoHash: #teia, #organograma, #lista e o padrão", () => {
   assert.equal(abaDoHash(undefined), "lista");
   assert.equal(abaDoHash("teia"), "teia");
   assert.equal(abaDoHash("#__proto__"), "lista");
+});
+
+test("test_abas_incluem_diagnostico", () => {
+  assert.ok(ABAS.includes("diagnostico"));
+  assert.equal(ABAS.indexOf("diagnostico"), ABAS.indexOf("alertas") + 1);
+  assert.equal(abaDoHash("#diagnostico"), "diagnostico");
 });
 
 // ---------- estilos ----------

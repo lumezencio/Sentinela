@@ -320,9 +320,9 @@ html[data-aba="configuracoes"] {
   margin: 0;
 }
 
-/* seis abas não cabem ao lado da marca e das ações: a faixa de abas desce e quebra linha
+/* sete abas não cabem ao lado da marca e das ações: a faixa de abas desce e quebra linha
    (nada fica escondido atrás da borda da tela nem exige rolagem lateral) */
-@media (max-width: 960px) {
+@media (max-width: 1120px) {
   .topo-interno {
     flex-wrap: wrap;
     gap: 8px 12px;

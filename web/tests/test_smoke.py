@@ -4020,3 +4020,173 @@ def test_telas_novas_sem_corte_nas_8_larguras(
             assert r["rolagem"] <= r["vw"] and r["problemas"] == [], (largura, r)
         finally:
             contexto.close()
+
+
+# ---------- Diagnóstico (Fase 5, Task 11) ----------
+CODIGO_PERIODO = {"24 horas": "24h", "7 dias": "7d", "30 dias": "30d"}
+
+
+@pytest.fixture(autouse=True)
+def _zerar_taxa_do_diagnostico(request: pytest.FixtureRequest) -> None:
+    # o Diagnóstico conta no limite de 10/min por usuário (o mesmo admin faz login em todos os
+    # testes): cada teste dele começa com a janela limpa
+    if "diagnostico" in request.node.name or request.node.name.startswith("test_baixar_csv"):
+        request.getfixturevalue("alvo").core.zerar_taxa()
+
+
+def abrir_diagnostico(page: Page, periodo: str = "30 dias") -> Any:
+    page.get_by_role("tab", name="Diagnóstico").click()
+    expect(page.get_by_role("tab", name="Diagnóstico")).to_have_attribute("aria-selected", "true")
+    assert page.url.endswith("#diagnostico"), page.url
+    secao = page.locator("#conteudo-diagnostico")
+    expect(secao.locator("#dg-resumo")).to_be_visible(timeout=20_000)  # 24 h, a abertura
+    with page.expect_response(
+        re.compile(rf"/api/v1/diagnostico\?periodo={CODIGO_PERIODO[periodo]}$")
+    ) as resposta:
+        secao.get_by_role("button", name=periodo, exact=True).click()
+    assert resposta.value.status == 200
+    expect(secao.get_by_role("button", name=periodo, exact=True)).to_have_attribute(
+        "aria-pressed", "true"
+    )
+    expect(secao.locator("#dg-resumo")).to_be_visible(timeout=20_000)
+    return secao
+
+
+def test_aba_diagnostico_mostra_resumo_barras_e_incidentes(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    assert int(secao.locator("#dg-total").inner_text()) >= 20  # o roteador reinicia quase todo dia
+    assert secao.locator("#dg-fora").inner_text().strip() not in ("", "0 s")
+    expect(secao.locator(".dg-coluna")).to_have_count(24)
+    expect(secao.locator("#dg-tabela-horas tbody tr")).to_have_count(24)
+    expect(secao.locator(".dg-barra.dg-barra-pico")).to_have_count(1)  # um só pico, às 19 h locais
+    expect(secao.locator("#dg-pico")).to_contain_text("19 h")
+    # "provável" (sem uptime não há "confirmado") e o porquê visível, não só em dica
+    primeiro = secao.locator("#lista-incidentes li.dg-inc").first
+    expect(primeiro).to_be_visible()
+    expect(primeiro.locator(".dg-inc-rotulo")).to_contain_text("provável")
+    expect(primeiro.get_by_text("Por quê", exact=True)).to_be_visible()
+    expect(primeiro.locator(".dg-inc-porque li").first).to_be_visible()
+    expect(primeiro.locator(".dg-nomes li").first).to_be_visible()
+    # sugestões por tipo, o texto de energia e a regra do período (incidentes que começaram nele)
+    expect(secao.locator("#dg-sugestoes")).to_contain_text("Trocar a fonte do roteador.")
+    expect(secao.locator("#dg-energia")).to_contain_text("nobreak")
+    expect(secao.locator("#dg-nota")).to_contain_text("começaram")
+    expect(secao.locator("#dg-carregando")).to_be_hidden()
+    assert erros == [], erros
+
+
+def test_trocar_periodo_recarrega(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page, "30 dias")
+    total30 = int(secao.locator("#dg-total").inner_text())
+    with page.expect_request(re.compile(r"/api/v1/diagnostico\?periodo=7d$")):
+        secao.get_by_role("button", name="7 dias", exact=True).click()
+    expect(secao.get_by_role("button", name="7 dias", exact=True)).to_have_attribute(
+        "aria-pressed", "true"
+    )
+    expect(secao.get_by_role("button", name="30 dias", exact=True)).to_have_attribute(
+        "aria-pressed", "false"
+    )
+    expect(secao.locator("#dg-total")).not_to_have_text(str(total30), timeout=10_000)
+    expect(secao.locator("#dg-periodo-texto")).to_contain_text("De ")
+
+
+def test_baixar_csv(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    with page.expect_download() as baixado:
+        secao.locator("#dg-baixar-csv").click()
+    arquivo = baixado.value
+    assert re.fullmatch(r"sentinela-diagnostico-\d{8}-30d\.csv", arquivo.suggested_filename)
+    texto = Path(arquivo.path()).read_bytes().decode("utf-8")
+    assert texto.startswith('﻿"inicio";"fim";"duracao";"classificacao";')
+    assert "Roteador reiniciou (provável)" in texto
+    assert "10.99." not in texto  # só nomes, nunca IP
+
+
+def test_impressao_esconde_navegacao(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    expect(secao.locator(".dg-laudo-cabeca")).to_be_hidden()  # só no papel
+    page.emulate_media(media="print")
+    expect(page.locator(".topo")).to_be_hidden()
+    expect(page.locator("nav.abas")).to_be_hidden()
+    expect(page.locator("#cartoes-alerta")).to_be_hidden()
+    expect(page.locator(".campo")).to_be_hidden()
+    expect(secao.locator(".dg-ferramentas")).to_be_hidden()
+    expect(secao.locator(".dg-laudo-cabeca")).to_be_visible()
+    expect(secao.locator(".dg-laudo-cabeca h2")).to_have_text("Laudo de quedas: últimos 30 dias")
+    expect(secao.locator(".dg-laudo-cabeca")).to_contain_text("Gerado em")
+    expect(secao.locator("#lista-incidentes li.dg-inc").first).to_be_visible()
+    cor = secao.locator(".dg-inc").first.evaluate("e => getComputedStyle(e).backgroundColor")
+    assert cor == "rgb(255, 255, 255)", cor  # papel branco mesmo no tema escuro
+    largura = page.evaluate(
+        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+    )
+    assert largura[0] <= largura[1], largura
+
+
+def test_sem_gateway_mostra_a_dica(page: Page, alvo: Alvo) -> None:
+    aviso = "Sem o gateway cadastrado, o Diagnóstico não consegue dizer se o roteador reiniciou."
+
+    def sem_gateway(rota: Route) -> None:
+        corpo = rota.fetch().json()
+        corpo["gateway_configurado"] = False
+        corpo["aviso_gateway"] = aviso
+        rota.fulfill(json=corpo)
+
+    page.route(re.compile(r"/api/v1/diagnostico\?"), sem_gateway)
+    entrar(page, alvo)
+    abrir_diagnostico(page)
+    expect(page.locator("#dg-aviso-gateway")).to_have_text(aviso)
+
+
+def test_diagnostico_vazio_truncado_e_429(page: Page, alvo: Alvo) -> None:
+    vazio = {
+        "periodo": "24h",
+        "de": "2026-11-19T15:00:00Z",
+        "ate": "2026-11-20T15:00:00Z",
+        "resumo": {"incidentes": 0, "por_tipo": {}, "fora_s": 0},
+        "horas": [0] * 24,
+        "incidentes": [],
+        "gateway_configurado": True,
+        "truncado": False,
+        "aviso_energia": "Queda de energia não é medida pelo Sentinela.",
+        "aviso_gateway": None,
+    }
+    estado = {"modo": "vazio"}
+
+    def responder(rota: Route) -> None:
+        if estado["modo"] == "429":
+            rota.fulfill(status=429, json={"detail": "x"}, headers={"Retry-After": "7"})
+        else:
+            rota.fulfill(json={**vazio, "truncado": estado["modo"] == "truncado"})
+
+    page.route(re.compile(r"/api/v1/diagnostico\?"), responder)
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Diagnóstico").click()
+    secao = page.locator("#conteudo-diagnostico")
+    expect(secao.locator("#dg-vazio")).to_contain_text("Nenhuma queda no período")
+    expect(secao.locator("#dg-resumo")).to_be_hidden()
+    expect(secao.locator("#dg-aviso-truncado")).to_be_hidden()
+    estado["modo"] = "truncado"
+    secao.get_by_role("button", name="7 dias", exact=True).click()
+    expect(secao.locator("#dg-aviso-truncado")).to_be_visible()
+    estado["modo"] = "429"
+    secao.get_by_role("button", name="30 dias", exact=True).click()
+    expect(secao.locator("#dg-erro")).to_contain_text("Aguarde 7 s")
+    expect(secao.locator("#dg-vazio")).to_be_hidden()
+
+
+def test_visualizador_ve_diagnostico(page: Page, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    erros = vigiar_console(page)
+    entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    secao = abrir_diagnostico(page)
+    expect(secao.locator("#lista-incidentes li.dg-inc").first).to_be_visible()
+    expect(secao.locator("#dg-baixar-csv")).to_be_visible()
+    expect(page.get_by_role("tab", name="Configurações")).to_have_count(0)
+    assert erros == [], erros

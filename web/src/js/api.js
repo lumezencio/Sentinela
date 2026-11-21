@@ -175,6 +175,12 @@ export const api = {
   // ---- atualização automática (Fase 5): qualquer usuário lê; só o admin liga e desliga ----
   verAtualizacao: () => requisitar("GET", "/atualizacao"),
   definirAtualizacao: (ativo) => requisitar("PATCH", "/atualizacao", { json: { ativo: Boolean(ativo) } }),
+  // ---- diagnóstico de quedas (Fase 5): qualquer usuário com sessão; 429 traz Retry-After ----
+  verDiagnostico: (periodo) =>
+    requisitar(
+      "GET",
+      `/diagnostico?periodo=${["24h", "7d", "30d"].includes(periodo) ? periodo : "24h"}`,
+    ),
   // ---- alertas, silêncios e Telegram (Fase 4) ----
   listarAlertas: ({ filtro = "abertos", classe = "", desde = "", pagina = 1, porPagina = 50 }) => {
     const q = new URLSearchParams({ filtro, pagina: String(pagina), por_pagina: String(porPagina) });

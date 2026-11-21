@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="css/componentes.css">
   <link rel="stylesheet" href="css/novos.css">
   <link rel="stylesheet" href="css/alertas.css">
+  <link rel="stylesheet" href="css/diagnostico.css">
   <script src="js/tema.js"></script>
   <script type="module" src="js/app.js"></script>
   <script type="module" src="js/versao-pagina.js"></script>
@@ -50,6 +51,7 @@
         <button class="aba" role="tab" type="button" id="aba-teia" aria-controls="conteudo-teia" aria-selected="false" :aria-selected="abaSelecionada('teia')" @click="irPara('teia')">Teia</button>
         <button class="aba" role="tab" type="button" id="aba-organograma" aria-controls="conteudo-organograma" aria-selected="false" :aria-selected="abaSelecionada('organograma')" @click="irPara('organograma')">Organograma</button>
         <button class="aba" role="tab" type="button" id="aba-alertas" aria-controls="conteudo-alertas" aria-selected="false" :aria-selected="abaSelecionada('alertas')" @click="irPara('alertas')">Alertas<span class="aba-contador aba-contador-alerta" id="contador-alertas" x-show="temAlertasAbertos" x-cloak><span x-text="rotuloAlertasAbertos">0</span><span class="so-leitor"> abertos</span></span></button>
+        <button class="aba" role="tab" type="button" id="aba-diagnostico" aria-controls="conteudo-diagnostico" aria-selected="false" :aria-selected="abaSelecionada('diagnostico')" @click="irPara('diagnostico')">Diagnóstico</button>
         <button class="aba" role="tab" type="button" id="aba-novos" aria-controls="conteudo-novos" aria-selected="false" :aria-selected="abaSelecionada('novos')" @click="irPara('novos')">Novos<span class="aba-contador" id="contador-pendentes" x-show="temPendentes" x-cloak><span x-text="rotuloPendentes">0</span><span class="so-leitor"> pendentes</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-configuracoes" aria-controls="conteudo-configuracoes" aria-selected="false" :aria-selected="abaSelecionada('configuracoes')" @click="irPara('configuracoes')" hidden :hidden="!admin">Configurações</button>
       </nav>
@@ -585,6 +587,169 @@
     <div class="al-mais" x-show="alertasMais" x-cloak>
       <button class="botao" type="button" :disabled="alertasCarregando" @click="maisAlertas">Mostrar mais alertas</button>
     </div>
+  </section>
+
+  <section class="casca dg" id="conteudo-diagnostico" role="tabpanel" aria-labelledby="aba-diagnostico" hidden :hidden="!abaDiagnostico" :class="dgClasse" :aria-busy="dgOcupado">
+    <div class="banner" role="status" aria-live="polite" x-show="bannerVisivel" x-cloak :class="bannerErro ? 'banner-erro' : ''">
+      <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span><span x-text="textoBanner"></span>
+    </div>
+    <header class="secao-cabeca dg-cabeca">
+      <div class="secao-intro">
+        <h1 class="secao-titulo" tabindex="-1">Diagnóstico</h1>
+        <p class="dica">Por que a rede caiu: o Sentinela junta as quedas que começaram quase juntas num incidente só e diz o que provavelmente aconteceu.</p>
+      </div>
+      <div class="segmentos dg-periodos" role="group" aria-label="Período do diagnóstico">
+        <template x-for="p in dgPeriodos" :key="p.valor">
+          <button class="segmento" type="button" :aria-pressed="periodoDiagnosticoAtivo(p.valor)" @click="trocarPeriodoDiagnostico(p.valor)" x-text="p.rotulo"></button>
+        </template>
+      </div>
+    </header>
+
+    <div class="dg-laudo-cabeca" aria-hidden="true">
+      <p class="dg-laudo-marca">Sentinela</p>
+      <h2 x-text="dgTituloLaudo"></h2>
+      <p x-text="dgPeriodoTexto"></p>
+      <p x-text="dgGeradoEm"></p>
+    </div>
+
+    <div class="dg-ferramentas" x-show="dgTemDados" x-cloak>
+      <p class="dg-periodo" id="dg-periodo-texto" x-text="dgPeriodoTexto"></p>
+      <div class="dg-acoes">
+        <a class="botao" id="dg-baixar-csv" :href="dgUrlCsv" :download="dgNomeCsv">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11M8 10l4 4 4-4M5 17v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2"/></svg>Baixar CSV
+        </a>
+        <button class="botao botao-primario" id="dg-imprimir" type="button" @click="imprimirLaudo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V3h10v6M7 17H5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-2M7 14h10v7H7z"/></svg>Imprimir laudo
+        </button>
+      </div>
+    </div>
+
+    <p class="dica dg-nota" id="dg-nota" x-show="dgTemDados" x-cloak>O período conta os incidentes que <strong>começaram</strong> nele: quedas iniciadas antes do período não entram no tempo fora.</p>
+    <p class="alerta" role="alert" id="dg-erro" x-show="dgErro" x-text="dgErro"></p>
+    <div class="dg-tentar" x-show="dgErro" x-cloak>
+      <button class="botao" type="button" @click="carregarDiagnostico" :disabled="dgCarregando">Tentar de novo</button>
+    </div>
+    <p class="vazio" id="dg-carregando" role="status" x-show="dgCarregando &amp;&amp; !dgTemDados" x-cloak>Carregando o diagnóstico…</p>
+    <p class="alerta dg-aviso" id="dg-aviso-gateway" role="note" x-show="dgAvisoGateway" x-cloak x-text="dgAvisoGateway"></p>
+    <p class="alerta dg-aviso" id="dg-aviso-truncado" role="note" x-show="dgTruncado" x-cloak>Este período tem mais quedas do que cabem no laudo: a lista e o CSV mostram só as mais recentes e parte dos aparelhos de cada incidente. Escolha um período menor para ver tudo.</p>
+
+    <div class="dg-vazio" id="dg-vazio" role="status" x-show="dgVazio" x-cloak>
+      <svg class="icone-status st-online" aria-hidden="true"><use href="#i-online"/></svg>
+      <div>
+        <p class="dg-vazio-titulo">Nenhuma queda no período.</p>
+        <p class="dica">O Sentinela seguiu vigiando e não registrou nenhum incidente neste período. Está tudo certo por aqui.</p>
+      </div>
+    </div>
+
+    <section class="dg-resumo" id="dg-resumo" aria-label="Resumo do período" x-show="dgTemDados &amp;&amp; !dgVazio" x-cloak>
+      <div class="dg-cartao dg-cartao-total">
+        <span class="dg-rot">Incidentes</span>
+        <span class="dg-num" id="dg-total" x-text="dgTotal"></span>
+        <span class="dg-leg">no período</span>
+      </div>
+      <div class="dg-cartao dg-cartao-total">
+        <span class="dg-rot">Tempo fora</span>
+        <span class="dg-num" id="dg-fora" x-text="dgFora"></span>
+        <span class="dg-leg">com algum aparelho fora, sem contar em dobro</span>
+      </div>
+      <template x-for="t in dgTiposResumo" :key="t.k">
+        <div class="dg-cartao">
+          <span class="dg-rot" x-text="t.rotulo"></span>
+          <span class="dg-num dg-num-tipo" x-text="t.total"></span>
+        </div>
+      </template>
+    </section>
+
+    <section class="cfg-bloco dg-bloco" id="dg-horas" aria-labelledby="dg-horas-titulo" x-show="dgTemDados &amp;&amp; !dgVazio" x-cloak>
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="dg-horas-titulo">Em que horas as quedas começam</h2>
+          <p class="dica">Incidentes por hora do dia, no horário local. Um horário que se repete aponta para a causa (por exemplo, o roteador reiniciando sempre na mesma hora).</p>
+        </div>
+        <p class="dg-pico-texto" id="dg-pico" x-text="dgPico"></p>
+      </div>
+      <div class="dg-grafico" aria-hidden="true">
+        <template x-for="b in dgBarras" :key="b.hora">
+          <div class="dg-coluna" :title="b.rotulo">
+            <span class="dg-numero" x-text="b.numero"></span>
+            <span class="dg-trilho"><span :class="b.classe" :style="b.estilo"></span></span>
+            <span class="dg-eixo" x-text="b.eixo"></span>
+          </div>
+        </template>
+      </div>
+      <p class="dica dg-legenda-eixo" aria-hidden="true">Hora do dia (0 a 23). A barra com contorno é a hora com mais incidentes.</p>
+      <table class="so-leitor" id="dg-tabela-horas">
+        <caption>Incidentes por hora do dia</caption>
+        <thead><tr><th scope="col">Hora</th><th scope="col">Incidentes</th></tr></thead>
+        <tbody>
+          <template x-for="b in dgBarras" :key="b.hora">
+            <tr><th scope="row" x-text="b.rotuloHora"></th><td x-text="b.total"></td></tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="cfg-bloco dg-bloco" id="dg-sugestoes" aria-labelledby="dg-sug-titulo" x-show="dgSugestoes.length" x-cloak>
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="dg-sug-titulo">O que conferir, por tipo de incidente</h2>
+        </div>
+      </div>
+      <div class="dg-sug-grade">
+        <template x-for="s in dgSugestoes" :key="s.tipo">
+          <article :class="'dg-sug dg-tipo-' + s.tipo">
+            <h3 x-text="s.rotulo"></h3>
+            <ul>
+              <template x-for="x in s.sugestoesItens" :key="x.k">
+                <li x-text="x.t"></li>
+              </template>
+            </ul>
+          </article>
+        </template>
+      </div>
+      <p class="dica dg-energia" id="dg-energia" x-text="dgAvisoEnergia"></p>
+    </section>
+
+    <section class="cfg-bloco dg-bloco" id="dg-incidentes" aria-labelledby="dg-inc-titulo" x-show="dgTemIncidentes" x-cloak>
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="dg-inc-titulo">Incidentes</h2>
+          <p class="dica" id="dg-contagem" role="status" x-text="dgContagem"></p>
+        </div>
+      </div>
+      <ol class="dg-lista" id="lista-incidentes" aria-label="Incidentes do período">
+        <template x-for="i in dgIncidentes" :key="i.chave">
+          <li :class="'dg-inc ' + i.classe">
+            <div class="dg-inc-cabeca">
+              <h3 class="dg-inc-rotulo"><svg class="icone-status" aria-hidden="true"><use :href="i.icone"/></svg><span x-text="i.rotulo"></span></h3>
+              <p class="dg-inc-meta"><time x-text="i.quando"></time><span class="suave"> · duração </span><span x-text="i.duracao"></span></p>
+            </div>
+            <div class="dg-inc-porque">
+              <p class="dg-inc-sub">Por quê</p>
+              <ul>
+                <template x-for="x in i.porqueItens" :key="x.k">
+                  <li x-text="x.t"></li>
+                </template>
+              </ul>
+            </div>
+            <div class="dg-inc-equip">
+              <p class="dg-inc-sub">Aparelhos afetados</p>
+              <ul class="dg-nomes">
+                <template x-for="e in i.equipamentosItens" :key="e.k">
+                  <li x-text="e.nome"></li>
+                </template>
+              </ul>
+              <p class="dica" x-show="i.maisEquipamentos" x-text="i.maisEquipamentos"></p>
+            </div>
+          </li>
+        </template>
+      </ol>
+      <div class="dg-mais" x-show="dgTemMais" x-cloak>
+        <button class="botao" id="dg-mais" type="button" @click="mostrarMaisDiagnostico" x-text="dgRotuloMais"></button>
+      </div>
+    </section>
+
+    <p class="dica dg-energia-fim" x-show="dgVazio" x-cloak x-text="dgAvisoEnergia"></p>
   </section>
 
   <section class="casca" id="conteudo-novos" role="tabpanel" aria-labelledby="aba-novos" hidden :hidden="!abaNovos">

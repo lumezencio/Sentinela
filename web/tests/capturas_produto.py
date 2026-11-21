@@ -18,6 +18,11 @@ Destinos do painel (Task 10; sobem o demo com admin, banco temporário, sem rede
 caracteres), ``atualizacoes-sem-agendamento``, ``aviso-atualizacao`` e
 ``aviso-atualizacao-voltou`` (o aviso de 24 h abaixo do cabeçalho).
 
+Destinos do Diagnóstico (Task 11; demo com 30 dias da rede fictícia 10.99.0.0/24 mais ~490
+incidentes isolados e doze aparelhos de nome longo, três com 300 caracteres): ``diagnostico``
+(aba com 30 dias, 8 larguras x claro/escuro), ``diagnostico-vazio`` (resposta sem nenhuma queda) e
+``diagnostico-impressao`` (visão de impressão em 1280, mais o PDF A4 ``diagnostico-laudo.pdf``).
+
 Destinos do assistente: ``codigo`` (passo 1), ``codigo-bloqueio`` (429 longo com o comando),
 ``codigo-expirado`` (sem código válido), ``administrador`` (login de 64 caracteres, erro de
 senha curta), ``rede`` (sugestão detectada e chave ligada, com erro), ``concluir`` (resumo) e
@@ -46,6 +51,12 @@ DESTINOS: tuple[str, ...] = (
     "concluir",
     "concluir-erro",
     "login-pendente",
+)
+DESTINOS_DIAGNOSTICO = ("diagnostico", "diagnostico-vazio", "diagnostico-impressao")
+NOME_BASE_300 = (
+    "Câmera externa do bloco administrativo, corredor leste, segundo pavimento, ao lado do quadro "
+    "de força e do rack de telecomunicações principal (modelo domo varifocal com infravermelho, "
+    "instalada pela equipe terceirizada em 2024, ponto de rede 14B) "
 )
 DESTINOS_PAINEL = (
     "aparelho-novo",
@@ -374,17 +385,201 @@ def capturar_painel(destinos: list[str], saida: Path) -> None:
             servidor.derrubar()
 
 
+async def _semear_diagnostico_grande(banco: str) -> None:
+    """~490 incidentes isolados em 30 dias e uma queda simultânea de 12 aparelhos, 3 deles com
+    nome de 300 caracteres (acima dos 500 incidentes o laudo fica ``truncado``)."""
+    from sqlalchemy import select
+
+    from sentinela.db.modelos import Classe, Equipamento, Evento
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            agora = dt.datetime.now(dt.UTC)
+            camera = await db.scalar(select(Classe.id).where(Classe.slug == "camera"))
+            ids: list[str] = []
+            for n in range(12):
+                nome = (
+                    (NOME_BASE_300 * 2)[:297] + f" {n:02d}"
+                    if n < 3
+                    else f"Câmera {n:02d} da área de carga e descarga, doca {n} (demo)"
+                )
+                e = Equipamento(
+                    nome=nome,
+                    ip=f"10.99.0.{60 + n}",
+                    mac=f"02:00:00:fd:d2:{n:02x}",
+                    classe_id=camera,
+                    classe_origem="manual",
+                    checagem="icmp",
+                    estado="desconhecido",
+                    estado_desde=agora,
+                    criado_em=agora - dt.timedelta(days=31),
+                )
+                db.add(e)
+                await db.flush()
+                ids.append(e.id)
+
+            def queda(eid: str, inicio: dt.datetime, duracao_s: float) -> None:
+                db.add(Evento(equipamento_id=eid, de="online", para="offline", em=inicio))
+                db.add(
+                    Evento(
+                        equipamento_id=eid,
+                        de="offline",
+                        para="online",
+                        em=inicio + dt.timedelta(seconds=duracao_s),
+                        duracao_s=duracao_s,
+                    )
+                )
+
+            base = agora - dt.timedelta(days=29, hours=20)
+            for k in range(490):
+                inicio = base + dt.timedelta(minutes=87 * k + k % 7)
+                queda(ids[k % len(ids)], inicio, 120 + 30 * (k % 9))
+            simultanea = agora - dt.timedelta(days=3, hours=2)
+            for i, eid in enumerate(ids):
+                queda(eid, simultanea + dt.timedelta(seconds=i % 5), 1500)
+            await db.commit()
+    finally:
+        await motor.dispose()
+
+
+def _subir_diagnostico(pasta: Path) -> tuple[str, str, str, Any]:
+    from conftest import ServidorLocal, _certificado, _em_thread, _porta_livre, _preparar_banco
+    from sentinela.demo import simulador
+
+    simulador._P_QUEDA = 0.0  # capturas repetíveis: sem quedas simuladas
+    simulador._INTERVALO_SWITCH_S = 1e9
+    simulador._QUEDA_CORRELACIONADA_INICIO_S = 1e9
+    banco = f"sqlite+aiosqlite:///{(pasta / 'capt-diag.db').as_posix()}"
+    login, senha = "admin", "capt-" + dt.datetime.now(dt.UTC).strftime("%H%M%S%f") + "-x"
+    _em_thread(lambda: asyncio.run(_preparar_banco(banco, login, senha)))
+    chave, cert = _certificado(pasta)
+    servidor = ServidorLocal(banco, _porta_livre(), chave, cert)
+    servidor.levantar()
+    _em_thread(lambda: asyncio.run(_semear_diagnostico_grande(banco)))
+    return f"https://127.0.0.1:{servidor.porta}", login, senha, servidor
+
+
+RESPOSTA_VAZIA = {
+    "periodo": "30d",
+    "de": "2026-10-21T15:00:00Z",
+    "ate": "2026-11-20T15:00:00Z",
+    "resumo": {"incidentes": 0, "por_tipo": {}, "fora_s": 0},
+    "horas": [0] * 24,
+    "incidentes": [],
+    "gateway_configurado": True,
+    "truncado": False,
+    "aviso_energia": (
+        "Queda de energia não é medida pelo Sentinela. Para confirmar, cruze estes horários com"
+        " um nobreak que registra eventos ou com uma tomada que mede energia."
+    ),
+    "aviso_gateway": None,
+}
+
+
+def _abrir_diagnostico(page: Page, destino: str) -> None:
+    if destino == "diagnostico-vazio":
+        page.route(
+            "**/api/v1/diagnostico?*",
+            lambda r: _json(r, 200, RESPOSTA_VAZIA),
+        )
+    page.goto("/index.html#diagnostico")
+    expect(page.locator("#dg-resumo:visible, #dg-vazio:visible").first).to_be_visible(
+        timeout=20_000
+    )
+    botao = page.get_by_role("button", name="30 dias", exact=True)
+    if destino == "diagnostico-vazio":
+        botao.click()
+        expect(page.locator("#dg-vazio")).to_be_visible()
+    else:
+        with page.expect_response("**/api/v1/diagnostico?periodo=30d"):
+            botao.click()
+        expect(botao).to_have_attribute("aria-pressed", "true")
+        expect(page.locator("#dg-aviso-truncado")).to_be_visible(timeout=20_000)
+        expect(page.locator("#dg-resumo")).to_be_visible()
+    page.wait_for_timeout(700)
+
+
+def capturar_diagnostico(destinos: list[str], saida: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="sentinela-capt-") as tmp:
+        url, login, senha, servidor = _subir_diagnostico(Path(tmp))
+        try:
+            with sync_playwright() as p:
+                navegador = p.chromium.launch(ignore_default_args=["--hide-scrollbars"])
+                try:
+                    ctx0 = navegador.new_context(ignore_https_errors=True, base_url=url)
+                    pg0 = ctx0.new_page()
+                    pg0.goto("/login.html")
+                    pg0.get_by_label("Login").fill(login)
+                    pg0.get_by_label("Senha").fill(senha)
+                    pg0.get_by_role("button", name="Entrar").click()
+                    pg0.wait_for_url("**/index.html")
+                    estado = ctx0.storage_state()
+                    ctx0.close()
+                    for destino in destinos:
+                        impressao = destino == "diagnostico-impressao"
+                        for tema in TEMAS:
+                            for largura in (1280,) if impressao else LARGURAS:
+                                servidor.zerar_taxa()  # o limite de 10 pedidos/min vale na tela
+                                ctx = navegador.new_context(
+                                    viewport={"width": largura, "height": ALTURA},
+                                    ignore_https_errors=True,
+                                    base_url=url,
+                                    storage_state=estado,
+                                    color_scheme="light" if tema == "claro" else "dark",
+                                )
+                                try:
+                                    page = ctx.new_page()
+                                    _abrir_diagnostico(page, destino)
+                                    base = saida / f"{destino}-{tema}-{largura}"
+                                    if impressao:
+                                        # o laudo leva todos os incidentes (o botão e o Ctrl+P
+                                        # fazem isto sozinhos); aqui só a emulação de mídia
+                                        page.evaluate(
+                                            "window.dispatchEvent(new Event('beforeprint'))"
+                                        )
+                                        page.wait_for_timeout(1500)
+                                        page.emulate_media(media="print")
+                                        page.screenshot(path=f"{base}.png", full_page=True)
+                                        if tema == "claro":
+                                            page.pdf(
+                                                path=str(saida / "diagnostico-laudo.pdf"),
+                                                format="A4",
+                                                print_background=True,
+                                            )
+                                    else:
+                                        page.screenshot(path=f"{base}.png")
+                                        page.evaluate(
+                                            "document.querySelector('.topo').style.position"
+                                            " = 'static'"
+                                        )
+                                        page.screenshot(path=f"{base}-pagina.png", full_page=True)
+                                finally:
+                                    ctx.close()
+                finally:
+                    navegador.close()
+        finally:
+            servidor.derrubar()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--saida", type=Path, default=None)
-    ap.add_argument("--destinos", default=",".join(DESTINOS + DESTINOS_PAINEL))
+    ap.add_argument(
+        "--destinos", default=",".join(DESTINOS + DESTINOS_PAINEL + DESTINOS_DIAGNOSTICO)
+    )
     args = ap.parse_args()
     destinos = [d.strip() for d in args.destinos.split(",") if d.strip()]
-    ruins = [d for d in destinos if d not in DESTINOS + DESTINOS_PAINEL]
+    ruins = [d for d in destinos if d not in DESTINOS + DESTINOS_PAINEL + DESTINOS_DIAGNOSTICO]
     if ruins:
         sys.exit(f"destino desconhecido: {', '.join(ruins)}")
     saida = args.saida or pasta_saida()
     saida.mkdir(parents=True, exist_ok=True)
+    do_diagnostico = [d for d in destinos if d in DESTINOS_DIAGNOSTICO]
+    if do_diagnostico:
+        capturar_diagnostico(do_diagnostico, saida)
+        print(f"capturas do diagnóstico em {saida}")
     do_painel = [d for d in destinos if d in DESTINOS_PAINEL]
     if do_painel:
         capturar_painel(do_painel, saida)
