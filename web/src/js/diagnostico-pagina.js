@@ -14,6 +14,21 @@ const POR_LOTE = 20;
 const MSG_FALHA = "Não foi possível carregar o diagnóstico. Tente de novo.";
 const MSG_CSV = "Não foi possível baixar o CSV. Tente de novo.";
 const FUSO_PADRAO = "America/Sao_Paulo";
+const MIN_MS = 60000;
+const HORA_MS = 60 * MIN_MS;
+const DIA_MS = 24 * HORA_MS;
+
+/** Idade de uma visão guardada, para o aviso "números buscados há ..." (nunca "há pouco" vago). */
+export function idadeDaVisao(ms) {
+  if (!(ms >= MIN_MS)) return "há menos de 1 minuto";
+  if (ms < HORA_MS) {
+    const n = Math.floor(ms / MIN_MS);
+    return `há ${n} ${n === 1 ? "minuto" : "minutos"}`;
+  }
+  if (ms < DIA_MS) return `há ${Math.floor(ms / HORA_MS)} h`;
+  const n = Math.floor(ms / DIA_MS);
+  return `há ${n} ${n === 1 ? "dia" : "dias"}`;
+}
 
 export function diagnosticoDoPainel() {
   let pedido = 0; // descarta resposta de um período anterior
@@ -67,12 +82,14 @@ export function diagnosticoDoPainel() {
       const r = await api.verDiagnostico(periodo);
       if (meu !== pedido) return;
       this.dgCarregando = false;
+      // sessão expirada: requisitar() já mandou para o login; a tela fica como está até sair
+      if (r.status === 401) return;
       let motivo = "";
       if (!r.ok || !r.dados || !Array.isArray(r.dados.incidentes)) {
         motivo =
           r.status === 429
             ? `Muitas consultas seguidas. Aguarde ${r.espera || 30} s e tente de novo.`
-            : r.status === 401 ? "" : r.erro || MSG_FALHA;
+            : r.erro || MSG_FALHA;
       } else {
         try {
           modulo = modulo || (await import("./diagnostico.js"));
@@ -89,7 +106,7 @@ export function diagnosticoDoPainel() {
         if (seguro) {
           this.dgPeriodo = guardado ? periodo : mostrado || periodo;
           this.dgErro = guardado
-            ? `${motivo} Mostrando os números de ${ROTULOS[periodo]} de há pouco.`
+            ? `${motivo} Mostrando os números de ${ROTULOS[periodo]} buscados ${idadeDaVisao(Date.now() - guardado.em)}.`
             : `${motivo} Continua na tela o período de ${ROTULOS[mostrado] || "antes"}.`;
         } else {
           this.dgErro = motivo;

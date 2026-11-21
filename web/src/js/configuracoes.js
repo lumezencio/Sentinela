@@ -28,12 +28,16 @@ const MSG_INTERVALO = "Informe de 15 a 240 minutos.";
 export const INTERVALO_MIN = 15;
 export const INTERVALO_MAX = 240;
 
-/** IPv4 "a.b.c.d" como número sem sinal; null se o formato ou algum octeto é inválido. */
+/**
+ * IPv4 "a.b.c.d" como número sem sinal; null se o formato ou algum octeto é inválido. Octeto com
+ * zero à esquerda ("015") é recusado, como no servidor (ipaddress do Python): seria ambíguo.
+ */
 function ipv4ParaNumero(texto) {
   const m = IPV4.exec(texto);
   if (!m) return null;
   let n = 0;
   for (let i = 1; i <= 4; i++) {
+    if (m[i].length > 1 && m[i][0] === "0") return null;
     const octeto = Number(m[i]);
     if (octeto > 255) return null;
     n = n * 256 + octeto;
@@ -43,7 +47,8 @@ function ipv4ParaNumero(texto) {
 
 /**
  * Erro do campo "Gateway" de uma sub-rede ("" = pode enviar). Vazio apaga o gateway. Mesma regra
- * do servidor: endereço de host dentro da sub-rede (nem o da rede nem o de broadcast).
+ * do servidor: endereço de host dentro da sub-rede (nem o da rede nem o de broadcast; num /31 ou
+ * /32 todos os endereços são um dos dois, então nenhum serve).
  */
 export function validarGatewaySubrede(texto, cidr) {
   const t = String(texto ?? "").trim();
@@ -57,7 +62,7 @@ export function validarGatewaySubrede(texto, cidr) {
   const tamanho = 2 ** (32 - bits);
   const rede = base - (base % tamanho);
   if (ip < rede || ip >= rede + tamanho) return MSG_GATEWAY_FORA;
-  if (tamanho > 2 && (ip === rede || ip === rede + tamanho - 1)) return MSG_GATEWAY_FORA;
+  if (ip === rede || ip === rede + tamanho - 1) return MSG_GATEWAY_FORA;
   return "";
 }
 

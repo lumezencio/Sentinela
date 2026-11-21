@@ -181,6 +181,22 @@ test("subrede gateway inválido bloqueia envio", () => {
   assert.equal(validarGatewaySubrede("192.168.15.255", cidr), "O gateway precisa estar dentro da sub-rede.");
 });
 
+test("subrede gateway: zero à esquerda e /31 /32 seguem a regra do servidor (ipaddress do Python)", () => {
+  const formato = "Informe um endereço IPv4, como 192.168.15.1.";
+  const fora = "O gateway precisa estar dentro da sub-rede.";
+  // o servidor recusa octeto com zero à esquerda (ambíguo: octal em alguns sistemas)
+  assert.equal(validarGatewaySubrede("192.168.015.1", "192.168.15.0/24"), formato);
+  assert.equal(validarGatewaySubrede("192.168.15.01", "192.168.15.0/24"), formato);
+  assert.equal(validarGatewaySubrede("010.99.0.1", "10.99.0.0/16"), formato);
+  assert.equal(validarGatewaySubrede("192.168.15.0", "192.168.15.0/24"), fora);
+  assert.equal(validarGatewaySubrede("10.99.0.10", "10.99.0.0/16"), "", "zero sozinho no octeto é válido");
+  // /31 e /32: o servidor considera os dois endereços (ou o único) rede/broadcast
+  assert.equal(validarGatewaySubrede("192.168.15.0", "192.168.15.0/31"), fora);
+  assert.equal(validarGatewaySubrede("192.168.15.1", "192.168.15.0/31"), fora);
+  assert.equal(validarGatewaySubrede("192.168.15.7", "192.168.15.7/32"), fora);
+  assert.equal(validarGatewaySubrede("192.168.15.1", "192.168.15.0/30"), "");
+});
+
 test("intervalo fora de 15 a 240 bloqueia", () => {
   assert.deepEqual(validarIntervaloVarredura("30"), { valor: 30, erro: "" });
   assert.deepEqual(validarIntervaloVarredura(" 15 "), { valor: 15, erro: "" });
