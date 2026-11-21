@@ -14,9 +14,12 @@ import gzip
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from playwright.sync_api import Browser, ConsoleMessage, Page, Response, Route, expect
@@ -28,6 +31,34 @@ TOTAL_DEMO = 300 + 7  # rede sintética + os 7 aparelhos da rede do Diagnóstico
 CAMERAS_DEMO = 120 + 3  # mais as 3 câmeras da rede do Diagnóstico
 POR_PAGINA = 50
 TIPOS_PRIMEIRA_TELA = ("document", "script", "stylesheet", "image", "fetch", "font")
+WEB = Path(__file__).resolve().parents[1]
+# o que a imagem do nginx minifica (web/Dockerfile: esbuild nos src/js/*.js e src/css/*.css do 1º
+# nível); vendor/, parede/, HTML, fontes e respostas da API vão como estão
+MINIFICADOS = re.compile(r"/(js|css)/[^/]+\.(js|css)")
+MINIFICAR = (
+    "const e=require('esbuild');let s='';process.stdin.setEncoding('utf8');"
+    "process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write("
+    "e.transformSync(s,{minify:true,loader:process.argv[1]}).code))"
+)
+
+
+def corpo_como_em_producao(url: str, corpo: bytes) -> bytes:
+    """O corpo que o navegador recebe atrás do nginx: JS e CSS do painel minificados pelo mesmo
+    esbuild da imagem (o smoke serve web/src cru, com comentários). Fontes e o resto, iguais."""
+    m = MINIFICADOS.fullmatch(urlsplit(url).path)
+    if not m:
+        return corpo
+    node = shutil.which("node")
+    assert node, "o smoke mede a primeira tela com o esbuild do web/node_modules (npm ci)"
+    r = subprocess.run(  # noqa: S603 - argumentos fixos; o corpo vai pela entrada padrão
+        [node, "-e", MINIFICAR, m.group(2)],
+        input=corpo,
+        capture_output=True,
+        check=True,
+        cwd=WEB,
+        timeout=60,
+    )
+    return r.stdout
 
 
 def entrar(
@@ -142,11 +173,21 @@ def test_primeira_tela_leve_e_sem_erros_no_console(page: Page, alvo: Alvo) -> No
     page.reload()
     expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
     expect(linhas(page)).to_have_count(POR_PAGINA)
-    total = 0
+    total = cru = fontes = 0
     for r in respostas:
         if r.request.resource_type in TIPOS_PRIMEIRA_TELA:
-            total += len(gzip.compress(r.body()))
-    print(f"\nprimeira tela: {len(respostas)} respostas, {total} bytes gzip")
+            corpo = r.body()
+            cru += len(gzip.compress(corpo))
+            total += len(gzip.compress(corpo_como_em_producao(r.url, corpo)))
+            if r.request.resource_type == "font":
+                fontes += len(corpo)
+    # a régua é o que o painel entrega atrás do nginx (JS/CSS minificados, como na imagem web);
+    # o número dos fontes crus fica no log para comparação (Task R: fontes próprias entraram)
+    print(
+        f"\nprimeira tela: {len(respostas)} respostas, {total} bytes gzip como em produção "
+        f"({fontes} de fontes); {cru} com os fontes crus do web/src"
+    )
+    assert fontes > 0, "as fontes próprias (Inter/Sora/JetBrains Mono) entram na conta"
     assert total <= TETO_PRIMEIRA_TELA, total
     assert erros == [], erros
 
@@ -166,6 +207,20 @@ def test_movimento_reduzido_desliga_animacoes(browser: Browser, alvo: Alvo) -> N
         entrar(page, alvo)
         duracao = page.locator(".nuvem-1").evaluate("e => getComputedStyle(e).animationDuration")
         assert duracao in ("1e-05s", "0.00001s", "0s"), duracao
+        # Task R: auroras, estrelas e o anel do logo ficam parados (o céu fica mais apagado)
+        parados = page.evaluate(
+            """() => ({
+                auroras: [...document.querySelectorAll('.nuvem')]
+                    .map((e) => getComputedStyle(e).animationName),
+                estrelas: ['::before', '::after'].map(
+                    (p) => getComputedStyle(document.querySelector('.estrelas'), p).animationName),
+                logo: getComputedStyle(document.querySelector('.logo .giro')).animationName,
+                campo: getComputedStyle(document.querySelector('.campo')).opacity,
+            })"""
+        )
+        assert set(parados["auroras"]) == {"none"} and len(parados["auroras"]) == 3, parados
+        assert parados["estrelas"] == ["none", "none"] and parados["logo"] == "none", parados
+        assert float(parados["campo"]) < 1, parados
     finally:
         contexto.close()
 
@@ -2711,6 +2766,69 @@ def entrar_com_ponte(page: Page, alvo: Alvo, login: str = "", senha: str = "") -
     return ponte
 
 
+# controles que um cartão ao vivo nunca pode cobrir (Task R, pendência da Task 10)
+CONTROLES_LISTA = "#busca, #filtro-classe, #filtro-estado, #conteudo-lista .acoes-admin .botao"
+CONTROLES_ALERTAS = (
+    "#conteudo-alertas .segmento, #conteudo-alertas select, #conteudo-alertas .al-bloco .botao, "
+    "#lista-alertas .al-acoes .botao"
+)
+DESCOBERTOS = """(seletor) => {
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    const pilha = document.querySelector('#cartoes-alerta');
+    const ruins = [];
+    let vistos = 0;
+    for (const el of document.querySelectorAll(seletor)) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height || r.bottom <= 0 || r.top >= vh) continue;
+        vistos += 1;
+        for (const [x, y] of [[r.left + 2, r.top + 2], [r.right - 2, r.top + 2],
+                              [r.left + 2, r.bottom - 2], [r.right - 2, r.bottom - 2]]) {
+            if (x < 0 || x >= vw || y < 0 || y >= vh) continue;
+            const no = document.elementFromPoint(x, y);
+            if (no && pilha.contains(no)) ruins.push([el.id || el.textContent.trim(), x, y]);
+        }
+    }
+    return {vistos, ruins};
+}"""
+
+
+def test_cartoes_ao_vivo_nunca_cobrem_filtros_nem_silenciar(
+    browser: Browser, alvo: Alvo, novo_alerta: Any
+) -> None:
+    for largura in (1920, 1440, 1366, 1024, 390):
+        contexto = browser.new_context(
+            viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+        )
+        try:
+            page = contexto.new_page()
+            erros = vigiar_console(page)
+            a, b = novo_alerta(), novo_alerta()
+            ponte = entrar_com_ponte(page, alvo)
+            injetar(page, ponte, "aberto", a["id"])
+            injetar(page, ponte, "aberto", b["id"])
+            expect(cartoes(page)).to_have_count(2, timeout=10_000)
+            page.wait_for_timeout(400)  # entrada dos cartões
+            # no celular os cartões ficam no fluxo, acima dos filtros: rola até eles
+            page.locator("#busca").scroll_into_view_if_needed()
+            r = page.evaluate(DESCOBERTOS, CONTROLES_LISTA)
+            assert r["vistos"] >= 3 and r["ruins"] == [], (largura, "lista", r)
+            page.get_by_role("tab", name="Alertas").click()
+            expect(page.locator("#lista-alertas li.al-linha").first).to_be_visible(timeout=10_000)
+            page.locator("#conteudo-alertas .al-bloco .botao").first.scroll_into_view_if_needed()
+            page.wait_for_timeout(300)
+            r = page.evaluate(DESCOBERTOS, CONTROLES_ALERTAS)
+            assert r["vistos"] >= 3 and r["ruins"] == [], (largura, "alertas", r)
+            # rolando, os botões "Silenciar…" das linhas continuam livres
+            page.mouse.wheel(0, 600)
+            page.wait_for_timeout(300)
+            r = page.evaluate(DESCOBERTOS, CONTROLES_ALERTAS)
+            assert r["ruins"] == [], (largura, "alertas rolados", r)
+            assert erros == [], erros
+        finally:
+            contexto.close()
+
+
 def test_cartao_aparece_ao_vivo_com_ip_e_dados(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
     erros = vigiar_console(page)
     a = novo_alerta()
@@ -3733,6 +3851,37 @@ def test_aviso_de_aparelho_novo_e_ver_em_novos_foca_o_cartao(
     altura = (page.viewport_size or {"height": 720})["height"]
     assert box is not None and 0 <= box["y"] < altura, box
     expect(cartao).to_have_count(0)  # o aviso cumpriu o papel
+    assert erros == [], erros
+
+
+HOSTIL_FABRICANTE = '<img src=x onerror="window.__xss=1">Fabricante'
+HOSTIL_NOME = '<b id="hostil">negrito</b><script>window.__xss=2</script>'
+
+
+def test_aparelho_novo_com_marcacao_hostil_vira_texto(
+    page: Page, alvo: Alvo, novo_aparelho: Any
+) -> None:
+    """Fabricante e nome sugerido vêm da rede (DHCP, OUI, SNMP): marcação neles é só texto, no
+    cartão ao vivo, na linha de Alertas e no cartão de Novos (Task R, pendência da Task 10)."""
+    erros = vigiar_console(page)
+    a = novo_aparelho(fabricante=HOSTIL_FABRICANTE, nome_sugerido=HOSTIL_NOME)
+    ponte = entrar_com_ponte(page, alvo)
+    injetar(page, ponte, "aberto", a["alerta_id"])
+    cartao = cartao_de(page, a["alerta_id"])
+    expect(cartao).to_be_visible(timeout=10_000)
+    expect(cartao.locator(".ca-dados")).to_contain_text(HOSTIL_FABRICANTE)
+    expect(cartao.locator("img, script, b")).to_have_count(0)
+    page.get_by_role("tab", name="Alertas").click()
+    linha = page.locator(f'#lista-alertas li[data-id="{a["alerta_id"]}"]')
+    expect(linha.locator(".al-info-novo")).to_contain_text(HOSTIL_FABRICANTE, timeout=10_000)
+    expect(linha.locator("img, script, b")).to_have_count(0)
+    cartao.get_by_role("button", name="Ver em Novos").click()
+    alvo_novos = page.locator(f'#conteudo-novos .nv-cartao[data-id="{a["descoberta_id"]}"]')
+    expect(alvo_novos).to_be_visible(timeout=20_000)
+    expect(alvo_novos).to_contain_text("Fabricante")
+    expect(alvo_novos.locator("img, script, b#hostil")).to_have_count(0)
+    assert page.evaluate("() => window.__xss === undefined")
+    assert page.locator("#hostil").count() == 0
     assert erros == [], erros
 
 

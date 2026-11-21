@@ -425,14 +425,21 @@ HTML + CSS com tokens + **Alpine.js** nas telas comuns. **3d-force-graph** (Thre
 
 Decisões do dono na Fase 4A: **IP dentro de cada bolinha** na Teia e no Organograma do painel (o telão não mostra IP: "só no painel"); **cartão de alerta na tela** ao cair um equipamento (painel com IP e todos os dados; telão reduzido, sem IP/MAC/fabricante/latência; som desligado por padrão); rótulos e faixa de filtros da Teia ajustados (sem corte nas bordas). A Teia do telão roda no Chromium 63 (Tizen 5) com compatibilidade reduzida.
 
-### 12.3 Linguagem visual "quântica"
+### 12.3 Linguagem visual "Nebulosa com Aurora" (Fase 5, Task R)
 
-- Tema escuro padrão: fundo `#15181F`, superfície `#1B1F28`, texto `#E8EBF2`; primária `#8793E8`, acento `#68C7BC`; tema claro equivalente.
-- Status: online `#4CA878`, instável `#D9A441`, offline `#D97373`, pausado `#7A8194`. **Status nunca só por cor**: forma e ícone também mudam (online cheio, instável anel, offline com pulso e "×"), por acessibilidade.
-- Esferas com material emissivo suave e *halo* em sprite (barato); servidor com núcleo brilhante e anel girando devagar.
-- Partículas nos fios (até 60 visíveis), indo do equipamento ao servidor a cada checagem bem-sucedida.
-- Vidro (`backdrop-filter`) só em no máximo dois painéis ao mesmo tempo.
-- Animações só de `transform`/`opacity`; `prefers-reduced-motion` desliga partículas, pulso e rotação.
+Escolha do dono em 2026-11-20 (mistura das direções A "Nebulosa" e B "Aurora"). Os valores moram em `web/src/css/tokens.css`; os componentes só leem variáveis.
+
+- **Fundo:** azul-marinho profundo `#060A19` (escuro, padrão) com três auroras muito lentas e borradas (teal `rgba(20,184,166,.28)`, violeta `rgba(139,92,246,.30)`, rosa `rgba(236,72,153,.18)`; deriva de 20–28 s) e ~50 estrelas pequenas em três camadas que só mudam de opacidade. Tudo decorativo (`aria-hidden`, `pointer-events:none`, atrás do conteúdo, só `transform`/`opacity`); com `prefers-reduced-motion: reduce` fica parado e mais apagado. Na aba Teia o céu some (a cena tem fundo próprio). Tema claro: fundo `#F3F6FC` com as mesmas auroras bem fracas, sem estrelas.
+- **Vidro:** `linear-gradient(160deg, rgba(30,41,59,.6), rgba(15,23,42,.55))`, `backdrop-filter: blur(12–14px)` e fio interno `rgba(148,163,184,.14)`, raio 20–22 px, no cabeçalho, na tabela da Lista, nos blocos de Configurações/Diagnóstico e nos painéis da Teia. Sem suporte a `backdrop-filter` o fundo vira um degradê opaco (o texto continua legível).
+- **Cartões de resumo:** degradê vivo por significado (total `#0E7490→#1E3A8A`, online `#0F766E→#065F46`, instável `#B45309→#78350F`, offline `#BE123C→#831843`, inalcançável `#6D28D9→#4C1D95`, pausado ardósia), número branco em Sora 38 px.
+- **Navegação:** trilho de pílulas em vidro; aba ativa com o degradê de ação `#0F766E→#7C3AED` (branco ≥ 5,4:1 nas duas pontas; o `#14B8A6→#8B5CF6` da prancheta dava 2,5:1 e foi escurecido). Toda área de toque tem ≥ 44 px.
+- **Status (selo em pílula 12 px/700):** online, instável, offline, inalcançável (agora violeta, cor própria) e pausado/aguardando neutro; fundo translúcido do próprio tom e texto claro (escuro) ou escuro (claro), sempre ≥ 4,5:1. **Status nunca só por cor**: o ícone muda de forma (online cheio, instável anel, offline com pulso e "×", inalcançável elo partido).
+- **Cartão de alerta ao vivo:** borda de 2 px em degradê (`#F43F5E→#A855F7` na queda; âmbar, teal ou teal→violeta nos outros tipos), miolo quase preto `rgba(18,8,26,.94)` (branco no tema claro), brilho suave que flutua devagar (o cartão e os botões ficam parados). Em ≥ 1440 px os cartões ficam numa coluna própria à direita e o conteúdo encolhe para ela; abaixo disso entram no fluxo, acima do conteúdo: nunca cobrem filtros nem botões.
+- **Tipografia:** Sora 700 (títulos e números), Inter 400–700 (texto) e JetBrains Mono 500 (IPs, latência, versão), servidas pelo próprio Sentinela (`web/src/fontes/`, recorte Latim + Latim-1 por `web/build/subconjunto-fontes.py`, OFL 1.1). Nada vem de fora em tempo de execução (CSP `default-src 'self'` e instalação em rede local). As três somam 37 KB e entram no orçamento da primeira tela.
+- **Logo:** anel em órbita (teal/violeta) em volta de um núcleo em degradê; o giro do anel é o único movimento do cabeçalho.
+- **Teia 3D:** fundo da cena `#060A19`, halo do servidor violeta `#A78BFA` e anéis teal `#2DD4BF`; cores de estado das esferas, lógica e orçamento (≤ 3.000 nós) inalterados.
+- **Telão (`/parede`):** a mesma paleta sem animação de fundo (aurora pintada uma vez), contadores em pílulas de degradê, cartões de queda com borda em degradê; nada depende de `backdrop-filter` e o CSS segue o Chromium 63 (sem `clamp/min/max`, sem `gap` em flex, sem `inset`). Inter e Sora vêm de `/parede/fontes/` (a porta HTTP só serve `/parede/`). Continua sem IP.
+- Partículas nos fios (até 60 visíveis), indo do equipamento ao servidor a cada checagem bem-sucedida. Animações só de `transform`/`opacity`; `prefers-reduced-motion` desliga partículas, pulso, rotação, auroras, estrelas e o brilho dos cartões.
 
 ### 12.4 Desempenho do 3D
 

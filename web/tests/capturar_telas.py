@@ -17,10 +17,14 @@ fictícios; precisa de ``--with cryptography``), de ``core/``::
 
 Destinos: ``alertas`` (sem silêncio ativo), ``alertas-silencio`` (com um silêncio e uma
 manutenção ativos), ``alertas-dialogo`` (diálogo de silêncio aberto, com erro de validação) e
-``configuracoes`` (cartões do Telegram e do fuso). ``teia-vazias`` e ``organograma-vazias``
-tiram do que o navegador recebe os equipamentos de impressora e iot (classes sem equipamento
-não podem aparecer). ``cartao-1/3/grupo`` abrem a Lista com cartões de alerta (nome de 60
-caracteres). Cada um sai em
+``configuracoes`` (cartões do Telegram e do fuso). Task R (repaginação "Nebulosa com Aurora"):
+``lista``, ``novos``, ``diagnostico``, ``login`` (sem sessão) e ``configuracoes-topo`` (o
+começo de Configurações); ``--movimento-reduzido`` captura com ``prefers-reduced-motion:
+reduce`` (sufixo ``-reduzido``). Toda captura passa por uma auditoria automática (elemento fora
+da janela, reticências, texto cortado) gravada em ``auditoria.json``. ``teia-vazias`` e
+``organograma-vazias`` tiram do que o navegador recebe os equipamentos de impressora e iot
+(classes sem equipamento não podem aparecer). ``cartao-1/3/grupo`` abrem a Lista com cartões
+de alerta (nome de 60 caracteres). Cada um sai em
 ``<destino>-<tema>-<largura>.png`` (a janela de 900 px) e ``...-pagina.png`` (a página inteira).
 """
 
@@ -55,7 +59,41 @@ DESTINOS = (
     "organograma-vazias",
     "teia-quatro",
     "teia-uma",
+    "lista",
+    "novos",
+    "diagnostico",
+    "login",
+    "configuracoes-topo",
 )
+
+# mesma régua do smoke (MEDIR_T10): nada fora da janela, sem reticências, sem texto cortado
+AUDITAR = """() => {
+    const vw = document.documentElement.clientWidth;
+    const problemas = [];
+    for (const el of document.querySelectorAll('body *')) {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+        const fora = '.so-leitor, .campo, svg, canvas, .teia-palco, .teia-rotulos, '
+            + 'dialog:not([open])';
+        if (el.closest(fora)) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const rola = el.closest('.painel-lista, .ca-cartoes, .teia-lista-classes, .teia-equips');
+        if (!rola && (r.left < -0.5 || r.right > vw + 0.5)) {
+            problemas.push([el.tagName, String(el.className), 'fora',
+                Math.round(r.left), Math.round(r.right)]);
+        }
+        if (cs.textOverflow === 'ellipsis' && el.scrollWidth > el.clientWidth + 1) {
+            problemas.push([el.tagName, String(el.className), 'reticencias']);
+        }
+        if (el.children.length === 0 && el.textContent.trim()
+            && el.scrollWidth > el.clientWidth + 1 && cs.overflowX !== 'visible') {
+            problemas.push([el.tagName, String(el.className), 'cortado',
+                el.scrollWidth, el.clientWidth]);
+        }
+    }
+    return {vw, rolagem: document.documentElement.scrollWidth, problemas: problemas.slice(0, 20)};
+}"""
 # destinos em que as classes abaixo ficam sem equipamento (só no que o navegador recebe)
 CLASSES_ESVAZIADAS = ("impressora", "iot")
 # cenários da Teia: só estas classes ficam com equipamento (4 = rede típica do dono)
@@ -179,7 +217,7 @@ def _abrir_cartoes(page: Page, destino: str, ids: dict[str, int], ponte: Any) ->
     """Abre a Lista e injeta no WebSocket as mensagens ``aberto`` de alertas do banco local:
     ``cartao-1`` (uma queda), ``cartao-3`` (cinco: 3 à vista + "e mais 2") e ``cartao-grupo``
     (queda de 14 afetados, com a lista aberta)."""
-    page.goto("/index.html#lista")
+    page.goto("/index.html")
     expect(page.locator("#lista tbody tr.linha").first).to_be_visible(timeout=20_000)
     por_id = {a["id"]: a for a in page.evaluate(LISTAR_ALERTAS)}
     escolha = {
@@ -209,6 +247,31 @@ def _abrir_cartoes(page: Page, destino: str, ids: dict[str, int], ponte: Any) ->
 
 
 def _abrir(page: Page, destino: str) -> None:
+    if destino == "login":
+        page.goto("/login.html")
+        expect(page.get_by_role("button", name="Entrar")).to_be_visible()
+        page.wait_for_timeout(900)
+        return
+    if destino == "lista":
+        page.goto("/index.html")  # sem "#lista": o navegador rolaria até a tabela (id="lista")
+        expect(page.locator("#lista tbody tr.linha").first).to_be_visible(timeout=20_000)
+        page.wait_for_timeout(900)
+        return
+    if destino == "novos":
+        page.goto("/index.html#novos")
+        expect(page.locator("#conteudo-novos .nv-cartao").first).to_be_visible(timeout=20_000)
+        page.wait_for_timeout(900)
+        return
+    if destino == "diagnostico":
+        page.goto("/index.html#diagnostico")
+        expect(page.locator("#conteudo-diagnostico")).to_be_visible(timeout=20_000)
+        page.wait_for_timeout(2500)  # resumo do período chega pela API
+        return
+    if destino == "configuracoes-topo":
+        page.goto("/index.html#configuracoes")
+        expect(page.locator("#cfg-telegram")).to_be_visible(timeout=20_000)
+        page.wait_for_timeout(1200)
+        return
     cenario = _destino_teia(destino)
     if destino.endswith("-vazias") or (cenario and CENARIOS_TEIA[cenario[0]]):
         manter = CENARIOS_TEIA[cenario[0]] if cenario else None  # None: só impressora e iot
@@ -246,17 +309,35 @@ def _preparar_dialogo(page: Page) -> None:
     page.wait_for_timeout(500)
 
 
+AUDITORIA: dict[str, Any] = {}
+
+
+def _auditar(page: Page, nome: str) -> None:
+    r = page.evaluate(AUDITAR)
+    AUDITORIA[nome] = r
+    if r["problemas"] or r["rolagem"] > r["vw"]:
+        print(f"auditoria {nome}: {r}")
+
+
 def _capturar_tela(
-    page: Page, destino: str, saida: Path, tema: str, largura: int, ids: dict[str, int]
+    page: Page,
+    destino: str,
+    saida: Path,
+    tema: str,
+    largura: int,
+    ids: dict[str, int],
+    sufixo: str = "",
 ) -> None:
-    base = saida / f"{destino}-{tema}-{largura}"
+    base = saida / f"{destino}-{tema}-{largura}{sufixo}"
     if destino.startswith("cartao-"):
         from conftest import PonteWs
 
         _abrir_cartoes(page, destino, ids, PonteWs(page))
+        _auditar(page, base.name)
         page.screenshot(path=f"{base}.png")
         return
     _abrir(page, destino)
+    _auditar(page, base.name)
     if destino == "configuracoes":
         page.locator("#cfg-telegram").scroll_into_view_if_needed()
         page.wait_for_timeout(200)
@@ -266,8 +347,8 @@ def _capturar_tela(
         page.keyboard.press("Escape")
         return
     page.screenshot(path=f"{base}.png")
-    if destino.startswith("teia"):
-        return  # a Teia ocupa a janela: a página inteira seria igual
+    if destino.startswith("teia") or destino in ("login", "lista", "configuracoes-topo") or sufixo:
+        return  # a Teia ocupa a janela; nas outras a janela de 900 px é o que importa
     # página inteira: o cabeçalho fixo sairia no meio da imagem
     page.evaluate("document.querySelector('.topo').style.position = 'static'")
     page.screenshot(path=f"{base}-pagina.png", full_page=True)
@@ -323,6 +404,7 @@ def capturar(
     semeados: dict[str, int] | None = None,
     temas: tuple[str, ...] = TEMAS,
     larguras: tuple[int, ...] = LARGURAS,
+    reduzido: bool = False,
 ) -> None:
     with sync_playwright() as p:
         # barras de rolagem clássicas (as do Windows, 15-17 px), como no navegador do dono
@@ -338,21 +420,35 @@ def capturar(
                             viewport={"width": largura, "height": ALTURA},
                             ignore_https_errors=True,
                             base_url=url,
-                            storage_state=estado,
+                            storage_state=None if destino == "login" else estado,
                             color_scheme="light" if tema == "claro" else "dark",
+                            reduced_motion="reduce" if reduzido else "no-preference",
                         )
                         ids: list[int] = []
                         try:
                             page = contexto.new_page()
                             if destino == "alertas-silencio":
                                 ids = _criar_silencios(page)
-                            _capturar_tela(page, destino, saida, tema, largura, semeados or {})
+                            _capturar_tela(
+                                page,
+                                destino,
+                                saida,
+                                tema,
+                                largura,
+                                semeados or {},
+                                "-reduzido" if reduzido else "",
+                            )
                         finally:
                             if ids:
                                 _encerrar_silencios(page, ids)
                             contexto.close()
         finally:
             navegador.close()
+            arq = saida / "auditoria.json"
+            anterior = json.loads(arq.read_text(encoding="utf-8")) if arq.exists() else {}
+            arq.write_text(
+                json.dumps(anterior | AUDITORIA, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
 
 
 def _subir_local(pasta: Path) -> tuple[str, str, str, Any]:
@@ -395,6 +491,9 @@ def main() -> None:
     ap.add_argument("--temas", default=",".join(TEMAS), help="claro, escuro ou os dois")
     ap.add_argument("--larguras", default="", help="ex.: 360,1366 (padrão: as 8 do dono)")
     ap.add_argument("--gpu", action="store_true", help="Chromium com GPU real (Teia sem agrupar)")
+    ap.add_argument(
+        "--movimento-reduzido", action="store_true", help="prefers-reduced-motion: reduce"
+    )
     args = ap.parse_args()
     destinos = [d.strip() for d in args.destinos.split(",") if d.strip()]
     desconhecidos = [d for d in destinos if d not in DESTINOS and not _destino_teia(d)]
@@ -409,7 +508,16 @@ def main() -> None:
             url, login, senha, servidor = _subir_local(Path(tmp))
             try:
                 capturar(
-                    url, login, senha, destinos, saida, args.gpu, servidor.ids, temas, larguras
+                    url,
+                    login,
+                    senha,
+                    destinos,
+                    saida,
+                    args.gpu,
+                    servidor.ids,
+                    temas,
+                    larguras,
+                    args.movimento_reduzido,
                 )
             finally:
                 servidor.derrubar()
@@ -421,7 +529,18 @@ def main() -> None:
             sys.exit("informe --url (ou SENTINELA_URL_SMOKE) e SENTINELA_SMOKE_LOGIN/SENHA")
         if any(d.startswith("cartao-") for d in destinos):
             sys.exit("os destinos cartao-* precisam do banco local: use --local")
-        capturar(url, login, senha, destinos, saida, args.gpu, None, temas, larguras)
+        capturar(
+            url,
+            login,
+            senha,
+            destinos,
+            saida,
+            args.gpu,
+            None,
+            temas,
+            larguras,
+            args.movimento_reduzido,
+        )
     print(f"capturas em {saida}")
 
 
