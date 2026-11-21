@@ -1997,3 +1997,10 @@ html[data-aba="teia"] .campo {
     animation: none;
   }
 }
+
+/* tablet em pé (768 px): as sete abas cabem numa linha do trilho com um pouco menos de respiro */
+@media (min-width: 560px) and (max-width: 899px) {
+  .aba {
+    padding: 0 10px;
+  }
+}
