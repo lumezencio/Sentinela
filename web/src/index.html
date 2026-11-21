@@ -93,9 +93,17 @@
     </div>
   </div>
 
-  <!-- cartões de alerta ao vivo: numa coluna própria à direita (>= 1440 px, o conteúdo encolhe para
-       ela) ou no fluxo, acima do conteúdo (abaixo disso); nunca por cima de filtros e botões -->
-  <section class="ca-pilha" id="cartoes-alerta" aria-label="Alertas ao vivo" x-show="temCartoes" x-cloak>
+  <!-- cartões de alerta ao vivo: coluna sempre reservada à direita (>= 1280 px) ou faixa de altura
+       fixa no topo do conteúdo que abre por cima ao toque (abaixo disso). Nada se mexe quando um
+       alerta chega e nada cobre filtros e botões. -->
+  <section class="ca-pilha" :class="classePilha" id="cartoes-alerta" aria-label="Alertas ao vivo">
+    <button class="ca-resumo" type="button" @click="alternarCartoes" :disabled="!temCartoes" :aria-expanded="ariaCartoesAbertos" aria-controls="ca-painel" disabled aria-expanded="false">
+      <span class="ca-resumo-ponto" aria-hidden="true"></span>
+      <span class="ca-resumo-texto" aria-live="polite"><span x-text="rotuloResumoCartoes">Nenhum alerta ao vivo</span><span class="so-leitor" x-text="detalheResumoCartoes"></span></span>
+      <span class="ca-resumo-acao" x-show="temCartoes" x-cloak x-text="rotuloAcaoCartoes">Ver</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true" x-show="temCartoes" x-cloak><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <div class="ca-painel" id="ca-painel" @keydown.escape="fecharCartoes">
     <div class="ca-cartoes">
       <template x-for="c in cartoes" :key="c.id">
         <article :class="c.classeCartao" :data-id="c.id" tabindex="-1" @keydown.escape.stop="dispensarCartao(c.id)" @mouseenter="reterCartao(c.id, 'mouse')" @mouseleave="soltarCartao(c.id, 'mouse')" @focusin="reterCartao(c.id, 'foco')" @focusout="soltarCartao(c.id, 'foco')">
@@ -158,6 +166,9 @@
       </template>
     </div>
     <button class="botao ca-mais" type="button" x-show="temMaisCartoes" @click="verTodosOsAlertas" x-text="rotuloMaisCartoes"></button>
+    </div>
+    <!-- depois dos cartões: quando o 1º chega, nada acima dele se move -->
+    <p class="ca-vazio" x-show="!temCartoes"><strong>Nenhum alerta ao vivo</strong>Quedas e avisos aparecem aqui assim que acontecem.</p>
   </section>
 
   <!-- um único <main>: as três abas são painéis dentro dele (a ativa é a única visível) -->
@@ -232,7 +243,9 @@
           <option value="aguardando">Aguardando</option>
         </select>
       </div>
-      <div class="acoes-admin" x-show="admin" x-cloak>
+      <!-- o lugar das ações fica reservado desde a 1ª pintura (o papel chega depois pela API): para quem
+           não é admin elas ficam invisíveis e fora do teclado, e a tabela não pula quando o papel chega -->
+      <div class="acoes-admin" data-admin="nao" :data-admin="admin ? 'sim' : 'nao'">
         <button class="botao botao-primario" type="button" @click="abrirNovo">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Novo equipamento
         </button>

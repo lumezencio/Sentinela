@@ -153,3 +153,35 @@ test("cartão de aparelho novo no painel: abre ao vivo e Ver em Novos leva à de
     void amb;
   }
 });
+
+test("faixa de alertas ao vivo (abaixo de 1280 px): resumo, abrir/fechar e fecha sozinha sem cartões", async () => {
+  const amb = ambiente();
+  try {
+    const p = await painel();
+    assert.equal(p.rotuloResumoCartoes, "Nenhum alerta ao vivo");
+    assert.equal(p.caAberto, false);
+    assert.equal(p.classePilha, "ca-pilha");
+    abrir(p, 1);
+    assert.equal(p.rotuloResumoCartoes, "1 alerta ao vivo");
+    assert.equal(p.detalheResumoCartoes, p.cartoes[0].titulo);
+    assert.equal(p.classePilha, "ca-pilha ca-com");
+    p.alternarCartoes();
+    assert.equal(p.caAberto, true);
+    assert.equal(p.ariaCartoesAbertos, "true");
+    assert.equal(p.rotuloAcaoCartoes, "Fechar");
+    assert.equal(p.classePilha, "ca-pilha ca-com ca-aberta");
+    abrir(p, 2);
+    abrir(p, 3);
+    abrir(p, 4);
+    assert.equal(p.rotuloResumoCartoes, "4 alertas ao vivo"); // 3 à vista + "e mais 1"
+    p.fecharCartoes();
+    assert.equal(p.caAberto, false);
+    p.alternarCartoes();
+    p.reiniciarCartoes(); // sem cartões, a faixa fecha
+    assert.equal(p.caAberto, false);
+    assert.equal(p.rotuloResumoCartoes, "Nenhum alerta ao vivo");
+  } finally {
+    delete globalThis.window; delete globalThis.document;
+    void amb;
+  }
+});

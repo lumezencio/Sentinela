@@ -77,6 +77,7 @@ export function cartoesDoPainel(store) {
   return {
     cartoes: [],
     cartoesMais: 0,
+    caAberto: false, // faixa de alertas aberta (abaixo de 1280 px; acima a coluna é fixa)
     somAlertas: lerSom(),
 
     iniciarCartoes() {
@@ -141,6 +142,7 @@ export function cartoesDoPainel(store) {
         };
       });
       this.cartoesMais = mais;
+      if (!this.cartoes.length) this.caAberto = false;
       for (const id of [...extras.keys()]) {
         if (!pilha.cartoes.some((c) => c.id === id)) extras.delete(id);
       }
@@ -279,6 +281,31 @@ export function cartoesDoPainel(store) {
     aoMudarSom() {
       gravarSom(this.somAlertas);
       if (this.somAlertas) bip(); // o clique já é o gesto do usuário: confirma com um bip
+    },
+
+    // ---------- faixa (abaixo de 1280 px): altura sempre reservada, abre por cima ao toque ----------
+    alternarCartoes() {
+      this.caAberto = this.temCartoes && !this.caAberto;
+    },
+    fecharCartoes() {
+      this.caAberto = false;
+    },
+    get rotuloResumoCartoes() {
+      const n = this.cartoes.length + this.cartoesMais;
+      if (!n) return "Nenhum alerta ao vivo";
+      return n === 1 ? "1 alerta ao vivo" : `${n} alertas ao vivo`;
+    },
+    get detalheResumoCartoes() {
+      return this.cartoes.length ? this.cartoes[0].titulo : "";
+    },
+    get rotuloAcaoCartoes() {
+      return this.caAberto ? "Fechar" : "Ver";
+    },
+    get ariaCartoesAbertos() {
+      return this.caAberto ? "true" : "false";
+    },
+    get classePilha() {
+      return `ca-pilha${this.temCartoes ? " ca-com" : ""}${this.caAberto ? " ca-aberta" : ""}`;
     },
 
     get temCartoes() {

@@ -55,6 +55,7 @@ DESTINOS = (
     "cartao-1",
     "cartao-3",
     "cartao-grupo",
+    "cartao-3-aberto",
     "teia-vazias",
     "organograma-vazias",
     "teia-quatro",
@@ -216,7 +217,10 @@ LISTAR_ALERTAS = "async () => (await (await fetch('/api/v1/alertas?por_pagina=10
 def _abrir_cartoes(page: Page, destino: str, ids: dict[str, int], ponte: Any) -> None:
     """Abre a Lista e injeta no WebSocket as mensagens ``aberto`` de alertas do banco local:
     ``cartao-1`` (uma queda), ``cartao-3`` (cinco: 3 à vista + "e mais 2") e ``cartao-grupo``
-    (queda de 14 afetados, com a lista aberta)."""
+    (queda de 14 afetados, com a lista aberta). ``cartao-3-aberto``: os mesmos cinco com a faixa
+    aberta por toque (abaixo de 1280 px; acima a coluna já mostra tudo)."""
+    aberto = destino.endswith("-aberto")
+    destino = destino.removesuffix("-aberto")
     page.goto("/index.html")
     expect(page.locator("#lista tbody tr.linha").first).to_be_visible(timeout=20_000)
     por_id = {a["id"]: a for a in page.evaluate(LISTAR_ALERTAS)}
@@ -240,6 +244,9 @@ def _abrir_cartoes(page: Page, destino: str, ids: dict[str, int], ponte: Any) ->
         page.wait_for_timeout(80)
     esperados = 1 if destino != "cartao-3" else 3
     expect(page.locator("#cartoes-alerta article.ca")).to_have_count(esperados, timeout=10_000)
+    faixa = page.locator("#cartoes-alerta .ca-resumo")
+    if aberto and faixa.is_visible():
+        faixa.click()
     if destino == "cartao-grupo":
         page.locator("#cartoes-alerta .ca-ver").first.click()
         expect(page.locator("#cartoes-alerta .ca-afetados li")).to_have_count(14, timeout=10_000)

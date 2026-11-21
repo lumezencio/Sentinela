@@ -2829,6 +2829,53 @@ def test_cartoes_ao_vivo_nunca_cobrem_filtros_nem_silenciar(
             contexto.close()
 
 
+OBSERVAR_DESLOCAMENTOS = """() => {
+    window.__deslocamentos = [];
+    new PerformanceObserver((l) => {
+        for (const e of l.getEntries()) {
+            const quem = (e.sources || []).map((s) => s.node
+                ? `${s.node.nodeName}#${s.node.id || ''}.${String(s.node.className || '')}` : '?');
+            window.__deslocamentos.push([Number(e.value.toFixed(4)), quem.join(' | ')]);
+        }
+    }).observe({type: 'layout-shift', buffered: false});
+}"""
+
+
+def test_cartao_ao_vivo_nao_mexe_na_tabela_em_nenhuma_largura(
+    browser: Browser, alvo: Alvo, novo_alerta: Any
+) -> None:
+    """Fix round 1 da Task R: a chegada de um alerta não desloca nada (CLS zero)."""
+    for largura in (1920, 1440, 1280, 1024, 390):
+        contexto = browser.new_context(
+            viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+        )
+        try:
+            page = contexto.new_page()
+            erros = vigiar_console(page)
+            a, b = novo_alerta(), novo_alerta()
+            ponte = entrar_com_ponte(page, alvo)
+            expect(linhas(page)).to_have_count(POR_PAGINA)
+            page.wait_for_timeout(600)  # fontes e contadores assentados
+            antes = page.locator("#lista").bounding_box()
+            page.evaluate(OBSERVAR_DESLOCAMENTOS)
+            injetar(page, ponte, "aberto", a["id"])
+            injetar(page, ponte, "aberto", b["id"])
+            faixa = page.locator("#cartoes-alerta .ca-resumo")
+            if largura < 1280:
+                expect(faixa).to_contain_text("2 alertas ao vivo", timeout=10_000)
+            else:
+                expect(cartoes(page)).to_have_count(2, timeout=10_000)
+            page.wait_for_timeout(600)
+            depois = page.locator("#lista").bounding_box()
+            assert antes == depois, (largura, antes, depois)
+            # nada mensurável: só texto que muda dentro do selo da aba (valor < 0,0001) é tolerado
+            mudancas = page.evaluate("window.__deslocamentos")
+            assert sum(v for v, _ in mudancas) < 0.001, (largura, mudancas)
+            assert erros == [], erros
+        finally:
+            contexto.close()
+
+
 def test_cartao_aparece_ao_vivo_com_ip_e_dados(page: Page, alvo: Alvo, novo_alerta: Any) -> None:
     erros = vigiar_console(page)
     a = novo_alerta()
@@ -3429,6 +3476,10 @@ def test_cartao_de_alerta_cabe_na_janela_em_todas_as_larguras(
             expect(page.locator("#cartoes-alerta")).to_be_attached()
             injetar(page, ponte, "aberto", a["id"], equipamento_nome=NOME_60)
             cartao = cartao_de(page, a["id"])
+            if largura < 1280:  # abaixo de 1280 px os cartões abrem pela faixa, ao toque
+                faixa = page.locator("#cartoes-alerta .ca-resumo")
+                expect(faixa).to_contain_text("1 alerta ao vivo", timeout=10_000)
+                faixa.click()
             expect(cartao).to_be_visible(timeout=10_000)
             expect(cartao.locator(".ca-dados dt", has_text="Checagem")).to_be_visible()
             page.wait_for_timeout(500)  # fim da animação de entrada

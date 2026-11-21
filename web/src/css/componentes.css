@@ -66,7 +66,15 @@ html[data-aba="organograma"] #conteudo-lista {
   white-space: nowrap;
 }
 
+/* o número da versão chega pela API: o lugar dele fica reservado (as abas ao lado não pulam) */
+.marca .versao[hidden] {
+  display: inline-block !important;
+  visibility: hidden;
+}
+
 .marca .versao {
+  min-width: 64px;
+  text-align: center;
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--versao-fundo);
@@ -433,6 +441,10 @@ html[data-aba="organograma"] #conteudo-lista {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.acoes-admin[data-admin="nao"] {
+  visibility: hidden;
 }
 
 .resumo {

@@ -15,13 +15,24 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 /* ---------- abas: contador de pendentes ---------- */
+/* pílula no canto da aba, fora do fluxo: o número que chega ou muda não empurra as outras abas
+   (sem deslocamento de layout no cabeçalho) */
+.aba {
+  position: relative;
+}
+
 .aba-contador {
+  position: absolute;
+  top: -6px;
+  left: calc(100% - 14px); /* ancorada à esquerda: crescer de 9 para 10 não move o início */
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 24px;
+  min-width: 20px;
   height: 20px;
-  padding: 0 8px;
+  padding: 0 6px;
+  box-shadow: 0 0 0 2px var(--fundo);
   border-radius: 999px;
   background: #2dd4bf;
   color: #042f2e;

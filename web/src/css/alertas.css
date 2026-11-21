@@ -377,8 +377,7 @@ html[data-aba="configuracoes"] {
   }
   /* sete abas em no máximo três linhas curtas, mesmo em 360 px */
   .abas {
-    gap: 2px;
-    justify-content: center;
+    gap: 2px; /* alinhadas à esquerda: a aba Configurações (só admin) entra no fim sem mover as outras */
   }
   .aba {
     padding: 0 10px;
@@ -478,10 +477,13 @@ html[data-aba="configuracoes"] {
 }
 
 /* ---------- cartões de alerta ao vivo (qualquer aba) ----------
-   Nunca por cima de filtros e botões: em >= 1440 px ficam numa coluna própria à direita, abaixo
-   do cabeçalho, e o conteúdo encolhe para ela (só enquanto houver cartão); abaixo disso entram no
-   fluxo, entre o cabeçalho e o conteúdo, lado a lado quando cabem. Nome e dados quebram linha
-   (nunca reticências); a lista de afetados rola dentro do cartão. Borda em degradê de 2 px. */
+   Nada se mexe quando um alerta chega (CLS zero) e nada cobre filtros e botões:
+   - em >= 1280 px a coluna dos cartões fica SEMPRE reservada à direita (vazia, mostra "Nenhum
+     alerta ao vivo"); o conteúdo já nasce com a largura que sobra;
+   - abaixo de 1280 px fica uma faixa fina de altura fixa no topo do conteúdo ("N alertas ao
+     vivo"); os cartões abrem por cima só quando a pessoa toca nela.
+   Nome e dados quebram linha (nunca reticências); a lista de afetados rola dentro do cartão.
+   Borda em degradê de 2 px. */
 .al-som {
   display: inline-flex;
   align-items: center;
@@ -501,15 +503,122 @@ html[data-aba="configuracoes"] {
 }
 
 .ca-pilha {
+  --coluna-cartoes: 320px;
   position: relative;
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  z-index: 8;
   box-sizing: border-box;
   width: min(1320px, 100%);
   margin: 16px auto 0;
   padding: 0 16px;
+}
+
+/* faixa (abaixo de 1280 px): 52 px sempre, com ou sem alerta */
+.ca-resumo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 52px;
+  padding: 0 16px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-m);
+  background: var(--vidro-grad);
+  box-shadow: var(--linha-vidro);
+  color: var(--texto-suave);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ca-resumo:disabled {
+  cursor: default;
+}
+
+.ca-resumo-texto {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ca-resumo-ponto {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--pausado);
+}
+
+.ca-resumo-acao {
+  flex: none;
+  color: var(--link);
+}
+
+.ca-resumo svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease;
+}
+
+.ca-aberta .ca-resumo svg {
+  transform: rotate(180deg);
+}
+
+.ca-com .ca-resumo {
+  border: 2px solid transparent;
+  background: linear-gradient(var(--ca-interno), var(--ca-interno)) padding-box, var(--grad-alerta) border-box;
+  color: var(--ca-titulo);
+}
+
+.ca-com .ca-resumo-ponto {
+  background: var(--offline);
+  box-shadow: 0 0 10px var(--offline);
+}
+
+.ca-vazio {
+  display: none;
+  margin: 0;
+  padding: 16px 20px;
+  border-radius: var(--raio);
+  background: var(--vidro-grad);
+  box-shadow: var(--linha-vidro);
+  color: var(--texto-suave);
+  font-size: 14px;
+}
+
+.ca-vazio strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--texto);
+  font-family: var(--fonte-titulo);
+  font-size: 16px;
+}
+
+/* cartões abertos por cima do conteúdo, abaixo da faixa (só por toque: o conteúdo não se move) */
+.ca-painel {
+  display: none;
+}
+
+.ca-aberta .ca-painel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 16px;
+  left: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(72vh, 640px);
+  padding: 12px;
+  border-radius: 24px;
+  background: var(--vidro-solido);
+  box-shadow: var(--linha-vidro), 0 40px 80px -24px rgba(0, 0, 0, 0.7);
 }
 
 /* os cartões rolam se não couberem (o "e mais N" fica sempre à vista, fora da rolagem) */
@@ -520,88 +629,153 @@ html[data-aba="configuracoes"] {
   align-items: start;
   gap: 12px;
   min-height: 0;
-  max-height: min(56vh, 520px); /* no fluxo: o conteúdo continua à vista logo abaixo */
   padding: 12px;
   margin: -12px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-@media (min-width: 1440px) {
+/* celular: a faixa rola junto com a página (presa no alto, cobriria o que passa por baixo) */
+@media (max-width: 559px) {
+  .ca-aberta .ca-painel {
+    max-height: calc(100vh - 88px);
+  }
+}
+
+@media (min-width: 1280px) {
   .ca-pilha {
     position: fixed;
     top: 88px; /* cabeçalho de 72 px (uma linha a partir de 1280 px) + 16 px */
     right: 24px;
     z-index: 30;
-    width: 380px;
+    display: flex !important; /* sempre à vista, mesmo vazia */
+    flex-direction: column;
+    gap: 12px;
+    width: var(--coluna-cartoes);
     max-height: calc(100vh - 104px);
     margin: 0;
     padding: 0;
   }
   /* com a faixa da varredura no cabeçalho, a coluna desce junto */
-  body:has(#faixa-varredura:not([style*="display: none"])) .ca-pilha {
+  /* (antes do Alpine a faixa ainda tem x-cloak: não conta, senão a coluna pularia na carga) */
+  body:has(#faixa-varredura:not([x-cloak]):not([style*="display: none"])) .ca-pilha {
     top: 140px;
     max-height: calc(100vh - 156px);
   }
+  .ca-resumo {
+    display: none;
+  }
+  .ca-vazio {
+    display: block;
+  }
+  .ca-painel,
+  .ca-aberta .ca-painel {
+    position: static;
+    display: flex;
+    flex: 0 1 auto;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    max-height: none;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+  }
   .ca-cartoes {
     grid-template-columns: minmax(0, 1fr);
-    max-height: none;
   }
-  /* coluna reservada: 380 px dos cartões + 24 px da borda + 16 px de vão */
-  body:has(.ca-pilha .ca) .casca {
-    width: min(1320px, calc(100% - 420px));
-    margin-left: max(0px, calc((100% - 420px - 1320px) / 2));
+  /* coluna reservada o tempo todo: largura da coluna + 24 px da borda + 16 px de vão */
+  .casca {
+    width: min(1320px, calc(100% - var(--reserva-cartoes)));
+    margin-left: max(0px, calc((100% - var(--reserva-cartoes) - 1320px) / 2));
   }
-  body:has(.ca-pilha .ca) .teia {
-    margin-right: 420px;
+  .teia {
+    margin-right: var(--reserva-cartoes);
   }
 }
 
-/* 1440 a 1739 px com a coluna de cartões: o conteúdo fica com ~1000 a 1300 px, a mesma conta do
-   tablet: filtros em duas linhas e a tabela sem as colunas "Desde" e "Checagem" (continuam na
-   ficha), sem largura fixa de coluna (nada vira reticências) */
-@media (min-width: 1440px) and (max-width: 1739px) {
-  body:has(.ca-pilha .ca) .contadores {
+:root {
+  --reserva-cartoes: 0px;
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --reserva-cartoes: 360px;
+  }
+}
+
+@media (min-width: 1440px) {
+  :root {
+    --reserva-cartoes: 420px;
+  }
+  .ca-pilha {
+    --coluna-cartoes: 380px;
+  }
+}
+
+/* 1280 a 1599 px: o conteúdo fica com ~900 a 1180 px, a mesma conta do tablet: contadores em 3
+   colunas, filtros em duas linhas e a tabela sem "Desde" e "Checagem" (continuam na ficha), sem
+   largura fixa de coluna (nada vira reticências); a Teia usa os painéis estreitos */
+@media (min-width: 1280px) and (max-width: 1599px) {
+  .contadores {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  body:has(.ca-pilha .ca) .ferramentas {
+  .ferramentas,
+  .ferramentas.al-ferramentas {
     grid-template-columns: 1fr 1fr;
   }
-  body:has(.ca-pilha .ca) .ferramentas .busca {
+  .ferramentas .busca,
+  .ferramentas .acoes-admin,
+  .al-resumo {
     grid-column: 1 / -1;
   }
-  body:has(.ca-pilha .ca) .ferramentas.al-ferramentas {
-    grid-template-columns: 1fr 1fr;
-  }
-  body:has(.ca-pilha .ca) .al-resumo {
-    grid-column: 1 / -1;
+  .al-resumo {
     text-align: left;
   }
-  body:has(.ca-pilha .ca) .tabela {
+  .tabela {
     table-layout: auto;
   }
-  body:has(.ca-pilha .ca) .tabela th,
-  body:has(.ca-pilha .ca) .tabela td {
+  .tabela th,
+  .tabela td {
     width: auto;
     padding: 12px 8px;
   }
-  body:has(.ca-pilha .ca) .tabela td {
+  .tabela td {
     overflow: visible;
     text-overflow: clip;
   }
-  body:has(.ca-pilha .ca) .tabela th:first-child,
-  body:has(.ca-pilha .ca) .tabela td:first-child {
+  .tabela th:first-child,
+  .tabela td:first-child {
     padding-left: 16px;
   }
-  body:has(.ca-pilha .ca) .tabela th:last-child,
-  body:has(.ca-pilha .ca) .tabela td:last-child {
+  .tabela th:last-child,
+  .tabela td:last-child {
     padding-right: 16px;
   }
-  body:has(.ca-pilha .ca) .tabela th:nth-child(5),
-  body:has(.ca-pilha .ca) .tabela td:nth-child(5),
-  body:has(.ca-pilha .ca) .tabela th:nth-child(7),
-  body:has(.ca-pilha .ca) .tabela td:nth-child(7) {
+  .tabela th:nth-child(5),
+  .tabela td:nth-child(5),
+  .tabela th:nth-child(7),
+  .tabela td:nth-child(7) {
     display: none;
+  }
+  .teia {
+    --vao: 12px;
+  }
+  .teia-classes {
+    width: 236px;
+  }
+  .teia-topo {
+    right: var(--vao);
+    left: calc(var(--vao) * 2 + 236px);
+    justify-content: flex-end;
+  }
+  .teia-estilo {
+    padding: 0 10px;
+  }
+  .teia-painel-equip {
+    top: calc(var(--vao) + 124px);
+    width: 320px;
+    max-height: calc(100% - var(--vao) * 2 - 124px - 48px);
   }
 }
 
