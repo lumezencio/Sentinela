@@ -12,7 +12,7 @@ html[data-aba="organograma"] #conteudo-lista {
   display: none;
 }
 
-/* ---------- cabeçalho (vidro nº 1) ---------- */
+/* ---------- cabeçalho (vidro nº 1): marca, trilho de abas em pílula, ações ---------- */
 .topo {
   position: sticky;
   top: 0;
@@ -20,60 +20,98 @@ html[data-aba="organograma"] #conteudo-lista {
   border-bottom: 1px solid var(--borda);
 }
 
+.topo.vidro {
+  background: var(--vidro-topo);
+  box-shadow: none;
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  backdrop-filter: blur(12px) saturate(140%);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topo.vidro {
+    background: var(--fundo);
+  }
+}
+
 .topo-interno {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 8px 20px;
   width: min(1320px, 100%);
-  min-height: 60px;
+  min-height: 72px;
   margin: 0 auto;
-  padding: 8px 16px;
+  padding: 10px 16px;
 }
 
 .marca {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 18px;
+  gap: 12px;
+  font-family: var(--fonte-titulo);
+  font-size: 20px;
   font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 /* versão em execução, ao lado do nome (nunca cortada: não encolhe nem quebra) */
 .versao {
   flex: none;
   color: var(--texto-suave);
+  font-family: var(--fonte-mono);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 16px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   white-space: nowrap;
+}
+
+.marca .versao {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--versao-fundo);
+  box-shadow: inset 0 0 0 1px var(--versao-anel);
+  color: var(--versao-texto);
 }
 
 .abas {
   position: relative; /* o texto só para leitor de tela (absoluto) dos contadores fica contido */
   display: flex;
   gap: 4px;
-  margin-left: 8px;
+  padding: 4px;
+  border-radius: 16px;
+  background: var(--trilho);
+  box-shadow: var(--linha-vidro);
 }
 
 .aba {
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 44px;
+  padding: 0 14px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 12px;
   background: transparent;
   color: var(--texto-suave);
   font: inherit;
+  font-size: 14px;
   font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.aba:hover {
+  background: var(--linha-hover);
+  color: var(--texto);
 }
 
 .aba[aria-selected="true"] {
-  background: var(--superficie-2);
-  color: var(--texto);
+  background: var(--grad-acao);
+  color: #ffffff;
+  box-shadow: var(--sombra-acao);
 }
 
 .aba:disabled {
@@ -82,8 +120,8 @@ html[data-aba="organograma"] #conteudo-lista {
 
 .selo {
   white-space: nowrap;
-  padding: 1px 7px;
-  border: 1px solid var(--borda);
+  padding: 2px 8px;
+  border: 1px solid var(--borda-forte);
   border-radius: 999px;
   color: var(--texto-suave);
   font-size: 11px;
@@ -93,29 +131,35 @@ html[data-aba="organograma"] #conteudo-lista {
 .topo-acoes {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   margin-left: auto;
 }
 
 .ao-vivo {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--texto-suave);
+  gap: 8px;
+  margin-right: 4px;
+  color: var(--ao-vivo-texto);
   font-size: 13px;
+  font-weight: 600;
 }
 
+/* ponto fixo com brilho: o anel do logo é o único elemento animado do cabeçalho */
 .ao-vivo .ponto {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--acento);
-  animation: pulsar 2.4s ease-in-out infinite;
+  background: var(--online);
+  box-shadow: 0 0 12px var(--online);
 }
 
 .usuario {
+  max-width: 24ch;
+  margin-right: 4px;
   color: var(--texto-suave);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- banner de conexão ---------- */
@@ -124,11 +168,11 @@ html[data-aba="organograma"] #conteudo-lista {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  margin: 12px 0 0;
-  padding: 10px 14px;
+  margin: 16px 0 0;
+  padding: 12px 16px;
   border: 1px solid var(--instavel);
-  border-radius: var(--raio-p);
-  background: var(--superficie);
+  border-radius: var(--raio-m);
+  background: var(--vidro-solido);
   font-weight: 600;
 }
 
@@ -145,41 +189,50 @@ html[data-aba="organograma"] #conteudo-lista {
   animation: girar 0.9s linear infinite;
 }
 
-/* ---------- contadores ---------- */
+/* ---------- contadores: cartões em degradê vivo (um por significado), número branco ---------- */
 .contadores {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 12px;
-  margin: 20px 0 16px;
+  gap: 16px;
+  margin: 24px 0 20px;
 }
 
 .contador {
+  --grad-cartao: var(--grad-total);
+  --sombra-cartao: var(--sombra-total);
   position: relative;
   display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: center;
-  gap: 4px 12px;
-  padding: 14px 16px;
-  border: 1px solid var(--borda);
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "legenda icone"
+    "numero numero";
+  grid-template-rows: auto 1fr;
+  align-items: start;
+  gap: 8px 12px;
+  min-height: 112px;
+  padding: 20px;
+  border: 0;
   border-radius: var(--raio);
-  background: var(--superficie);
-  color: inherit;
+  background: var(--grad-cartao);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 20px 40px -18px var(--sombra-cartao);
+  color: #ffffff;
   font: inherit;
   text-align: left;
   cursor: pointer;
   overflow: hidden;
-  transition: transform 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
+/* brilho suave no canto (decorativo) */
 .contador::after {
   content: "";
   position: absolute;
-  inset: auto -30% -60% auto;
-  width: 120px;
-  height: 120px;
+  top: -48px;
+  right: -48px;
+  width: 136px;
+  height: 136px;
   border-radius: 50%;
-  background: radial-gradient(circle, var(--cor-status, var(--primaria)) 0%, transparent 70%);
-  opacity: 0.14;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.18) 0%, transparent 70%);
   pointer-events: none;
 }
 
@@ -188,36 +241,70 @@ html[data-aba="organograma"] #conteudo-lista {
 }
 
 .contador[aria-pressed="true"] {
-  border-color: var(--cor-status, var(--primaria));
+  box-shadow: inset 0 0 0 2px #ffffff, 0 0 0 3px var(--sombra-cartao), 0 20px 40px -14px var(--sombra-cartao);
+}
+
+.contador:focus-visible {
+  outline: 2px solid var(--texto);
+  outline-offset: 3px;
 }
 
 .contador .numero {
-  font-size: 28px;
+  grid-area: numero;
+  align-self: end;
+  font-family: var(--fonte-titulo);
+  font-size: 38px;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1;
   letter-spacing: -0.02em;
 }
 
 .contador .legenda {
-  grid-column: 2;
-  color: var(--texto-suave);
+  grid-area: legenda;
+  color: var(--rotulo-cartao);
   font-size: 13px;
   font-weight: 600;
+  line-height: 18px;
 }
 
 .contador .icone-status {
-  grid-row: span 2;
-  width: 28px;
-  height: 28px;
+  grid-area: icone;
+  width: 22px;
+  height: 22px;
+  color: #ffffff;
 }
 
 .contador-total {
-  --cor-status: var(--primaria);
   cursor: default;
 }
 
 .contador-total:hover {
   transform: none;
+}
+
+.contador.st-online {
+  --grad-cartao: var(--grad-online);
+  --sombra-cartao: var(--sombra-online);
+}
+
+.contador.st-instavel {
+  --grad-cartao: var(--grad-instavel);
+  --sombra-cartao: var(--sombra-instavel);
+}
+
+.contador.st-offline {
+  --grad-cartao: var(--grad-offline);
+  --sombra-cartao: var(--sombra-offline);
+}
+
+.contador.st-inalcancavel {
+  --grad-cartao: var(--grad-inalcancavel);
+  --sombra-cartao: var(--sombra-inalcancavel);
+}
+
+.contador.st-pausado {
+  --grad-cartao: var(--grad-pausado);
+  --sombra-cartao: var(--sombra-pausado);
 }
 
 /* ---------- ícones de estado: forma + ícone + cor ---------- */
@@ -232,23 +319,60 @@ html[data-aba="organograma"] #conteudo-lista {
 .st-online,
 .st-suspeito {
   --cor-status: var(--online);
+  --cor-selo: var(--online-fundo);
+  --cor-selo-texto: var(--online-texto);
 }
 
 .st-instavel {
   --cor-status: var(--instavel);
+  --cor-selo: var(--instavel-fundo);
+  --cor-selo-texto: var(--instavel-texto);
 }
 
 .st-offline {
   --cor-status: var(--offline);
+  --cor-selo: var(--offline-fundo);
+  --cor-selo-texto: var(--offline-texto);
 }
 
-.st-pausado,
 .st-inalcancavel {
+  --cor-status: var(--inalcancavel);
+  --cor-selo: var(--inalcancavel-fundo);
+  --cor-selo-texto: var(--inalcancavel-texto);
+}
+
+.st-pausado {
   --cor-status: var(--pausado);
+  --cor-selo: var(--pausado-fundo);
+  --cor-selo-texto: var(--pausado-texto);
 }
 
 .st-desconhecido {
   --cor-status: var(--desconhecido);
+  --cor-selo: var(--pausado-fundo);
+  --cor-selo-texto: var(--pausado-texto);
+}
+
+/* selo de estado (pílula 12 px/700): ícone + texto na cor do estado; a forma do ícone continua
+   dizendo o estado sem depender da cor */
+.td-estado > .estado,
+.teia-ficha dd > .estado {
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--cor-selo);
+  color: var(--cor-selo-texto);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.td-estado > .estado .icone-status,
+.teia-ficha dd > .estado .icone-status {
+  width: 14px;
+  height: 14px;
+  color: currentColor;
 }
 
 .sym-onda {
@@ -326,10 +450,14 @@ html[data-aba="organograma"] #conteudo-lista {
 }
 
 /* ---------- lista ---------- */
+/* a tabela é o maior painel da tela: vidro sem backdrop-filter (o degradê já é opaco o bastante
+   para nada atrás dela aparecer). Medido sem GPU (Chromium headless, 1440 px): com o blur aqui o
+   céu animado custava 5,3 s de CPU a cada 5 s; sem ele, 3,1 s (o painel antigo: 2,2 s) */
 .painel-lista {
-  border: 1px solid var(--borda);
-  border-radius: var(--raio);
-  background: var(--superficie);
+  border: 0;
+  border-radius: 22px;
+  background: var(--vidro-grad);
+  box-shadow: var(--linha-vidro), var(--sombra);
   overflow-x: auto; /* tablet estreito: a tabela rola dentro do cartão, nada fica cortado sem saída */
   overflow-y: hidden;
 }
@@ -341,19 +469,31 @@ html[data-aba="organograma"] #conteudo-lista {
 
 .tabela th,
 .tabela td {
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--borda);
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--linha-tabela);
   text-align: left;
   white-space: nowrap;
 }
 
 .tabela th {
-  background: var(--superficie-2);
+  padding-top: 16px;
+  padding-bottom: 16px;
+  background: transparent;
   color: var(--texto-suave);
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.tabela th:first-child,
+.tabela td:first-child {
+  padding-left: 24px;
+}
+
+.tabela th:last-child,
+.tabela td:last-child {
+  padding-right: 24px;
 }
 
 /* o nome nunca é cortado nem empurra as outras colunas para fora do cartão: quebra de linha */
@@ -367,8 +507,12 @@ html[data-aba="organograma"] #conteudo-lista {
   border-bottom: 0;
 }
 
+.tabela tbody tr {
+  transition: background-color 0.15s ease;
+}
+
 .tabela tbody tr:hover {
-  background: var(--superficie-2);
+  background: var(--linha-hover);
 }
 
 /* Sem salto de layout (CLS) quando as linhas chegam: a lista reserva a altura da janela (a
@@ -384,7 +528,15 @@ html[data-aba="organograma"] #conteudo-lista {
 @media (min-width: 768px) and (max-width: 1199px) {
   .tabela th,
   .tabela td {
-    padding: 11px 8px;
+    padding: 12px 8px;
+  }
+  .tabela th:first-child,
+  .tabela td:first-child {
+    padding-left: 16px;
+  }
+  .tabela th:last-child,
+  .tabela td:last-child {
+    padding-right: 16px;
   }
   .tabela th:nth-child(5),
   .tabela td:nth-child(5),
@@ -494,6 +646,7 @@ html[data-aba="organograma"] .aviso-sem-alpine {
 }
 
 .col-nome {
+  color: var(--texto-forte);
   font-weight: 600;
   white-space: normal;
 }
@@ -502,6 +655,10 @@ html[data-aba="organograma"] .aviso-sem-alpine {
 .col-latencia {
   font-family: var(--fonte-mono);
   font-size: 13px;
+}
+
+.col-ip {
+  color: var(--ip-texto);
 }
 
 .col-latencia,
@@ -528,8 +685,9 @@ html[data-aba="organograma"] .aviso-sem-alpine {
 .classe .pino {
   width: 8px;
   height: 8px;
-  border-radius: 3px;
+  border-radius: 50%;
   background: var(--cor-classe, var(--texto-suave));
+  box-shadow: 0 0 8px var(--cor-classe, transparent);
 }
 
 .suave {
@@ -547,8 +705,8 @@ html[data-aba="organograma"] .aviso-sem-alpine {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  margin-top: 12px;
+  gap: 12px;
+  margin-top: 16px;
   color: var(--texto-suave);
   font-size: 14px;
 }
@@ -557,11 +715,11 @@ html[data-aba="organograma"] .aviso-sem-alpine {
 .dialogo {
   width: min(520px, calc(100% - 32px));
   padding: 0;
-  border: 1px solid var(--borda);
-  border-radius: 18px;
-  background: var(--superficie);
+  border: 0;
+  border-radius: 22px;
+  background: var(--vidro-solido);
   color: var(--texto);
-  box-shadow: var(--sombra);
+  box-shadow: var(--linha-vidro), 0 40px 80px -24px rgba(0, 0, 0, 0.7);
 }
 
 .dialogo[open] {
@@ -569,19 +727,19 @@ html[data-aba="organograma"] .aviso-sem-alpine {
 }
 
 .dialogo::backdrop {
-  background: rgba(10, 12, 18, 0.55);
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
+  background: rgba(2, 6, 23, 0.6);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 
 .dialogo form {
   display: grid;
-  gap: 14px;
-  padding: 22px;
+  gap: 16px;
+  padding: 24px;
 }
 
 .dialogo h2 {
-  font-size: 19px;
+  font-size: 20px;
 }
 
 .dialogo .grade-2 {
@@ -626,9 +784,10 @@ html[data-aba="organograma"] .aviso-sem-alpine {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 4px 4px 4px 12px;
   border: 1px solid var(--borda);
-  border-radius: 10px;
+  border-radius: var(--raio-p);
+  background: var(--superficie);
 }
 
 .lista-subredes code {
@@ -697,6 +856,7 @@ html[data-aba="organograma"] .aviso-sem-alpine {
   .painel-lista {
     border: 0;
     background: transparent;
+    box-shadow: none;
   }
   .tabela thead {
     display: none;
@@ -712,10 +872,15 @@ html[data-aba="organograma"] .aviso-sem-alpine {
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 4px 12px;
-    padding: 14px;
-    border: 1px solid var(--borda);
-    border-radius: var(--raio);
-    background: var(--superficie);
+    padding: 16px;
+    border: 0;
+    border-radius: var(--raio-m);
+    background: var(--vidro-grad);
+    box-shadow: var(--linha-vidro);
+  }
+  .tabela td:first-child,
+  .tabela td:last-child {
+    padding: 0;
   }
   .tabela td {
     padding: 0;
@@ -784,30 +949,52 @@ html[data-aba="teia"] .campo {
 /* a cena é sempre escura: os painéis de vidro seguem a cena em qualquer tema */
 .teia {
   color-scheme: dark;
-  --vidro: rgba(17, 20, 28, 0.66);
-  --borda: rgba(173, 184, 214, 0.16);
-  --texto: #e8ebf2;
-  --texto-suave: #a9b0c0;
+  --vidro: rgba(10, 15, 32, 0.66);
+  --vidro-grad: linear-gradient(160deg, rgba(30, 41, 59, 0.62), rgba(15, 23, 42, 0.6));
+  --vidro-solido: linear-gradient(160deg, #141d31, #0d1424);
+  --linha-vidro: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+  --sombra: 0 30px 60px -30px rgba(0, 0, 0, 0.8);
+  --borda: rgba(148, 163, 184, 0.18);
+  --borda-forte: rgba(148, 163, 184, 0.34);
+  --texto: #e2e8f0;
+  --texto-forte: #f8fafc;
+  --texto-suave: #9aa8bd;
+  --superficie: rgba(17, 25, 45, 0.74);
   --superficie-2: rgba(255, 255, 255, 0.06);
-  --primaria: #8793e8;
-  --acento: #68c7bc;
+  --linha-hover: rgba(255, 255, 255, 0.05);
+  --primaria: #a78bfa;
+  --acento: #2dd4bf;
+  --link: #7dd3fc;
+  --ip-texto: #a5f3fc;
+  /* cores de estado iguais às das esferas da cena (aparencia.js): a legenda bate com a Teia */
   --online: #4ca878;
   --instavel: #d9a441;
   --offline: #e08080;
   --pausado: #8a91a4;
+  --inalcancavel: #8a91a4;
   --desconhecido: #9aa0b0;
+  --online-fundo: rgba(76, 168, 120, 0.16);
+  --online-texto: #86efac;
+  --instavel-fundo: rgba(217, 164, 65, 0.16);
+  --instavel-texto: #fcd34d;
+  --offline-fundo: rgba(224, 128, 128, 0.18);
+  --offline-texto: #fda4af;
+  --inalcancavel-fundo: rgba(138, 145, 164, 0.18);
+  --inalcancavel-texto: #cbd5e1;
+  --pausado-fundo: rgba(138, 145, 164, 0.16);
+  --pausado-texto: #cbd5e1;
   --vao: 16px;
   position: relative;
   flex: 1;
   min-height: 420px;
   overflow: hidden;
-  background: #0e1016;
+  background: #060a19;
   color: var(--texto);
 }
 
 .teia .vidro {
-  border: 1px solid var(--borda);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  border: 0;
+  box-shadow: var(--linha-vidro), 0 18px 40px rgba(0, 0, 0, 0.45);
 }
 
 .teia .botao {
@@ -855,7 +1042,7 @@ html[data-aba="teia"] .campo {
   border-radius: 12px;
   overflow-wrap: anywhere;
   text-align: center;
-  background: rgba(14, 16, 22, 0.55);
+  background: rgba(6, 10, 25, 0.6);
   color: #eef0f7;
   font: 600 12px/1.45 var(--fonte);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
@@ -873,7 +1060,7 @@ html[data-aba="teia"] .campo {
 
 .teia-rotulo.servidor > span {
   background: transparent;
-  color: #c9cff8;
+  color: #ddd6fe;
   font-size: 11px;
   letter-spacing: 0.2em;
   box-shadow: none;
@@ -938,17 +1125,17 @@ html[data-aba="teia"] .campo {
 
 .teia-estilos {
   display: flex;
-  gap: 2px;
+  gap: 4px;
   padding: 4px;
-  border-radius: 999px;
+  border-radius: 16px;
 }
 
 .teia-estilo,
 .teia-ver-tudo {
-  min-height: 34px;
+  min-height: 44px;
   padding: 0 14px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 12px;
   background: transparent;
   color: var(--texto-suave);
   font: inherit;
@@ -965,17 +1152,17 @@ html[data-aba="teia"] .campo {
 }
 
 .teia-estilo[aria-pressed="true"] {
-  background: linear-gradient(135deg, rgba(135, 147, 232, 0.92), rgba(104, 199, 188, 0.92));
-  color: #10131a;
-  box-shadow: 0 0 18px rgba(135, 147, 232, 0.35);
+  background: linear-gradient(135deg, #0f766e, #7c3aed);
+  color: #ffffff;
+  box-shadow: 0 8px 20px -8px rgba(139, 92, 246, 0.8);
 }
 
 .teia-ver-tudo {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 44px;
-  border: 1px solid var(--borda);
+  min-height: 52px;
+  border-radius: 16px;
 }
 
 .teia-ver-tudo .icone {
@@ -992,7 +1179,7 @@ html[data-aba="teia"] .campo {
   display: flex;
   flex-direction: column;
   max-height: calc(100% - var(--vao) * 2 - 48px);
-  border-radius: 18px;
+  border-radius: 20px;
   animation: surgir 0.3s ease-out both;
 }
 
@@ -1013,7 +1200,7 @@ html[data-aba="teia"] .campo {
   margin: 0 6px 8px;
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 
 .teia-titulo:focus {
@@ -1051,10 +1238,10 @@ html[data-aba="teia"] .campo {
   display: grid;
   align-items: center;
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   padding: 6px 10px;
   border: 1px solid transparent;
-  border-radius: 11px;
+  border-radius: 12px;
   background: transparent;
   color: var(--texto);
   font: inherit;
@@ -1074,6 +1261,10 @@ html[data-aba="teia"] .campo {
 .teia-equip[aria-current="true"] {
   border-color: var(--borda);
   background: var(--superficie-2);
+}
+
+.teia-equip[aria-current="true"] {
+  border-color: rgba(167, 139, 250, 0.5);
 }
 
 .teia-classe .pino {
@@ -1314,7 +1505,7 @@ html[data-aba="teia"] .campo {
 }
 
 .dep-acoes .botao {
-  min-height: 40px;
+  min-height: 44px;
 }
 
 .dep-acoes .botao-fantasma {
@@ -1323,7 +1514,7 @@ html[data-aba="teia"] .campo {
 
 .teia-equip-acoes .botao {
   flex: 1;
-  min-height: 38px;
+  min-height: 44px;
 }
 
 .teia-painel-equip .alerta {
@@ -1351,9 +1542,9 @@ html[data-aba="teia"] .campo {
   grid-template-columns: auto 1fr;
   align-items: center;
   gap: 2px 10px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-left: 2px solid var(--offline);
-  border-radius: 10px;
+  border-radius: var(--raio-p);
   background: var(--superficie-2);
   font-size: 13.5px;
 }
@@ -1430,11 +1621,11 @@ html[data-aba="teia"] .campo {
 /* um cartão por classe: a cor da classe (já validada #rrggbb no JS) na borda esquerda */
 .org-cartao {
   min-width: 0;
-  padding: 10px 14px 14px;
-  border: 1px solid var(--borda);
+  padding: 12px 16px 16px;
+  border: 0;
   border-left: 4px solid var(--cor-classe, var(--borda));
   border-radius: var(--raio);
-  box-shadow: var(--sombra);
+  box-shadow: var(--linha-vidro), var(--sombra);
 }
 
 .org-cabeca {
@@ -1484,11 +1675,13 @@ html[data-aba="teia"] .campo {
   flex: none;
   border-radius: 50%;
   background: var(--cor-classe, var(--texto-suave));
+  box-shadow: 0 0 10px var(--cor-classe, transparent);
 }
 
 .org-classe-nome {
   min-width: 0;
   overflow-wrap: anywhere;
+  font-family: var(--fonte-titulo);
   font-size: 16px;
   font-weight: 700;
 }
@@ -1547,8 +1740,8 @@ html[data-aba="teia"] .campo {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 38px;
-  padding: 6px 10px;
+  min-height: 44px;
+  padding: 6px 12px;
   border: 1px solid var(--borda);
   border-radius: var(--raio-p);
   background: var(--superficie);
@@ -1561,7 +1754,7 @@ html[data-aba="teia"] .campo {
 }
 
 .org-item:hover {
-  border-color: var(--texto-suave);
+  border-color: var(--borda-forte);
   background: var(--superficie-2);
 }
 
@@ -1584,7 +1777,7 @@ html[data-aba="teia"] .campo {
 /* IP do equipamento (painel com login; o telão não tem IP): mono, tabular, quebra se faltar
    largura (IPv6) em vez de cortar */
 .org-ip {
-  color: var(--texto-suave);
+  color: var(--ip-texto);
   font-family: var(--fonte-mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -1603,7 +1796,7 @@ html[data-aba="teia"] .campo {
 
 .org-dialogo {
   max-height: calc(100dvh - 32px);
-  padding: 20px 22px 22px;
+  padding: 20px 24px 24px;
   overflow-y: auto;
 }
 
@@ -1662,9 +1855,9 @@ html[data-aba="teia"] .campo {
     padding: 0 10px;
   }
   .teia-painel-equip {
-    top: calc(var(--vao) + 108px);
+    top: calc(var(--vao) + 124px); /* abaixo da barra de estilos, que aqui pode ter 2 linhas */
     width: 320px;
-    max-height: calc(100% - var(--vao) * 2 - 108px - 48px);
+    max-height: calc(100% - var(--vao) * 2 - 124px - 48px);
   }
 }
 
@@ -1720,7 +1913,7 @@ html[data-aba="teia"] .campo {
   .teia-classe,
   .teia-equip {
     grid-template-columns: auto auto auto;
-    min-height: 36px;
+    min-height: 44px;
     padding: 4px 12px;
     border-color: var(--borda);
     border-radius: 999px;
@@ -1758,7 +1951,7 @@ html[data-aba="teia"] .campo {
     flex-wrap: wrap; /* os 5 estilos quebram linha em vez de sair pela borda */
     justify-content: center;
     min-width: 0;
-    border-radius: 22px;
+    border-radius: 16px;
   }
   .teia-estilo {
     padding: 0 10px;
@@ -1774,7 +1967,7 @@ html[data-aba="teia"] .campo {
   .teia-painel-equip {
     top: auto;
     right: var(--vao);
-    bottom: calc(var(--vao) + 108px); /* acima da barra de estilos, que pode ter 2 linhas */
+    bottom: calc(var(--vao) + 120px); /* acima da barra de estilos, que pode ter 2 linhas */
     left: var(--vao);
     width: auto;
     max-height: 62%;

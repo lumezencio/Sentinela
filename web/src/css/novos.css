@@ -19,13 +19,13 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 22px;
+  min-width: 24px;
   height: 20px;
-  padding: 0 7px;
+  padding: 0 8px;
   border-radius: 999px;
-  background: linear-gradient(135deg, var(--primaria), var(--acento));
-  color: var(--primaria-texto);
-  font-size: 11.5px;
+  background: #2dd4bf;
+  color: #042f2e;
+  font-size: 12px;
   font-weight: 700;
   line-height: 1;
 }
@@ -73,7 +73,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 .faixa-cancelar {
-  min-height: 32px;
+  min-height: 44px;
   margin-left: auto;
 }
 
@@ -123,10 +123,10 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 .secao-titulo {
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  background: linear-gradient(120deg, var(--texto) 30%, var(--primaria) 75%, var(--acento));
+  background: linear-gradient(120deg, var(--texto-forte) 30%, var(--primaria) 75%, var(--acento));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -136,16 +136,17 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   display: inline-flex;
   gap: 4px;
   padding: 4px;
-  border: 1px solid var(--borda);
-  border-radius: 999px;
-  background: var(--superficie);
+  border: 0;
+  border-radius: 16px;
+  background: var(--trilho);
+  box-shadow: var(--linha-vidro);
 }
 
 .segmento {
-  min-height: 34px;
+  min-height: 44px;
   padding: 0 16px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 12px;
   background: transparent;
   color: var(--texto-suave);
   font: inherit;
@@ -153,10 +154,14 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   cursor: pointer;
 }
 
-.segmento[aria-pressed="true"] {
-  background: var(--superficie-2);
+.segmento:hover {
   color: var(--texto);
-  box-shadow: inset 0 0 0 1px var(--borda);
+}
+
+.segmento[aria-pressed="true"] {
+  background: var(--grad-acao);
+  color: #ffffff;
+  box-shadow: var(--sombra-acao);
 }
 
 .selo-alerta {
@@ -172,7 +177,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 
 .botao-perigo {
   border-color: transparent;
-  background: var(--offline);
+  background: var(--grad-perigo);
   color: #fff;
 }
 
@@ -190,12 +195,12 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
+  gap: 8px 16px;
   margin-bottom: 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--borda);
+  padding: 12px 16px;
+  border: 0;
   border-radius: var(--raio);
-  box-shadow: var(--sombra);
+  box-shadow: var(--linha-vidro), var(--sombra-leve);
 }
 
 .nv-lote {
@@ -251,17 +256,17 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   display: grid;
   grid-template-columns: auto minmax(0, 1.25fr) minmax(300px, 1.15fr) auto;
   align-items: start;
-  gap: 12px 18px;
-  padding: 14px 16px;
-  border: 1px solid var(--borda);
+  gap: 12px 20px;
+  padding: 16px 20px;
+  border: 1px solid transparent;
   border-radius: var(--raio);
-  background: var(--superficie);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  background: var(--vidro-grad);
+  box-shadow: var(--linha-vidro);
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
 .nv-cartao:hover {
-  border-color: color-mix(in srgb, var(--primaria) 40%, var(--borda));
+  border-color: color-mix(in srgb, var(--primaria) 40%, transparent);
 }
 
 .nv-cartao::before {
@@ -400,7 +405,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 
 .nv-campos input,
 .nv-campos select {
-  min-height: 38px;
+  min-height: 44px;
 }
 
 .nv-classe {
@@ -423,7 +428,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 .nv-botoes .botao {
-  min-height: 36px;
+  min-height: 44px;
 }
 
 .nv-aviso-fora {
@@ -439,7 +444,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   align-items: center;
   gap: 10px;
   width: calc(100% - 28px);
-  min-height: 40px;
+  min-height: 44px;
   margin-left: 28px;
   padding: 4px 12px;
   border: 1px dashed var(--borda);
@@ -480,13 +485,19 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 
 .cfg-bloco {
   margin-bottom: 28px;
-  padding: 18px 20px 20px;
-  border: 1px solid var(--borda);
-  border-radius: 18px;
-  background: var(--vidro);
+  padding: 20px 24px 24px;
+  border: 0;
+  border-radius: 22px;
+  background: var(--vidro-grad);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   backdrop-filter: blur(14px) saturate(140%);
-  box-shadow: var(--sombra);
+  box-shadow: var(--linha-vidro), var(--sombra);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .cfg-bloco {
+    background: var(--vidro-solido);
+  }
 }
 
 .cfg-bloco-cabeca {
@@ -505,7 +516,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 .cfg-bloco h2 {
-  font-size: 18px;
+  font-size: 20px;
 }
 
 .cfg-fontes {
@@ -521,7 +532,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   min-width: 0;
   padding: 16px;
   border: 1px solid var(--borda);
-  border-radius: var(--raio);
+  border-radius: var(--raio-m);
   background: var(--superficie);
 }
 
@@ -604,7 +615,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 .cfg-acoes .botao {
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 12px;
 }
 
@@ -702,7 +713,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 .cfg-subredes .cfg-subrede-topo .botao {
-  min-height: 36px;
+  min-height: 44px;
   margin-left: auto;
 }
 
@@ -759,7 +770,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -779,7 +790,7 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   width: 42px;
   height: 24px;
   flex: none;
-  border: 1px solid var(--borda);
+  border: 1px solid var(--borda-forte);
   border-radius: 999px;
   background: var(--superficie-2);
   transition: background 0.2s ease;
@@ -798,11 +809,12 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 
 .chave[aria-checked="true"] .chave-trilho {
   border-color: transparent;
-  background: linear-gradient(135deg, var(--primaria), var(--acento));
+  background: var(--grad-acao);
+  box-shadow: 0 4px 12px -4px rgba(139, 92, 246, 0.8);
 }
 
 .chave[aria-checked="true"] .chave-botao {
-  background: var(--primaria-texto);
+  background: #ffffff;
   transform: translateX(18px);
 }
 

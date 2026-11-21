@@ -216,12 +216,14 @@ html[data-aba="diagnostico"] {
   width: 100%;
   height: var(--altura, 0%);
   border-radius: 4px 4px 0 0;
-  /* barras comuns mais escuras que o pico: a diferença não depende de matiz */
-  background: color-mix(in srgb, var(--primaria) 55%, var(--superficie-2));
+  /* barras comuns mais apagadas que o pico: a diferença não depende de matiz (luminosidade e
+     contorno); o degradê teal -> violeta é o mesmo da aba ativa */
+  background: linear-gradient(to top, color-mix(in srgb, var(--acento) 45%, var(--superficie-2)),
+      color-mix(in srgb, var(--primaria) 55%, var(--superficie-2)));
 }
 
 .dg-barra.dg-barra-pico {
-  background: var(--primaria);
+  background: linear-gradient(to top, var(--acento), var(--primaria));
   outline: 2px solid var(--texto);
   outline-offset: 1px;
 }
@@ -442,7 +444,16 @@ html[data-aba="diagnostico"] {
     --primaria: #2f3a8f;
     --acento: #0f5c54;
     --vidro: #fff;
+    --vidro-grad: #fff;
+    --vidro-solido: #fff;
+    --linha-vidro: 0 0 0 0 transparent;
     --sombra: none;
+    --sombra-leve: none;
+    --texto-forte: #000;
+    --borda-forte: #8a8f9c;
+    --linha-tabela: #8a8f9c;
+    --ip-texto: #000;
+    --link: #000;
     --online: #1d6b43;
     --instavel: #7a5410;
     --offline: #9a2f2f;

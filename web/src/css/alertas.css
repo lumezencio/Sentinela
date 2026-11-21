@@ -34,9 +34,10 @@ html[data-aba="configuracoes"] {
   display: flow-root;
 }
 
-/* contador de alertas abertos na aba (texto escuro no vermelho suave, branco no claro) */
-.aba-contador-alerta {
-  background: var(--offline);
+/* contador de alertas abertos na aba: rosa forte com texto branco (>= 4,5:1 nos dois temas) */
+.aba-contador.aba-contador-alerta {
+  background: #e11d48;
+  color: #ffffff;
 }
 
 /* ---------- lista de alertas ---------- */
@@ -66,21 +67,23 @@ html[data-aba="configuracoes"] {
   align-items: start;
   gap: 8px 16px;
   padding: 16px 20px;
-  border: 1px solid var(--borda);
-  border-radius: 16px;
-  background: var(--superficie);
+  border: 0;
+  border-radius: var(--raio);
+  background: var(--vidro-grad);
+  box-shadow: var(--linha-vidro);
 }
 
 .al-linha {
   border-left: 4px solid var(--cor-status, var(--borda));
-  box-shadow: var(--sombra);
+  box-shadow: var(--linha-vidro), var(--sombra-leve);
 }
 
 .al-silencio {
   grid-template-columns: 144px minmax(0, 1fr) auto;
   align-items: center;
   padding: 12px 16px;
-  background: var(--superficie-2);
+  border-radius: var(--raio-m);
+  background: var(--superficie);
 }
 
 .al-aberto {
@@ -150,7 +153,7 @@ html[data-aba="configuracoes"] {
 
 .al-envio {
   padding: 0 8px;
-  border: 1px solid var(--borda);
+  border: 1px solid var(--borda-forte);
   border-radius: 999px;
   font-weight: 600;
 }
@@ -164,8 +167,8 @@ html[data-aba="configuracoes"] {
 
 .al-acoes .botao,
 .al-silencio .botao {
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 44px;
+  padding: 0 14px;
 }
 
 .al-detalhe {
@@ -219,10 +222,10 @@ html[data-aba="configuracoes"] {
 .dialogo-rolavel .rodape {
   position: sticky;
   bottom: 0;
-  margin: 0 -22px -22px;
-  padding: 12px 22px;
+  margin: 0 -24px -24px;
+  padding: 12px 24px;
   border-top: 1px solid var(--borda);
-  background: var(--superficie);
+  background: var(--vidro-solido);
 }
 
 .dialogo-rolavel form {
@@ -240,7 +243,7 @@ html[data-aba="configuracoes"] {
   width: 100%;
   justify-content: flex-start;
   height: auto;
-  min-height: 36px;
+  min-height: 44px;
   padding: 8px 12px;
   text-align: left;
   white-space: normal;
@@ -280,7 +283,7 @@ html[data-aba="configuracoes"] {
   width: 100%;
   min-height: 84px;
   padding: 10px 12px;
-  border: 1px solid var(--borda);
+  border: 1px solid var(--borda-forte);
   border-radius: var(--raio-p);
   background: var(--fundo);
   color: var(--texto);
@@ -320,9 +323,9 @@ html[data-aba="configuracoes"] {
   margin: 0;
 }
 
-/* sete abas não cabem ao lado da marca e das ações: a faixa de abas desce e quebra linha
-   (nada fica escondido atrás da borda da tela nem exige rolagem lateral) */
-@media (max-width: 1120px) {
+/* sete abas (pílulas de 44 px) não cabem ao lado da marca e das ações até 1279 px: o trilho de
+   abas desce para a 2ª linha e quebra linha (nada fica atrás da borda nem exige rolagem lateral) */
+@media (max-width: 1279px) {
   .topo-interno {
     flex-wrap: wrap;
     gap: 8px 12px;
@@ -364,7 +367,7 @@ html[data-aba="configuracoes"] {
 }
 
 .cfg-bloco {
-  scroll-margin-top: 112px; /* o cabeçalho fixo não cobre o título do cartão ao rolar até ele */
+  scroll-margin-top: 152px; /* o cabeçalho fixo (até 2 linhas) não cobre o título ao rolar até ele */
 }
 
 @media (max-width: 559px) {
@@ -372,12 +375,13 @@ html[data-aba="configuracoes"] {
   .topo {
     position: static;
   }
-  /* seis abas em no máximo duas linhas, mesmo em 360 px */
+  /* sete abas em no máximo três linhas curtas, mesmo em 360 px */
   .abas {
-    gap: 0;
+    gap: 2px;
+    justify-content: center;
   }
   .aba {
-    padding: 0 8px;
+    padding: 0 10px;
     font-size: 14px;
   }
   .al-linha,
@@ -434,7 +438,7 @@ html[data-aba="configuracoes"] {
   gap: 8px 16px;
   padding: 12px 16px;
   border: 1px solid var(--borda);
-  border-radius: var(--raio-p);
+  border-radius: var(--raio-m);
   background: var(--superficie);
 }
 
@@ -470,12 +474,15 @@ html[data-aba="configuracoes"] {
 }
 
 /* ---------- cartões de alerta ao vivo (qualquer aba) ----------
-   Canto superior direito no desktop, largura total embaixo no celular; até 3 à vista. Nome
-   e dados quebram linha (nunca reticências); a lista de afetados rola dentro do cartão. */
+   Nunca por cima de filtros e botões: em >= 1440 px ficam numa coluna própria à direita, abaixo
+   do cabeçalho, e o conteúdo encolhe para ela (só enquanto houver cartão); abaixo disso entram no
+   fluxo, entre o cabeçalho e o conteúdo, lado a lado quando cabem. Nome e dados quebram linha
+   (nunca reticências); a lista de afetados rola dentro do cartão. Borda em degradê de 2 px. */
 .al-som {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-height: 44px;
   margin-top: 8px;
   font-size: 14px;
   font-weight: 600;
@@ -484,60 +491,143 @@ html[data-aba="configuracoes"] {
 .al-som input {
   width: 18px;
   height: 18px;
+  min-height: 0;
   margin: 0;
   accent-color: var(--primaria);
 }
 
 .ca-pilha {
-  position: fixed;
-  top: 72px;
-  /* Ancorada pelos DOIS lados (16 px de cada), nunca por "100vw": o vw conta a barra de rolagem
-     da página e, com barra clássica (Windows), o cartão passava da borda. margin-left:auto
-     encosta o cartão à direita quando a janela é larga (máx. 420 px). */
-  right: 16px;
-  left: 16px;
-  z-index: 30;
+  position: relative;
+  z-index: 5;
   display: flex;
   flex-direction: column;
   gap: 12px;
   box-sizing: border-box;
-  width: auto;
-  max-width: 420px;
-  margin-left: auto;
-  max-height: calc(100vh - 80px);
-  pointer-events: none;
-}
-
-.ca-pilha > .ca-mais,
-.ca {
-  pointer-events: auto;
+  width: min(1320px, 100%);
+  margin: 16px auto 0;
+  padding: 0 16px;
 }
 
 /* os cartões rolam se não couberem (o "e mais N" fica sempre à vista, fora da rolagem) */
 .ca-cartoes {
   display: grid;
   flex: 0 1 auto;
-  grid-template-columns: minmax(0, 1fr); /* coluna nunca maior que a pilha */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  align-items: start;
   gap: 12px;
   min-height: 0;
+  max-height: min(46vh, 440px); /* no fluxo: o conteúdo continua à vista logo abaixo */
   padding: 12px;
   margin: -12px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  pointer-events: none;
+}
+
+@media (min-width: 1440px) {
+  .ca-pilha {
+    position: fixed;
+    top: 88px; /* cabeçalho de 72 px (uma linha a partir de 1280 px) + 16 px */
+    right: 24px;
+    z-index: 30;
+    width: 380px;
+    max-height: calc(100vh - 104px);
+    margin: 0;
+    padding: 0;
+  }
+  /* com a faixa da varredura no cabeçalho, a coluna desce junto */
+  body:has(#faixa-varredura:not([style*="display: none"])) .ca-pilha {
+    top: 140px;
+    max-height: calc(100vh - 156px);
+  }
+  .ca-cartoes {
+    grid-template-columns: minmax(0, 1fr);
+    max-height: none;
+  }
+  /* coluna reservada: 380 px dos cartões + 24 px da borda + 16 px de vão */
+  body:has(.ca-pilha .ca) .casca {
+    width: min(1320px, calc(100% - 420px));
+    margin-left: max(0px, calc((100% - 420px - 1320px) / 2));
+  }
+  body:has(.ca-pilha .ca) .teia {
+    margin-right: 420px;
+  }
+}
+
+/* 1440 a 1739 px com a coluna de cartões: o conteúdo fica com ~1000 a 1300 px, a mesma conta do
+   tablet: filtros em duas linhas e a tabela sem as colunas "Desde" e "Checagem" (continuam na
+   ficha), sem largura fixa de coluna (nada vira reticências) */
+@media (min-width: 1440px) and (max-width: 1739px) {
+  body:has(.ca-pilha .ca) .ferramentas {
+    grid-template-columns: 1fr 1fr;
+  }
+  body:has(.ca-pilha .ca) .ferramentas .busca {
+    grid-column: 1 / -1;
+  }
+  body:has(.ca-pilha .ca) .ferramentas.al-ferramentas {
+    grid-template-columns: 1fr 1fr;
+  }
+  body:has(.ca-pilha .ca) .al-resumo {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+  body:has(.ca-pilha .ca) .tabela {
+    table-layout: auto;
+  }
+  body:has(.ca-pilha .ca) .tabela th,
+  body:has(.ca-pilha .ca) .tabela td {
+    width: auto;
+    padding: 12px 8px;
+  }
+  body:has(.ca-pilha .ca) .tabela td {
+    overflow: visible;
+    text-overflow: clip;
+  }
+  body:has(.ca-pilha .ca) .tabela th:first-child,
+  body:has(.ca-pilha .ca) .tabela td:first-child {
+    padding-left: 16px;
+  }
+  body:has(.ca-pilha .ca) .tabela th:last-child,
+  body:has(.ca-pilha .ca) .tabela td:last-child {
+    padding-right: 16px;
+  }
+  body:has(.ca-pilha .ca) .tabela th:nth-child(5),
+  body:has(.ca-pilha .ca) .tabela td:nth-child(5),
+  body:has(.ca-pilha .ca) .tabela th:nth-child(7),
+  body:has(.ca-pilha .ca) .tabela td:nth-child(7) {
+    display: none;
+  }
 }
 
 .ca {
+  --grad-borda: var(--grad-alerta);
+  --brilho-cartao: rgba(244, 63, 94, 0.55);
+  --cor-selo: var(--offline-fundo);
+  --cor-selo-texto: var(--offline-texto);
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
-  gap: 6px;
-  padding: 10px 16px;
-  border: 1px solid var(--borda);
-  border-left: 4px solid var(--cor-status, var(--offline));
-  border-radius: 16px;
-  background: var(--superficie);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  gap: 8px;
+  padding: 16px 20px;
+  border: 2px solid transparent;
+  border-radius: 24px;
+  background: linear-gradient(var(--ca-interno), var(--ca-interno)) padding-box, var(--grad-borda) border-box;
+  color: var(--ca-texto);
+}
+
+/* brilho suave atrás do cartão: é ele que flutua (o cartão e os botões ficam parados, para o
+   clique nunca mirar num alvo em movimento) */
+.ca::before {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  bottom: -2px;
+  left: -2px;
+  z-index: -1;
+  border-radius: inherit;
+  box-shadow: 0 0 44px -10px var(--brilho-cartao);
+  pointer-events: none;
 }
 
 .ca-queda {
@@ -546,15 +636,26 @@ html[data-aba="configuracoes"] {
 
 .ca-aviso {
   --cor-status: var(--instavel);
+  --grad-borda: linear-gradient(135deg, #f59e0b, #ec4899);
+  --brilho-cartao: rgba(245, 158, 11, 0.45);
+  --cor-selo: var(--instavel-fundo);
+  --cor-selo-texto: var(--instavel-texto);
 }
 
 .ca-ok {
   --cor-status: var(--online);
+  --grad-borda: linear-gradient(135deg, #14b8a6, #10b981);
+  --brilho-cartao: rgba(20, 184, 166, 0.45);
+  --cor-selo: var(--online-fundo);
+  --cor-selo-texto: var(--online-texto);
 }
 
 @media (prefers-reduced-motion: no-preference) {
   .ca {
     animation: ca-entrada 0.25s ease-out;
+  }
+  .ca::before {
+    animation: flutuar 6s ease-in-out infinite;
   }
 }
 
@@ -565,44 +666,67 @@ html[data-aba="configuracoes"] {
   }
 }
 
+@keyframes flutuar {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
 .ca-cabeca {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
-  margin: -8px -8px 0 0;
+  gap: 4px;
+  margin: -8px -12px 0 0;
 }
 
 .ca-titulo {
   display: grid;
-  gap: 4px;
+  justify-items: start;
+  gap: 8px;
   min-width: 0;
-  margin: 4px 0 0;
+  margin: 8px 0 0;
 }
 
 .ca-marca {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  color: var(--texto-suave);
-  font-size: 13px;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--cor-selo);
+  color: var(--cor-selo-texto);
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
+  line-height: 16px;
   text-transform: uppercase;
 }
 
 .ca-marca .icone-status {
-  color: var(--cor-status);
+  width: 14px;
+  height: 14px;
+  color: currentColor;
 }
 
 .ca-nome {
-  font-size: 17px;
-  line-height: 22px;
+  color: var(--ca-titulo);
+  font-family: var(--fonte-titulo);
+  font-size: 20px;
+  line-height: 26px;
   overflow-wrap: anywhere;
 }
 
 .ca-cabeca .botao-icone {
   flex: none;
+}
+
+.ca .botao-fantasma {
+  color: var(--ca-texto);
 }
 
 .ca-alternar svg {
@@ -615,7 +739,7 @@ html[data-aba="configuracoes"] {
 
 .ca-corpo-aberto {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .ca-sub {
@@ -628,7 +752,7 @@ html[data-aba="configuracoes"] {
 
 .ca-dados {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   margin: 0;
   font-size: 14px;
   line-height: 20px;
@@ -641,17 +765,22 @@ html[data-aba="configuracoes"] {
 }
 
 .ca-dados dt {
-  color: var(--texto-suave);
+  color: var(--ca-rotulo);
 }
 
 .ca-dados dd {
   margin: 0;
+  color: var(--ca-titulo);
   overflow-wrap: anywhere;
+}
+
+.ca-dados dd.mono {
+  font-size: 13px;
 }
 
 .ca-nota {
   margin: 0;
-  color: var(--texto-suave);
+  color: var(--ca-rotulo);
   font-size: 13px;
 }
 
@@ -660,9 +789,9 @@ html[data-aba="configuracoes"] {
   flex-wrap: wrap;
   justify-content: space-between;
   width: 100%;
-  min-height: 36px;
+  min-height: 44px;
   padding: 4px 12px;
-  border-color: var(--borda);
+  border-color: var(--borda-forte);
   text-align: left;
 }
 
@@ -707,31 +836,21 @@ html[data-aba="configuracoes"] {
 }
 
 .ca-acoes .botao {
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 8px;
+  border-radius: 14px;
+}
+
+.ca-acoes .botao:not(.botao-primario):not(.botao-fantasma) {
+  border-color: transparent;
+  background: var(--ca-botao);
+  color: var(--ca-titulo);
 }
 
 .ca-mais {
   flex: none;
   width: 100%;
-  box-shadow: var(--sombra);
-}
-
-/* o cabeçalho quebra em duas linhas (abas na 2ª) até ~1000 px: o cartão desce para não cobri-las */
-@media (max-width: 999px) {
-  .ca-pilha {
-    top: 112px;
-    max-height: calc(100vh - 120px);
-  }
-}
-
-@media (max-width: 560px) {
-  .ca-pilha {
-    top: auto;
-    bottom: 16px;
-    max-width: none;
-    max-height: calc(100vh - 32px);
-  }
+  box-shadow: var(--sombra-leve);
 }
 
 /* foco movido por programa (ao fechar um cartão): o alvo é só ponto de partida do teclado */
@@ -778,7 +897,7 @@ html[data-aba="configuracoes"] {
   gap: 8px 16px;
   padding: 12px 16px;
   border: 1px solid var(--borda);
-  border-radius: var(--raio-p);
+  border-radius: var(--raio-m);
   background: var(--superficie);
 }
 
@@ -866,11 +985,16 @@ html[data-aba="configuracoes"] {
 
 .ca-novo {
   --cor-status: var(--primaria);
+  --grad-borda: linear-gradient(135deg, #14b8a6, #8b5cf6);
+  --brilho-cartao: rgba(139, 92, 246, 0.5);
+  --cor-selo: var(--inalcancavel-fundo);
+  --cor-selo-texto: var(--inalcancavel-texto);
 }
 
-/* ---------- aviso de atualização abaixo do cabeçalho (24 h / 7 dias) ---------- */
+/* ---------- aviso de atualização abaixo do cabeçalho (24 h / 7 dias) ----------
+   A faixa (role="status") fica sempre no DOM, sem altura quando vazia; só o aviso aparece. */
 .aviso-atz-faixa {
-  padding-top: 12px;
+  padding-top: 0;
   padding-bottom: 0;
 }
 
@@ -878,11 +1002,13 @@ html[data-aba="configuracoes"] {
   display: flex;
   align-items: center;
   gap: 8px 12px;
-  padding: 8px 12px;
-  border: 1px solid var(--borda);
+  margin-top: 16px;
+  padding: 8px 8px 8px 16px;
+  border: 0;
   border-left: 4px solid var(--online);
-  border-radius: var(--raio-p);
-  background: var(--superficie);
+  border-radius: var(--raio-m);
+  background: var(--vidro-grad);
+  box-shadow: var(--linha-vidro), var(--sombra-leve);
   font-size: 14px;
 }
 
@@ -910,8 +1036,8 @@ html[data-aba="configuracoes"] {
 
 .aviso-atz .botao {
   flex: none;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 44px;
+  padding: 0 14px;
 }
 
 @media (max-width: 559px) {
