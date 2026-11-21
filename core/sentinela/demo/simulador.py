@@ -397,7 +397,7 @@ async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: 
 # rede fictícia do Diagnóstico: o gateway 10.99.0.1 e quem fica atrás dele
 GATEWAY_DEMO = "10.99.0.1"
 SUB_REDE_DIAGNOSTICO = "10.99.0.0/24"
-MAC_DIAGNOSTICO = "02:00:00:fd:01:"  # prefixo dos MACs; a marca da semeadura
+MAC_DIAGNOSTICO = "02:00:00:fd:d1:"  # marca da semeadura (fd:01 é da fonte simulada)
 # (nome, ip, classe, final do MAC)
 APARELHOS_DIAGNOSTICO: tuple[tuple[str, str, str, int], ...] = (
     ("Roteador da casa (demo)", GATEWAY_DEMO, "roteador", 1),
@@ -414,7 +414,7 @@ async def semear_diagnostico_demo(
     sessoes: async_sessionmaker[AsyncSession], agora: datetime
 ) -> bool:
     """30 dias fictícios de transições para o Diagnóstico (idempotente: a marca é o prefixo de
-    MAC ``02:00:00:fd:01:``, que sobrevive a quem apaga ou muda o IP de um aparelho).
+    MAC ``02:00:00:fd:d1:``, que sobrevive a quem apaga ou muda o IP de um aparelho).
 
     O roteador reinicia quase todo dia perto das 19 h (America/Sao_Paulo) e leva o gravador e as
     câmeras junto; há quedas isoladas, duas quedas simultâneas sem relação e uma câmera
