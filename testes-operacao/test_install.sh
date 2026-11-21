@@ -123,6 +123,38 @@ test_env_antigo_vira_locais_sem_alterar_as_chaves() {
   afirmar_log_nao_contem "compose pull"
 }
 
+test_env_novo_grava_a_rede_sugerida_do_instalar_sh() {
+  ambiente novo
+  com_cosign
+  SENTINELA_REDE_SUGERIDA=192.168.15.0/24 SENTINELA_GATEWAY_SUGERIDO=192.168.15.1 instalar --build ||
+    _falhou "$(cat "$TMP_OP/saida-install")"
+  grep -qx 'SENTINELA_REDE_SUGERIDA=192.168.15.0/24' "$TMP_OP/.env" || _falhou "rede sugerida não gravada"
+  grep -qx 'SENTINELA_GATEWAY_SUGERIDO=192.168.15.1' "$TMP_OP/.env" || _falhou "gateway sugerido não gravado"
+  # valor estranho (quebra de linha, texto) vira vazio: nada de injeção no .env
+  rm -f "$TMP_OP/.env"
+  SENTINELA_REDE_SUGERIDA=$'10.0.0.0/24
+X=1' SENTINELA_GATEWAY_SUGERIDO="abc" instalar --build ||
+    _falhou "$(cat "$TMP_OP/saida-install")"
+  grep -qx 'SENTINELA_REDE_SUGERIDA=' "$TMP_OP/.env" || _falhou "valor inválido deveria ficar vazio"
+  grep -qx 'SENTINELA_GATEWAY_SUGERIDO=' "$TMP_OP/.env" || _falhou "gateway inválido deveria ficar vazio"
+  if grep -q '^X=1' "$TMP_OP/.env"; then _falhou "injeção no .env"; fi
+}
+
+test_via_instalador_suprime_os_passos_da_cli() {
+  ambiente novo
+  com_cosign
+  SENTINELA_VIA_INSTALADOR=1 instalar --build || _falhou "$(cat "$TMP_OP/saida-install")"
+  grep -qF "Continue pelo navegador." "$TMP_OP/saida-install" || _falhou "deveria mandar continuar pelo navegador"
+  grep -qF "criar-admin" "$TMP_OP/saida-install" && _falhou "não deveria sugerir o criar-admin pela CLI"
+  grep -qF "Sub-redes" "$TMP_OP/saida-install" && _falhou "não deveria sugerir sub-redes pela CLI"
+  # sem a variável, o comportamento de sempre
+  rm -f "$TMP_OP/.env"
+  instalar --build || _falhou "$(cat "$TMP_OP/saida-install")"
+  grep -qF "1) Crie o primeiro administrador" "$TMP_OP/saida-install" || _falhou "o install.sh puro mantém os passos"
+  grep -qF "Continue pelo navegador" "$TMP_OP/saida-install" && _falhou "sem a variável não há essa frase"
+  return 0
+}
+
 test_versao_vem_do_pyproject() {
   ambiente novo
   com_cosign

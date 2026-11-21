@@ -391,7 +391,7 @@ async def test_mensagem_alerta_chega_enriquecida(
     assert set(msg["alerta"]) == {
         "id", "tipo", "texto", "equipamento_id", "equipamento_nome", "classe",
         "afetados_total", "aberto_em", "fechado_em", "breve", "reconhecido_por",
-        "reconhecido_em", "silenciado", "envio",
+        "reconhecido_em", "silenciado", "envio", "descoberta_id", "ip", "fabricante", "portas",
     }  # fmt: skip
 
 
@@ -612,6 +612,7 @@ async def test_lifespan_inicia_e_encerra_lacos_sem_tarefa_pendente(
             "sentinela-descarga",
             "sentinela-descoberta",
             "sentinela-canais",
+            "sentinela-varredura-continua",
             "sentinela-silencios",
             "sentinela-alertas",
             "sentinela-telegram",
@@ -699,7 +700,10 @@ async def test_saude_ok_com_monitor_rodando(app_com_monitor: FastAPI, settings: 
     async def corpo() -> None:
         await asyncio.sleep(0)
         r = await _saude(app_com_monitor)
-        assert (r.status_code, r.json()) == (200, {"status": "ok", "versao": __version__})
+        assert (r.status_code, r.json()) == (
+            200,
+            {"status": "ok", "versao": __version__, "primeiro_acesso": "expirado"},
+        )
 
     await _rodar_lifespan(app_com_monitor, settings, corpo)
 
@@ -747,7 +751,10 @@ async def test_saude_503_se_laco_terminou_sem_excecao(
 
 async def test_saude_ok_sem_monitor(cliente: httpx.AsyncClient) -> None:
     r = await cliente.get("/api/v1/saude")
-    assert (r.status_code, r.json()) == (200, {"status": "ok", "versao": __version__})
+    assert (r.status_code, r.json()) == (
+        200,
+        {"status": "ok", "versao": __version__, "primeiro_acesso": "expirado"},
+    )
 
 
 # ---- revisão final: monitor morto encerra o processo (só com a flag) ------------------------

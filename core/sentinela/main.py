@@ -19,6 +19,7 @@ from sentinela.alertas.silencios import Silencios
 from sentinela.alertas.telegram import ClienteTelegram
 from sentinela.api import (
     alertas,
+    atualizacao,
     auth,
     backup,
     classes,
@@ -27,11 +28,13 @@ from sentinela.api import (
     config_seguranca,
     config_telegram,
     descobertas,
+    diagnostico,
     equipamentos,
     fontes,
     importacao,
     parede,
     paredes,
+    primeiro_acesso,
     saude,
     silencios,
     subredes,
@@ -53,6 +56,7 @@ from sentinela.demo.simulador import (
     hierarquia_demo,
     semear_alertas_demo,
     semear_demo,
+    semear_diagnostico_demo,
     semear_fontes_demo,
     tem_equipamentos,
 )
@@ -66,6 +70,7 @@ from sentinela.descoberta.orquestrador import (
     fabricar_coletor,
 )
 from sentinela.descoberta.varredura import Ping, Varredura, ping_icmp
+from sentinela.descoberta.varredura_continua import VarreduraContinua, registrar_fim
 from sentinela.horario import zona
 from sentinela.monitor.gravador import GravadorAmostras
 from sentinela.monitor.limpeza import limpar_periodicamente
@@ -123,6 +128,7 @@ async def _montar_monitor(app: FastAPI, settings: Settings) -> None:
         await semear_demo(app.state.sessoes)
         await semear_fontes_demo(app.state.sessoes)
         await semear_alertas_demo(app.state.sessoes, agora_utc())
+        await semear_diagnostico_demo(app.state.sessoes, agora_utc())
         pai, filhos = hierarquia_demo(gerar_rede())
         simulada = ChecagemSimulada(  # uma por app, para todo tipo
             relogio=app.state.relogio,
@@ -217,6 +223,11 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
     app.state.cofre = cofre
     app.state.orquestrador = orquestrador
     app.state.leitor_canais = leitor
+    sessoes = app.state.sessoes
+
+    async def ao_terminar(sub_rede_id: int, estado: str) -> None:
+        await registrar_fim(sessoes, sub_rede_id, estado, agora_utc())
+
     app.state.varredura = Varredura(
         app.state.sessoes,
         monitor.guarda,
@@ -225,6 +236,13 @@ def _montar_descoberta(app: FastAPI, settings: Settings, monitor: Monitor) -> No
         app.state.relogio,
         ping=ping,
         entregar=orquestrador.processar_achados,
+        ao_terminar=ao_terminar,
+    )
+    # demonstração: nenhum pacote sai, então não há varredura contínua
+    app.state.varredura_continua = (
+        None
+        if settings.demo
+        else VarreduraContinua(app.state.sessoes, app.state.varredura, app.state.relogio, agora_utc)
     )
 
 
@@ -259,6 +277,12 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
         tarefas.append(
             asyncio.create_task(app.state.leitor_canais.executar(), name="sentinela-canais")
         )
+        if app.state.varredura_continua is not None:  # nunca no modo demonstração
+            tarefas.append(
+                asyncio.create_task(
+                    app.state.varredura_continua.executar(), name="sentinela-varredura-continua"
+                )
+            )
         tarefas.append(
             asyncio.create_task(app.state.silencios.executar(), name="sentinela-silencios")
         )
@@ -280,6 +304,10 @@ async def _lacos_do_monitor(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        for tarefa in tarefas:  # o laço agendado para antes: não inicia varredura nova
+            if tarefa.get_name() == "sentinela-varredura-continua":
+                tarefa.cancel()
+                await asyncio.gather(tarefa, return_exceptions=True)
         await app.state.varredura.encerrar()
         # coletas e tarefas de fundo (sondagem, verificação pós-aprovação) da API também
         await app.state.orquestrador.encerrar()
@@ -377,8 +405,14 @@ def criar_app(
     app.state.config_ws = ws.ConfigWs()
     app.state.falhas_ip = LimitadorIP(relogio)
     app.state.falhas_fantasma = BloqueioFantasma(relogio)
+    # código de instalação: 20 falhas por IP em 10 min + bloqueio progressivo global
+    app.state.falhas_codigo = LimitadorIP(relogio)
+    app.state.bloqueio_codigo = BloqueioFantasma(relogio)
     # testar/coletar/sondar/varredura: 10 por minuto por usuário (mesma janela do login)
     app.state.taxa_descoberta = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
+    # Diagnóstico: leitura só de banco, balde próprio (60/min o JSON; 10/min o CSV do laudo)
+    app.state.taxa_diagnostico = LimitadorIP(relogio, max_falhas=60, janela_s=60.0)
+    app.state.taxa_laudo = LimitadorIP(relogio, max_falhas=10, janela_s=60.0)
     # telão: no máximo 10 pedidos de emparelhamento por IP por hora (rota sem sessão)
     app.state.pedidos_ip = LimitadorIP(relogio, max_falhas=10, janela_s=3600)
     app.state.etapas_totp = RegistroEtapas()
@@ -388,6 +422,7 @@ def criar_app(
     app.state.impressoes_mostradas = {}  # fonte_id -> impressão TLS mostrada no último teste
     app.include_router(saude.router)
     app.include_router(auth.router)
+    app.include_router(primeiro_acesso.router)
     app.include_router(totp.router)
     app.include_router(usuarios.router)
     app.include_router(config_seguranca.router)
@@ -401,6 +436,8 @@ def criar_app(
     app.include_router(varredura.router)
     app.include_router(silencios.router)
     app.include_router(alertas.router)
+    app.include_router(diagnostico.router)
+    app.include_router(atualizacao.router)
     app.include_router(config_descoberta.router)
     app.include_router(config_geral.router)
     app.include_router(config_telegram.router)

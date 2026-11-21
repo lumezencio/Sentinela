@@ -9,16 +9,28 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte, Parede, SubRede
+from sentinela.db.modelos import (
+    Alerta,
+    Classe,
+    Descoberta,
+    Equipamento,
+    Evento,
+    Fonte,
+    Parede,
+    SubRede,
+)
 from sentinela.descoberta.fontes.simulada import PORTA_MIKROTIK, PORTA_SNMP
+from sentinela.descoberta.mescla import reclassificar
 from sentinela.monitor.estados import ResultadoChecagem
 from sentinela.rede.guarda import DestinoAutorizado
 from sentinela.relogio import Relogio, RelogioReal
 
+CHAVE_NOVO_DEMO = "02:00:00:fd:0f:01"  # descoberta pendente do aparelho novo da demo
 SUB_REDES_DEMO: tuple[str, ...] = tuple(f"10.99.{n}.0/24" for n in (10, 20, 30, 40, 50, 60))
 
 _LOCAIS_CAMERA = (
@@ -293,7 +305,8 @@ async def semear_fontes_demo(sessoes: async_sessionmaker[AsyncSession]) -> bool:
 
 
 async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: datetime) -> bool:
-    """Hierarquia (pai e 14 filhos), dois alertas históricos e um telão pareado (idempotente:
+    """Hierarquia (pai e 14 filhos), dois alertas históricos, um aparelho novo aberto (com a
+    sua descoberta pendente) e um telão pareado (idempotente:
     a marca é o telão demo, então vale também num volume que já tem alertas). Nenhum
     socket, nenhuma mensagem: ``envio='nao_aplica'``."""
     async with sessoes() as db:
@@ -340,6 +353,34 @@ async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: 
                 envio="nao_aplica",
             )
         )
+        novo = agora - timedelta(minutes=10)
+        # idempotente também se a descoberta já existe (telão apagado, descoberta ficou)
+        descoberta = await db.scalar(select(Descoberta).where(Descoberta.chave == CHAVE_NOVO_DEMO))
+        if descoberta is None:
+            descoberta = Descoberta(
+                chave=CHAVE_NOVO_DEMO,
+                ip="10.99.60.199",
+                mac="02:00:00:fd:0f:01",
+                fabricante="Fabricante Demo",
+                sinais={"portas": [80, 554]},
+                origens=[{"fonte_id": "varredura", "origem": "varredura"}],
+                primeira_vez=novo,
+                ultima_vez=novo,
+            )
+            reclassificar(descoberta)  # classe sugerida e "por que", como as demais da fila
+            db.add(descoberta)
+            await db.flush()
+        db.add(
+            Alerta(
+                tipo="aparelho_novo",
+                descoberta_id=descoberta.id,
+                quedas=[],
+                afetados=[],
+                voltaram=[],
+                aberto_em=novo,
+                envio="nao_aplica",
+            )
+        )
         db.add(
             Parede(
                 nome=NOME_TELAO_DEMO,
@@ -349,6 +390,121 @@ async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: 
                 ultimo_acesso=agora - timedelta(minutes=3),
             )
         )
+        await db.commit()
+    return True
+
+
+# rede fictícia do Diagnóstico: o gateway 10.99.0.1 e quem fica atrás dele
+GATEWAY_DEMO = "10.99.0.1"
+SUB_REDE_DIAGNOSTICO = "10.99.0.0/24"
+MAC_DIAGNOSTICO_ANTIGO = "02:00:00:fd:01:"  # prefixo das semeaduras anteriores a c8fc82b
+MAC_DIAGNOSTICO = "02:00:00:fd:d1:"  # marca da semeadura (fd:01 é da fonte simulada)
+# (nome, ip, classe, final do MAC)
+APARELHOS_DIAGNOSTICO: tuple[tuple[str, str, str, int], ...] = (
+    ("Roteador da casa (demo)", GATEWAY_DEMO, "roteador", 1),
+    ("Gravador da casa (demo)", "10.99.0.10", "gravador", 10),
+    ("Câmera da entrada (demo)", "10.99.0.21", "camera", 21),
+    ("Câmera da garagem (demo)", "10.99.0.22", "camera", 22),
+    ("Câmera do quintal (demo)", "10.99.0.23", "camera", 23),
+    ("Computador da sala (demo)", "10.99.0.30", "computador", 30),
+    ("Impressora (demo)", "10.99.0.40", "impressora", 40),
+)
+
+
+async def semear_diagnostico_demo(
+    sessoes: async_sessionmaker[AsyncSession], agora: datetime
+) -> bool:
+    """30 dias fictícios de transições para o Diagnóstico (idempotente: a marca é o prefixo de
+    MAC ``02:00:00:fd:d1:``, que sobrevive a quem apaga ou muda o IP de um aparelho).
+
+    O roteador reinicia quase todo dia perto das 19 h (America/Sao_Paulo) e leva o gravador e as
+    câmeras junto; há quedas isoladas, duas quedas simultâneas sem relação e uma câmera
+    instável. Sem leitura de uptime: o laudo diz "provável". Nenhum socket."""
+    fuso = ZoneInfo("America/Sao_Paulo")
+    rng = random.Random(1919)  # noqa: S311 - dados sintéticos, sem uso criptográfico  # nosec B311
+    async with sessoes() as db:
+        # o marcador antigo (fd:01, com o nome "(demo)") também vale: um volume semeado antes da
+        # troca do prefixo não pode semear de novo (o IP é único)
+        if await db.scalar(
+            select(Equipamento.id)
+            .where(
+                or_(
+                    Equipamento.mac.like(MAC_DIAGNOSTICO + "%"),
+                    and_(
+                        Equipamento.mac.like(MAC_DIAGNOSTICO_ANTIGO + "%"),
+                        Equipamento.nome.like("%(demo)"),
+                    ),
+                )
+            )
+            .limit(1)
+        ):
+            return False
+        if not await db.scalar(select(SubRede.id).where(SubRede.cidr == SUB_REDE_DIAGNOSTICO)):
+            db.add(SubRede(cidr=SUB_REDE_DIAGNOSTICO, gateway_ip=GATEWAY_DEMO))
+        classes = {slug: id_ for slug, id_ in await db.execute(select(Classe.slug, Classe.id))}
+        ids: dict[str, str] = {}
+        for nome, ip, classe, fim_mac in APARELHOS_DIAGNOSTICO:
+            e = Equipamento(
+                nome=nome,
+                ip=ip,
+                mac=f"{MAC_DIAGNOSTICO}{fim_mac:02x}",
+                classe_id=classes[classe],
+                classe_origem="manual",
+                # o gravador responde pela porta RTSP, como os da demonstração
+                checagem="tcp" if classe == "gravador" else "icmp",
+                porta=554 if classe == "gravador" else None,
+                estado="desconhecido",
+                estado_desde=agora,
+                criado_em=agora - timedelta(days=31),
+            )
+            db.add(e)
+            await db.flush()
+            ids[ip] = e.id
+
+        def queda(ip: str, inicio: datetime, duracao_s: float) -> None:
+            db.add(Evento(equipamento_id=ids[ip], de="online", para="offline", em=inicio))
+            db.add(
+                Evento(
+                    equipamento_id=ids[ip],
+                    de="offline",
+                    para="online",
+                    em=inicio + timedelta(seconds=duracao_s),
+                    duracao_s=duracao_s,
+                )
+            )
+
+        atras = [ip for _n, ip, _c, _m in APARELHOS_DIAGNOSTICO if ip != GATEWAY_DEMO]
+        hoje = agora.astimezone(fuso).date()
+        for dia in range(30):
+            if dia % 7 == 3:
+                continue  # alguns dias sem reinício
+            d = hoje - timedelta(days=dia)
+            inicio = datetime(
+                d.year, d.month, d.day, 19, rng.randint(0, 25), rng.randint(0, 59), tzinfo=fuso
+            )
+            inicio = inicio.astimezone(agora.tzinfo)
+            duracao = rng.uniform(55, 110)
+            if inicio + timedelta(seconds=duracao + 60) >= agora:
+                continue
+            queda(GATEWAY_DEMO, inicio, duracao)
+            for ip in atras:
+                queda(
+                    ip, inicio + timedelta(seconds=rng.uniform(1, 8)), duracao + rng.uniform(5, 40)
+                )
+        # quedas isoladas e duas simultâneas sem relação, espalhadas pelo mês
+        for dias, ip, minutos in (
+            (2, "10.99.0.40", 45),
+            (9, "10.99.0.21", 12),
+            (16, "10.99.0.30", 30),
+        ):
+            queda(ip, agora - timedelta(days=dias, hours=5), minutos * 60)
+        base = agora - timedelta(days=5, hours=9)
+        queda("10.99.0.22", base, 20 * 60)
+        queda("10.99.0.40", base + timedelta(seconds=12), 25 * 60)
+        # câmera instável: cinco quedas em 40 min, há algumas horas
+        inicio = agora - timedelta(hours=6)
+        for k in range(5):
+            queda("10.99.0.23", inicio + timedelta(minutes=10 * k), 90)
         await db.commit()
     return True
 

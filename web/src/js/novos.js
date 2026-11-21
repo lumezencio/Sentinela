@@ -206,6 +206,10 @@ export function novosDoPainel(store) {
   let carregadoUmaVez = false;
   let desatualizado = false;
   let pedido = 0; // descarta respostas antigas (troca de filtro no meio)
+  let destaque = ""; // descoberta em destaque depois de "Ver em Novos"
+  let focoPendente = ""; // descoberta a focar assim que a fila carregar
+  let focoRecarregou = false; // a fila só é recarregada uma vez à procura dela
+  let relogioDestaque = 0;
 
   const nomesDasClasses = () => {
     const nomes = {};
@@ -386,7 +390,10 @@ export function novosDoPainel(store) {
           editavel,
           sondavel: c.canal === null,
           estiloPct: { "--pct": `${c.pct}%` },
-          classeCartao: [filho ? "nv-filho" : "", c.fora ? "nv-fora" : "", ocupado ? "nv-ocupado" : ""]
+          classeCartao: [
+            filho ? "nv-filho" : "", c.fora ? "nv-fora" : "", ocupado ? "nv-ocupado" : "",
+            destaque === c.id ? "nv-destaque" : "",
+          ]
             .filter(Boolean).join(" "),
           idTitulo: `nv-titulo-${c.id}`,
           idClasse: `nv-classe-${c.id}`,
@@ -432,6 +439,62 @@ export function novosDoPainel(store) {
       this.novosCarregados = lista.length;
       this.novosAprovaveis = lista.filter((d) => !ehForaAprovavel(d)).length;
       this.novosSelecionados = selecao.size;
+      if (focoPendente && !this.novosCarregando) this.$nextTick(() => this.tentarFocoNovos());
+    },
+
+    // ---------- "Ver em Novos" (aviso de aparelho novo) ----------
+    /**
+     * Rola até o cartão da descoberta, o destaca e leva o foco a ele. Devolve falso (sem erro)
+     * se ela não está na fila carregada (já aprovada, ignorada ou ainda não chegou).
+     */
+    focarDescoberta(id) {
+      if (typeof id !== "string" || !id || !lista.some((d) => d.id === id)) return false;
+      destaque = id;
+      window.clearTimeout(relogioDestaque);
+      relogioDestaque = window.setTimeout(() => {
+        destaque = "";
+        this.renderizarNovos();
+      }, 6000);
+      this.renderizarNovos();
+      this.$nextTick(() => {
+        const alvo = [...document.querySelectorAll("#conteudo-novos .nv-cartao")].find((c) => c.dataset.id === id);
+        if (!alvo) return;
+        alvo.scrollIntoView({ block: "center", behavior: "auto" });
+        alvo.focus();
+      });
+      return true;
+    },
+
+    /** Botão "Ver em Novos": abre a aba, na fila de pendentes, e foca a descoberta. */
+    verDescobertaEmNovos(id) {
+      if (typeof id !== "string" || !id) return;
+      focoPendente = id;
+      focoRecarregou = false;
+      this.novosAviso = "";
+      if (this.novosStatus !== "pendente") {
+        this.novosStatus = "pendente";
+        lista = [];
+        carregadoUmaVez = false;
+      }
+      this.irPara("novos"); // carrega a fila se for preciso e redesenha; o foco sai daí
+      if (carregadoUmaVez && !desatualizado && this.aba === "novos") this.renderizarNovos();
+    },
+
+    /** Depois de a fila desenhar: foca o pedido; se ela não tem a descoberta, recarrega uma vez. */
+    tentarFocoNovos() {
+      const id = focoPendente;
+      if (!id) return;
+      if (this.focarDescoberta(id)) {
+        focoPendente = "";
+        return;
+      }
+      if (!focoRecarregou) {
+        focoRecarregou = true;
+        this.carregarNovos(true);
+        return;
+      }
+      focoPendente = "";
+      this.novosAviso = "Esse aparelho já saiu da fila de novos.";
     },
 
     alternarGrupoNovos(chave) {

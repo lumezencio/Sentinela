@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 import pytest
 
 _EQUIPAMENTO_DO_ALERTA = itertools.count()
+_APARELHOS_NOVOS = itertools.count(900)
 RAIZ = Path(__file__).resolve().parents[2]
 WEB_SRC = RAIZ / "web" / "src"
 # mesma política que o proxy de produção vai enviar: violação vira erro no console
@@ -456,10 +457,19 @@ class ServidorLocal:
     """uvicorn numa thread; ``derrubar``/``levantar`` simulam reiniciar o processo do core."""
 
     def __init__(
-        self, banco_url: str, porta: int, chave: Path, cert: Path, demo: bool = True
+        self,
+        banco_url: str,
+        porta: int,
+        chave: Path,
+        cert: Path,
+        demo: bool = True,
+        rede_sugerida: str = "",
+        gateway_sugerido: str = "",
     ) -> None:
         self._banco_url = banco_url
         self._demo = demo
+        self._rede_sugerida = rede_sugerida
+        self._gateway_sugerido = gateway_sugerido
         self.porta = porta
         self._chave = chave
         self._cert = cert
@@ -502,6 +512,29 @@ class ServidorLocal:
                 return r
 
         principal.ChecagemSimulada = ChecagemDoSmoke  # type: ignore[misc]
+        if not self._demo:
+            # sem demonstração o ping da varredura e a checagem do monitor seriam o ICMP real:
+            # as duas viram simuladas aqui, então o smoke não envia nenhum pacote à rede
+            async def ping_sem_rede(_destino: Any) -> bool:
+                return False
+
+            class ChecagemSemRede:
+                custo = 1
+
+                async def executar(self, destino: Any, timeout: float = 2.0) -> Any:  # noqa: ASYNC109
+                    return ResultadoChecagem(ok=False, latencia_ms=None, erro="sem rede no smoke")
+
+            original = principal.montar_monitor
+
+            async def montar_sem_rede(
+                sessoes: Any, config: Any, checagens: Any = None, relogio: Any = None
+            ) -> Any:
+                return await original(
+                    sessoes, config, checagens or (lambda _tipo: ChecagemSemRede()), relogio
+                )
+
+            principal.ping_icmp = ping_sem_rede  # type: ignore[assignment]
+            principal.montar_monitor = montar_sem_rede  # type: ignore[assignment]
 
         settings = Settings(
             ambiente="desenvolvimento",
@@ -509,6 +542,8 @@ class ServidorLocal:
             chave_sessao="chave-do-smoke-nao-secreta",  # noqa: S106 - só teste
             chave_credenciais=secrets.token_hex(32),
             demo=self._demo,
+            rede_sugerida=self._rede_sugerida,
+            gateway_sugerido=self._gateway_sugerido,
         )
         app = criar_app(settings)
 
@@ -644,6 +679,69 @@ def alvo_fila_grande(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Alvo]
         servidor.derrubar()
 
 
+REDE_DO_ASSISTENTE = "10.99.60.0/26"  # fictícia (repositório público)
+GATEWAY_DO_ASSISTENTE = "10.99.60.1"
+CODIGO_FICTICIO = "ABCD-2345"  # fictício; o arquivo guarda só o argon2id
+
+
+@dataclass
+class Instalacao:
+    """Core sem NENHUM usuário (instalação nova), com um código de instalação fictício."""
+
+    url: str
+    pasta: Path
+    codigo: str
+    servidor: ServidorLocal
+
+    def regravar_codigo(self, horas_atras: float = 0.0, codigo: str = CODIGO_FICTICIO) -> None:
+        """Grava de novo o código; ``horas_atras`` > 24 o deixa expirado."""
+        from sentinela.seguranca import instalacao
+
+        quando = dt.datetime.now(dt.UTC) - dt.timedelta(hours=horas_atras)
+        _em_thread(lambda: asyncio.run(instalacao.gravar(self.pasta, codigo, quando)))
+
+
+@pytest.fixture
+def instalacao_nova(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Instalacao]:
+    """Um core por teste, sem demonstração e sem usuário, com a rede sugerida e um código
+    fictício válido (o concluir do assistente apaga o código e cria o primeiro usuário)."""
+    if os.environ.get("SENTINELA_URL_SMOKE"):
+        pytest.skip("o assistente de primeiro acesso só roda com o core local do smoke")
+    pasta = tmp_path_factory.mktemp("instalacao")
+    banco_url = f"sqlite+aiosqlite:///{(pasta / 'novo.db').as_posix()}"
+
+    async def preparar() -> None:
+        import sentinela.db.modelos  # noqa: F401 - registra as tabelas no Base
+        from sentinela.db.base import Base
+        from sentinela.db.sessao import criar_motor
+
+        motor = criar_motor(banco_url)
+        try:
+            async with motor.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+        finally:
+            await motor.dispose()
+
+    _em_thread(lambda: asyncio.run(preparar()))
+    chave, cert = _certificado(pasta)
+    servidor = ServidorLocal(
+        banco_url,
+        _porta_livre(),
+        chave,
+        cert,
+        demo=False,
+        rede_sugerida=REDE_DO_ASSISTENTE,
+        gateway_sugerido=GATEWAY_DO_ASSISTENTE,
+    )
+    inst = Instalacao(f"https://127.0.0.1:{servidor.porta}", pasta, CODIGO_FICTICIO, servidor)
+    inst.regravar_codigo()
+    servidor.levantar()
+    try:
+        yield inst
+    finally:
+        servidor.derrubar()
+
+
 @pytest.fixture(scope="session")
 def alertas_semeados(alvo: Alvo) -> dict[str, dict[str, Any]]:
     """Alertas fictícios no banco do core local (o demo ainda não os semeia). Contra o
@@ -673,6 +771,91 @@ def novo_alerta(alvo: Alvo, alertas_semeados: dict[str, dict[str, Any]]) -> Iter
     yield criar
     if criados:
         _em_thread(lambda: asyncio.run(apagar_alertas(alvo.banco_url, criados, renomeados)))
+
+
+async def inserir_aparelho_novo(banco_url: str, indice: int, **campos: Any) -> dict[str, Any]:
+    """Uma descoberta pendente (10.99.x, MAC 02:00:00:...) e o alerta ``aparelho_novo`` aberto
+    sobre ela, como o agrupador os deixa. ``campos`` sobrescreve colunas da descoberta."""
+    from sentinela.db.modelos import Alerta, Descoberta
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            agora = dt.datetime.now(dt.UTC)
+            padrao: dict[str, Any] = {
+                "chave": f"02:00:00:fe:{indice // 256:02x}:{indice % 256:02x}",
+                "ip": f"10.99.70.{indice % 200 + 1}",
+                "mac": f"02:00:00:fe:{indice // 256:02x}:{indice % 256:02x}",
+                "fabricante": "Fabricante Fictício",
+                "nome_sugerido": f"aparelho-novo-{indice}",
+                "classe_sugerida": "iot",
+                "confianca": 0.6,
+                "sinais": {"portas": [80, 443]},
+                "origens": [{"fonte_id": "varredura", "origem": "varredura"}],
+                "status": "pendente",
+                "primeira_vez": agora,
+                "ultima_vez": agora,
+            }
+            d = Descoberta(**{**padrao, **campos})
+            db.add(d)
+            await db.flush()
+            a = Alerta(
+                tipo="aparelho_novo",
+                descoberta_id=d.id,
+                quedas=[],
+                afetados=[],
+                voltaram=[],
+                aberto_em=agora,
+                envio="nao_aplica",
+            )
+            db.add(a)
+            await db.flush()
+            saida = {"alerta_id": a.id, "descoberta_id": d.id, "ip": d.ip, "nome": d.nome_sugerido}
+            await db.commit()
+            return saida
+    finally:
+        await motor.dispose()
+
+
+async def apagar_aparelhos_novos(banco_url: str, ids: list[int], descobertas: list[str]) -> None:
+    from sqlalchemy import delete
+
+    from sentinela.db.modelos import Alerta, Descoberta
+    from sentinela.db.sessao import criar_motor, fabrica_sessao
+
+    motor = criar_motor(banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            await db.execute(delete(Alerta).where(Alerta.id.in_(ids)))
+            await db.execute(delete(Descoberta).where(Descoberta.id.in_(descobertas)))
+            await db.commit()
+    finally:
+        await motor.dispose()
+
+
+@pytest.fixture
+def novo_aparelho(alvo: Alvo) -> Iterator[Any]:
+    """Fábrica de aparelhos novos descartáveis (descoberta pendente + alerta aberto). Só no core
+    local do smoke; contra o compose o teste é pulado."""
+    if not alvo.banco_url:
+        pytest.skip("aparelho novo semeado só com o core local do smoke")
+    alertas: list[int] = []
+    descobertas: list[str] = []
+
+    def criar(**campos: Any) -> dict[str, Any]:
+        saida: dict[str, Any] = {}
+        n = next(_APARELHOS_NOVOS)
+        url = alvo.banco_url
+        _em_thread(lambda: saida.update(asyncio.run(inserir_aparelho_novo(url, n, **campos))))
+        alertas.append(saida["alerta_id"])
+        descobertas.append(saida["descoberta_id"])
+        return saida
+
+    yield criar
+    if alertas:
+        url = alvo.banco_url
+        _em_thread(lambda: asyncio.run(apagar_aparelhos_novos(url, alertas, descobertas)))
 
 
 async def _estados(banco_url: str, ips: list[str]) -> dict[str, str]:

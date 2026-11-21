@@ -199,6 +199,24 @@ def main() -> int:
     api.pedir("PATCH", f"/subredes/{varrivel['id']}", 200, json={"permite_varredura": True})
     passo(f"sub-redes {SUB_FONTES} e {SUB_VARREDURA} (varredura ligada)")
 
+    # varredura AGENDADA (Fase 5): sem POST /varredura; o laço contínuo começa 60 s depois do
+    # núcleo e varre a sub-rede nunca varrida. A captura tem de cobrir esse ARP também.
+    agendada: dict[str, Any] = {}
+
+    def agendada_terminou() -> bool:
+        for sub in api.pedir("GET", "/subredes", 200):
+            if sub["id"] == varrivel["id"] and sub["ultima_varredura_em"]:
+                agendada.update(
+                    cidr=sub["cidr"],
+                    ultima_varredura_em=sub["ultima_varredura_em"],
+                    linha_base_em=sub["linha_base_em"],
+                )
+                return True
+        return False
+
+    esperar("varredura agendada", agendada_terminou, 300)
+    passo(f"varredura agendada de {SUB_VARREDURA} concluída (sem POST /varredura)")
+
     usuario_ros, (senha_ros, _) = next(iter(SimuladorRouterOS().usuarios.items()))
     fontes = {
         "mikrotik": api.pedir(
@@ -330,6 +348,7 @@ def main() -> int:
         "telegram": telegram,
         "telao": telao,
         "varredura": {"cidr": SUB_VARREDURA, "ultimo_progresso_visto": progresso},
+        "varredura_agendada": agendada,
         "estados": {e["ip"]: e["estado"] for e in equipamentos},
     }
     (SAIDA / "cena.json").write_text(json.dumps(resumo, indent=2, default=str), encoding="utf-8")

@@ -57,20 +57,26 @@ Dois ajustes de ambiente, ambos sobre quadros que **não** são do Sentinela:
 
 1. login do admin (senha aleatória desta execução, nunca impressa);
 2. declara `10.99.250.0/27` (fontes, sem varredura) e `10.99.250.32/28` (varredura ligada);
-3. cria as fontes MikroTik (api-ssl), SNMP v2c e Hikvision; **testa** as três e **confia** na
+3. espera a varredura **agendada** (Fase 5) de `10.99.250.32/28`: sem `POST /varredura`, o laço
+   contínuo do núcleo começa 60 s depois da subida e varre a sub-rede nunca varrida; a cena
+   consulta `GET /subredes` até `ultima_varredura_em` ficar preenchida (teto de 300 s) e grava
+   `varredura_agendada` em `cena.json`. O porquê: a varredura agendada é uma segunda origem de
+   ARP na rede dos clientes; a prova de captura precisa cobri-la, não só a manual (a faixa
+   permitida é a mesma, então `arp_permitido.txt` não muda);
+4. cria as fontes MikroTik (api-ssl), SNMP v2c e Hikvision; **testa** as três e **confia** na
    impressão TLS do MikroTik; **coleta** as três;
-4. espera as descobertas (ARP, DHCP, vizinho, SNMP, gravador e seus canais);
-5. **aprova** 2: `10.99.250.20` (computador) e a câmera do canal 1 (o gravador vai junto);
-6. **sonda** `10.99.250.21`;
-7. **varre** `10.99.250.32/28` e espera o fim;
-8. deixa o monitoramento dos aprovados rodar 40 s;
-9. configura o Telegram (token `123456:AAAA…` e chat `-1001`, fictícios), declara `10.99.250.48/29` (sem varredura; o núcleo só
+5. espera as descobertas (ARP, DHCP, vizinho, SNMP, gravador e seus canais);
+6. **aprova** 2: `10.99.250.20` (computador) e a câmera do canal 1 (o gravador vai junto);
+7. **sonda** `10.99.250.21`;
+8. **varre** (manual) `10.99.250.32/28` e espera o fim;
+9. deixa o monitoramento dos aprovados rodar 40 s;
+10. configura o Telegram (token `123456:AAAA…` e chat `-1001`, fictícios), declara `10.99.250.48/29` (sem varredura; o núcleo só
    aceita equipamento em sub-rede declarada), cadastra
    `10.99.250.50` (ICMP, ninguém responde) e espera a mensagem `🔴 … caiu` chegar ao Telegram
    falso (até 150 s; o núcleo espera 60 s antes de enviar uma queda);
-10. emparelha um telão (pedido, aprovação do admin, consulta) e lê o snapshot do `/ws/parede`
+11. emparelha um telão (pedido, aprovação do admin, consulta) e lê o snapshot do `/ws/parede`
     (o telão sem HTTPS é ligado pela chave, pois a cena fala HTTP direto com o núcleo);
-11. grava `saida/arp_permitido.txt`, `saida/contato_exigido.txt`, `saida/unicast_permitido.txt`
+12. grava `saida/arp_permitido.txt`, `saida/contato_exigido.txt`, `saida/unicast_permitido.txt`
     e `saida/cena.json`.
 
 ## O analisador
@@ -157,3 +163,7 @@ APROVADO: nenhum broadcast/multicast além do ARP permitido
 
 O `.50` não recebe unicast IP (ninguém responde ao ARP, então o ICMP nunca sai da máquina).
 
+
+Nota (Fase 5): com a varredura agendada na cena, a faixa `.33-.46` recebe duas varreduras
+(agendada e manual), ou seja, cerca de 12 ARP request por IP em vez de 6; o valor de referência
+acima é o da Fase 3 e é atualizado na próxima rodada completa da captura (job `captura` do CI).

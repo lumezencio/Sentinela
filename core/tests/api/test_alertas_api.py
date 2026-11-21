@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.barramento import Barramento
-from sentinela.db.modelos import Alerta, Auditoria, Classe, Equipamento
+from sentinela.db.modelos import Alerta, Auditoria, Classe, Descoberta, Equipamento
 
 URL = "/api/v1/alertas"
 T0 = datetime(2026, 11, 18, 17, 0, tzinfo=UTC)
@@ -209,7 +209,7 @@ async def test_reconhecer_e_idempotente(app: FastAPI, cliente_admin: httpx.Async
 CAMPOS_SAIDA = {
     "id", "tipo", "texto", "equipamento_id", "equipamento_nome", "classe", "afetados_total",
     "aberto_em", "fechado_em", "breve", "reconhecido_por", "reconhecido_em", "silenciado",
-    "envio",
+    "envio", "descoberta_id", "ip", "fabricante", "portas",
 }  # fmt: skip
 
 
@@ -226,7 +226,13 @@ async def test_campos_exatos_e_nome_hostil_como_texto(
     eq = await _equip(app, hostil, 1)
     a = await _alerta(app, equipamento_id=eq, quedas=[eq])
     item = (await cliente_visualizador.get(URL)).json()["itens"][0]
-    assert set(item) == CAMPOS_SAIDA  # sem ip, mac nem fabricante
+    assert set(item) == CAMPOS_SAIDA  # ip, fabricante e portas só vêm em aparelho_novo
+    assert (item["ip"], item["fabricante"], item["descoberta_id"], item["portas"]) == (
+        None,
+        None,
+        None,
+        [],
+    )
     assert item["texto"] == f"{hostil} caiu" and item["equipamento_nome"] == hostil
     det = (await cliente_visualizador.get(f"{URL}/{a}")).json()
     assert set(det) == CAMPOS_SAIDA | {"afetados"}
@@ -244,3 +250,62 @@ async def test_total_do_filtro_de_classe(
     r = await cliente_visualizador.get(URL, params={"classe": "camera"})
     assert r.json()["total"] == 2
     assert (await cliente_visualizador.get(URL)).json()["total"] == 4
+
+
+async def _aparelho_novo(app: FastAPI) -> tuple[int, str]:
+    async with _sessoes(app)() as db:
+        d = Descoberta(
+            chave="ip:10.99.5.20",
+            ip="10.99.5.20",
+            mac="02:00:00:00:05:20",
+            fabricante="Intelbras",
+            nome_sugerido="<b>cam-hostil</b>",
+            sinais={"portas": [554, 80]},
+            primeira_vez=T0,
+            ultima_vez=T0,
+        )
+        db.add(d)
+        await db.flush()
+        a = Alerta(tipo="aparelho_novo", descoberta_id=d.id, aberto_em=T0, envio="pendente")
+        db.add(a)
+        await db.commit()
+        return a.id, d.id
+
+
+async def test_alerta_aparelho_novo_traz_ip_fabricante_portas_e_descoberta(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient
+) -> None:
+    id, d = await _aparelho_novo(app)
+    sw = await _equip(app, "Switch", 1, "roteador")
+    queda = await _alerta(app, equipamento_id=sw, quedas=[sw])
+    r = await cliente_visualizador.get(URL)
+    assert r.status_code == 200
+    por_id = {i["id"]: i for i in r.json()["itens"]}
+    novo = por_id[id]
+    assert novo["tipo"] == "aparelho_novo"
+    assert novo["texto"] == "Novo aparelho conectou na rede: 10.99.5.20 (Intelbras)"
+    assert (novo["descoberta_id"], novo["ip"], novo["fabricante"]) == (d, "10.99.5.20", "Intelbras")
+    assert novo["portas"] == [80, 554]
+    assert novo["equipamento_id"] is None and novo["equipamento_nome"] is None
+    assert "cam-hostil" not in r.text and "02:00:00:00:05:20" not in r.text
+    # os demais tipos não ganham IP nem descoberta
+    outro = por_id[queda]
+    assert (outro["descoberta_id"], outro["ip"], outro["fabricante"], outro["portas"]) == (
+        None,
+        None,
+        None,
+        [],
+    )
+    detalhe = await cliente_visualizador.get(f"{URL}/{id}")
+    assert detalhe.status_code == 200 and detalhe.json()["descoberta_id"] == d
+    assert detalhe.json()["afetados"] == []
+
+
+async def test_filtro_de_classe_exclui_aparelho_novo(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient
+) -> None:
+    await _aparelho_novo(app)
+    cam = await _equip(app, "Cam", 2)
+    a = await _alerta(app, equipamento_id=cam, quedas=[cam])
+    r = await cliente_visualizador.get(URL, params={"classe": "camera"})
+    assert [i["id"] for i in r.json()["itens"]] == [a]

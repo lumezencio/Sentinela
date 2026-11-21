@@ -126,9 +126,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: shellcheck
         run: |
-          shellcheck -x backup.sh restore.sh update.sh scripts/operacao-comum.sh \
+          shellcheck -x backup.sh restore.sh update.sh instalar.sh scripts/operacao-comum.sh \
             testes-operacao/lib.sh testes-operacao/rodar.sh testes-operacao/test_*.sh \
             testes-operacao/shims/docker testes-operacao/shims/git testes-operacao/shims/curl \
+            testes-operacao/shims/uname testes-operacao/shims/ip testes-operacao/shims/systemctl testes-operacao/shims/sudo testes-operacao/shims/id\
             testes-operacao/shims-cosign/cosign
       - name: testes com docker falso
         run: |

@@ -44,7 +44,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.barramento import Barramento, Mensagem
-from sentinela.db.modelos import Auditoria, Classe, Descoberta, Equipamento, Fonte, Usuario
+from sentinela.db.modelos import (
+    Auditoria,
+    Classe,
+    Config,
+    Descoberta,
+    Equipamento,
+    Fonte,
+    Usuario,
+)
 from sentinela.descoberta.ajustes import ler_ajustes
 from sentinela.descoberta.canais import (
     CAUSA_CERTIFICADO_MUDOU,
@@ -60,6 +68,7 @@ from sentinela.descoberta.fontes.base import (
     CertificadoMudou,
     CertificadoNaoConfiado,
     Coletor,
+    ComUptime,
     ErroColeta,
     ResultadoTeste,
 )
@@ -80,7 +89,9 @@ from sentinela.descoberta.mescla import (
     na_rede,
     reclassificar,
     redes_com_varredura,
+    sub_rede_com_linha_base,
 )
+from sentinela.descoberta.uptime import registrar_leitura
 from sentinela.descoberta.varredura import Ping, ping_icmp
 from sentinela.monitor.agendador import Agendador
 from sentinela.monitor.checagens import GRAVADOR
@@ -105,6 +116,7 @@ MSG_GRAVAR = "falha ao gravar o resultado da coleta"
 MSG_TESTE_INESPERADO = "falha inesperada ao testar a fonte"
 MSG_TEMPO = "a fonte não respondeu a tempo"
 MSG_FABRICA = "configuração da fonte inválida"
+LINHA_BASE_FONTE = "fonte_base:"  # + id da fonte: a primeira coleta dela já passou
 MSG_TRUNCADA = "coleta truncada: limite de aparelhos por coleta ou de pendentes atingido"
 MSG_FORA = "IP fora das sub-redes monitoradas: declare a sub-rede antes de aprovar."
 MSG_NAO_PENDENTE = "A descoberta não está pendente."
@@ -469,6 +481,29 @@ class Orquestrador:
             log.warning("coleta da fonte %s truncada em %d achados", fonte_id, MAX_ACHADOS_COLETA)
             achados = achados[:MAX_ACHADOS_COLETA]
         await self.processar_achados(achados, fonte_id=fonte_id, truncado=truncado)
+        await self._gravar_uptime(fonte, coletor)
+
+    async def _gravar_uptime(self, fonte: Fonte, coletor: object) -> None:
+        """Guarda o tempo ligado lido na coleta bem-sucedida (para o Diagnóstico). Equipamento:
+        o ligado à fonte ou o que tem o IP do ``host`` dela; nenhum → nada. Erro só vai ao log."""
+        if not isinstance(coletor, ComUptime) or coletor.ultimo_uptime_s is None:
+            return
+        try:
+            async with self._sessoes() as db:
+                equipamento_id = fonte.equipamento_id
+                if equipamento_id is None:
+                    eq = await equipamento_por_ip(db, fonte.host)
+                    equipamento_id = eq.id if eq is not None else None
+                if equipamento_id is None:
+                    return
+                await registrar_leitura(
+                    db, fonte.id, equipamento_id, coletor.ultimo_uptime_s, self._agora_parede()
+                )
+                await db.commit()
+        except Exception as e:  # noqa: BLE001 - leitura opcional: nunca vira erro da fonte
+            log.warning(
+                "leitura de tempo ligado da fonte %s não gravada: %s", fonte.id, type(e).__name__
+            )
 
     def _mascarar(self, fonte: Fonte, texto: str) -> str:
         segredos = self._cofre.segredos(fonte.credencial_cifrada)
@@ -492,17 +527,30 @@ class Orquestrador:
         agora = self._agora_parede()
         if self._oui is None:
             self._oui = BaseOui.carregar()
+        novos: list[str] = []  # descobertas a anunciar como "aparelho novo" (depois do commit)
         try:
             # só banco dentro da trava; a sondagem (lenta) roda depois, em fundo
             async with self._trava_mescla, self._sessoes() as db:
                 r = await mesclar(db, achados, self._guarda, agora, oui=self._oui)
                 aviso = MSG_TRUNCADA if truncado or r.truncado else None
+                linha_base = fonte_id is None  # varredura: vale a linha de base da sub-rede
                 if fonte_id is not None:
                     fonte = await db.get(Fonte, fonte_id)
                     if fonte is not None:
+                        # a primeira coleta da fonte (com a marca) é a linha de base dela. Fonte
+                        # que já coletava antes da marca existir (atualização) também: a
+                        # primeira coleta depois da atualização não avisa ninguém.
+                        marca = f"{LINHA_BASE_FONTE}{fonte_id}"
+                        linha_base = await db.get(Config, marca) is not None
+                        if not linha_base:
+                            db.add(Config(chave=marca, valor=True))
                         fonte.ultima_coleta, fonte.ultimo_erro = agora, aviso
                 elif aviso is not None:
                     log.warning("achados da varredura descartados: fila de pendentes cheia")
+                try:
+                    novos = await self._aparelhos_novos(db, r.novas, fonte_id is None, linha_base)
+                except Exception as e:  # noqa: BLE001 - o aviso nunca descarta a gravação
+                    log.warning("decisão de aparelho novo falhou: %s", type(e).__name__)
                 await db.commit()
         except Exception as e:  # noqa: BLE001
             log.error("falha ao gravar achados: %s", type(e).__name__)
@@ -512,11 +560,36 @@ class Orquestrador:
         for eq_id in r.equipamentos_atualizados:
             await self._reagendar(eq_id)
         await self._publicar_resultado(r)
+        for id in novos:
+            self._barramento.publicar(Mensagem("aparelho_novo", {"descoberta_id": id}))
         await self._aprovar_automaticamente([*r.novas, *r.atualizadas])
         for id in r.a_sondar:
             if id not in self._sondando:
                 self._sondando.add(id)
                 self._lancar(self._sondar_em_fundo(id))
+
+    @staticmethod
+    async def _aparelhos_novos(
+        db: AsyncSession, ids: list[str], da_varredura: bool, linha_base: bool
+    ) -> list[str]:
+        """Das descobertas novas, as que merecem o aviso "aparelho novo". Canal de gravador
+        nunca avisa. Da varredura: só com o IP numa sub-rede que já tem linha de base. De fonte:
+        só se a fonte já tinha coletado antes (``linha_base``)."""
+        if not ids or (not da_varredura and not linha_base):
+            return []
+        linhas = await db.execute(
+            select(Descoberta.id, Descoberta.chave, Descoberta.ip).where(Descoberta.id.in_(ids))
+        )
+        por_id = {id: (chave, ip) for id, chave, ip in linhas}
+        saida: list[str] = []
+        for id in ids:
+            chave, ip = por_id.get(id, ("nvr:", ""))
+            if chave.startswith("nvr:"):
+                continue
+            if da_varredura and not await sub_rede_com_linha_base(db, ip):
+                continue
+            saida.append(id)
+        return saida
 
     async def _sondar_em_fundo(self, descoberta_id: str) -> None:
         """§9.1 a: sondagem de descoberta em sub-rede com varredura, fora da trava; o

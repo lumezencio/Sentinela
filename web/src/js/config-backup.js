@@ -26,7 +26,7 @@ function formatador(fuso) {
   return f;
 }
 
-function quando(iso, fuso) {
+export function quando(iso, fuso) {
   const t = Date.parse(String(iso ?? ""));
   if (Number.isNaN(t)) return "—";
   const p = {};

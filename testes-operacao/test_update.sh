@@ -717,4 +717,280 @@ test_restore_herda_a_trava_do_update() {
   return 0
 }
 
+# --- atualização automática (--automatico) e registro do resultado -----------------------------
+
+REGISTRAR="sentinela.cli atualizacao-registrar"
+
+automatico() {
+  bash update.sh --automatico >"$TMP_OP/saida-update" 2>&1 </dev/null
+}
+
+test_automatico_desligado_nao_faz_nada() {
+  ambiente
+  export SHIM_ATUALIZACAO_ATIVA=3
+  automatico || _falhou "desligada deveria sair com 0: $(cat "$TMP_OP/saida-update")"
+  grep -qF "atualização automática desligada" "$TMP_OP/saida-update" || _falhou "faltou a mensagem"
+  afirmar_log_contem "sentinela.cli atualizacao-ativa"
+  for p in fetch " tag " pull backup-criar "compose up" "compose build" "$REGISTRAR"; do
+    afirmar_log_nao_contem "$p"
+  done
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+  [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "nem a trava deveria ter sido tomada"
+}
+
+test_automatico_com_operacao_em_curso_sai_0_sem_tocar() {
+  ambiente
+  mkdir "$TMP_OP/.operacao.lock"
+  automatico || _falhou "operação em curso deveria sair com 0"
+  grep -qF "outra operação em curso" "$TMP_OP/saida-update" || _falhou "faltou a mensagem"
+  for p in fetch " tag " pull backup-criar "compose up" "$REGISTRAR"; do
+    afirmar_log_nao_contem "$p"
+  done
+  [[ -d "$TMP_OP/.operacao.lock" ]] || _falhou "não pode apagar a trava de outra operação"
+}
+
+test_automatico_ok_registra_atualizado_de_para() {
+  ambiente
+  automatico || _falhou "deveria atualizar: $(cat "$TMP_OP/saida-update")"
+  afirmar_igual "$(versao_atual)" "v0.5.0"
+  afirmar_log_contem "$REGISTRAR --resultado atualizado --de 0.4.0 --para 0.5.0"
+  # o registro vem depois da troca e do web saudável
+  afirmar_ordem "$COMPOSE_WEB_UP" "$REGISTRAR --resultado atualizado"
+  # a verificação do manual vale aqui: nenhuma pergunta e alvo = última tag
+  afirmar_log_contem "git checkout -q --detach refs/tags/v0.5.0"
+}
+
+test_automatico_ja_na_versao_registra_sem_novidade() {
+  ambiente
+  export SHIM_IGUAL=1
+  automatico || _falhou "deveria sair com 0"
+  afirmar_log_contem "$REGISTRAR --resultado sem_novidade --de 0.4.0 --para 0.5.0"
+  afirmar_log_nao_contem "backup-criar"
+  afirmar_log_nao_contem "$COMPOSE_CORE_UP"
+}
+
+test_automatico_falha_de_saude_volta_e_registra_voltou() {
+  ambiente
+  modo_publicadas
+  com_cosign
+  export SHIM_FALHAR="2-2:*$SAUDE*"
+  if automatico; then _falhou "deveria falhar"; fi
+  afirmar_volta_completa
+  afirmar_log_contem "$REGISTRAR --resultado voltou --de 0.4.0 --para 0.5.0"
+  # o registro só depois da volta (o core anterior já de pé)
+  afirmar_ordem "$VOLTA_UP" "$REGISTRAR --resultado voltou"
+}
+
+test_automatico_digest_diferente_registra_falhou_sem_trocar() {
+  ambiente
+  modo_publicadas
+  digests_ok
+  SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})"
+  export SHIM_DIGEST_WEB
+  if automatico; then _falhou "deveria abortar"; fi
+  afirmar_log_nao_contem "$COMPOSE_CORE_UP"
+  afirmar_log_nao_contem " stop core"
+  afirmar_log_nao_contem "backup-criar"
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+  afirmar_log_contem "$REGISTRAR --resultado falhou --de 0.4.0 --para 0.5.0 --mensagem=o digest baixado de 'web' difere do digests.txt do release"
+}
+
+test_automatico_recusa_versao_e_opcoes() {
+  ambiente
+  local rc
+  for a in "v0.5.0" "--imagens-publicadas" "--permitir-voltar-versao"; do
+    rc=0
+    bash update.sh --automatico "$a" >"$TMP_OP/saida-update" 2>&1 </dev/null || rc=$?
+    afirmar_igual "$rc" "2"
+  done
+  rc=0
+  bash update.sh v0.5.0 --automatico >"$TMP_OP/saida-update" 2>&1 </dev/null || rc=$?
+  afirmar_igual "$rc" "2"
+  [[ ! -s "$SHIM_LOG" ]] || _falhou "nada deveria ter rodado: $(cat "$SHIM_LOG")"
+  [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "nem a trava"
+}
+
+test_automatico_nao_le_stdin() {
+  ambiente
+  export SHIM_VIGIAR_STDIN=1
+  { echo "linha1"; echo "linha2"; } | bash update.sh --automatico >"$TMP_OP/saida-update" 2>&1 ||
+    _falhou "deveria atualizar: $(cat "$TMP_OP/saida-update")"
+  [[ ! -e "$SHIM_DIR/stdin.lido" ]] || _falhou "algum comando leu a entrada padrão"
+  afirmar_igual "$(versao_atual)" "v0.5.0"
+}
+
+test_manual_tambem_registra() {
+  ambiente
+  atualizar v0.5.0 || _falhou "deveria atualizar"
+  afirmar_log_contem "$REGISTRAR --resultado atualizado --de 0.4.0 --para 0.5.0"
+  # o manual nunca pergunta pelo estado de liga/desliga
+  afirmar_log_nao_contem "atualizacao-ativa"
+}
+
+test_manual_ignora_chave_desligada() {
+  ambiente
+  export SHIM_ATUALIZACAO_ATIVA=3
+  atualizar v0.5.0 || _falhou "o manual atualiza mesmo com a automática desligada"
+  afirmar_igual "$(versao_atual)" "v0.5.0"
+}
+
+test_registro_falho_nao_muda_o_codigo_de_saida() {
+  ambiente
+  export SHIM_FALHAR="*$REGISTRAR*"
+  automatico || _falhou "o registro falho não pode derrubar uma atualização boa: $(cat "$TMP_OP/saida-update")"
+  grep -qF "não consegui registrar" "$TMP_OP/saida-update" || _falhou "deveria avisar em stderr"
+  afirmar_igual "$(versao_atual)" "v0.5.0"
+}
+
+test_registro_falho_nao_transforma_falha_em_sucesso() {
+  ambiente
+  export SHIM_FALHAR="*$REGISTRAR*"
+  echo "# local" >>"$TMP_OP/docker-compose.yml"
+  if automatico; then _falhou "árvore suja continua sendo falha"; fi
+}
+
+test_automatico_arvore_suja_registra_falhou_sem_tocar() {
+  ambiente
+  echo "# alteração local" >>"$TMP_OP/docker-compose.yml"
+  if automatico; then _falhou "deveria recusar"; fi
+  for p in backup-criar "docker tag" "git checkout" "compose up"; do afirmar_log_nao_contem "$p"; done
+  afirmar_log_contem "$REGISTRAR --resultado falhou --mensagem=há alterações locais não commitadas no código"
+  [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "a trava deveria ser liberada"
+}
+
+test_automatico_core_fora_do_ar_nao_troca_nada() {
+  ambiente
+  export SHIM_FALHAR="*exec -T core*"
+  if automatico; then _falhou "deveria falhar"; fi
+  for p in backup-criar "docker tag" "git checkout" "compose up" "compose build" " stop core"; do afirmar_log_nao_contem "$p"; done
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+  [[ ! -e "$TMP_OP/.operacao.lock" ]] || _falhou "a trava deveria ser liberada"
+}
+
+test_registro_usa_argv_sem_eval_e_mensagem_com_hifen() {
+  ! grep -nE '\beval\b' "$REPO_DIR/scripts/operacao-comum.sh" "$REPO_DIR/update.sh" | grep -v '^[^:]*:[0-9]*:#' ||
+    _falhou "nada de eval"
+}
+
+DNS_GIT="fatal: unable to access 'https://github.com/x/sentinela.git/': Could not resolve host: github.com"
+
+test_automatico_sem_rede_no_fetch_sai_0_e_registra_sem_conexao() {
+  ambiente
+  export SHIM_GIT_FETCH_ERRO="$DNS_GIT"
+  automatico || _falhou "sem rede não pode falhar a unidade: $(cat "$TMP_OP/saida-update")"
+  afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
+  afirmar_log_nao_contem "--resultado falhou"
+  for p in backup-criar "docker tag" "compose up"; do afirmar_log_nao_contem "$p"; done
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+}
+
+test_automatico_fetch_com_erro_que_nao_e_de_rede_e_falha() {
+  ambiente
+  local erro
+  for erro in "fatal: unable to access 'https://github.com/x/': SSL certificate problem: unable to get local issuer certificate" \
+    "remote: Permission denied to x. fatal: unable to access 'https://github.com/x/': The requested URL returned error: 403" \
+    "fatal: 'origin' does not appear to be a git repository"; do
+    : >"$SHIM_LOG"
+    export SHIM_GIT_FETCH_ERRO="$erro"
+    if automatico; then _falhou "não é erro de rede, deveria falhar: $erro"; fi
+    afirmar_log_contem "$REGISTRAR --resultado falhou"
+    afirmar_log_nao_contem "sem_conexao"
+  done
+}
+
+test_manual_sem_rede_continua_sendo_erro() {
+  ambiente
+  export SHIM_GIT_FETCH_ERRO="$DNS_GIT"
+  if atualizar v0.5.0; then _falhou "o manual deve falhar sem rede"; fi
+  afirmar_log_contem "$REGISTRAR --resultado falhou"
+}
+
+test_automatico_sem_rede_no_pull_volta_arquivos_e_sai_0() {
+  ambiente
+  modo_publicadas
+  com_cosign
+  export SHIM_PULL_ERRO='Get "https://ghcr.io/v2/": dial tcp: lookup ghcr.io on 127.0.0.53:53: no such host'
+  automatico || _falhou "sem rede no pull não pode falhar a unidade"
+  afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
+  for p in backup-criar "$COMPOSE_CORE_UP" " stop core"; do afirmar_log_nao_contem "$p"; done
+  afirmar_igual "$(versao_atual)" "v0.4.0"
+  grep -qx 'VERSAO=0.4.0' "$TMP_OP/.env" || _falhou "o .env deveria voltar"
+}
+
+test_automatico_pull_com_erro_que_nao_e_de_rede_e_falha() {
+  ambiente
+  modo_publicadas
+  com_cosign
+  local erro
+  for erro in "unauthorized: authentication required" "manifest unknown: manifest unknown" \
+    'tls: failed to verify certificate: x509: certificate signed by unknown authority'; do
+    : >"$SHIM_LOG"
+    export SHIM_PULL_ERRO="$erro"
+    if automatico; then _falhou "não é erro de rede, deveria falhar: $erro"; fi
+    afirmar_log_contem "$REGISTRAR --resultado falhou"
+    afirmar_log_nao_contem "sem_conexao"
+    afirmar_igual "$(versao_atual)" "v0.4.0"
+    rm -rf "$TMP_OP/.operacao.lock"
+  done
+}
+
+test_automatico_sem_digests_do_release_por_dns_sai_0_sem_conexao() {
+  ambiente
+  modo_publicadas
+  export SHIM_CURL_RC=6
+  automatico || _falhou "sem o digests.txt (DNS) não pode falhar a unidade"
+  afirmar_log_contem "$REGISTRAR --resultado sem_conexao"
+  afirmar_log_nao_contem "compose pull"
+}
+
+test_automatico_digests_com_http_ou_tls_e_falha() {
+  ambiente
+  modo_publicadas
+  local rc
+  for rc in 22 35 51 58 60; do
+    : >"$SHIM_LOG"
+    export SHIM_CURL_RC="$rc"
+    if automatico; then _falhou "curl $rc não é rede fora do ar, deveria falhar"; fi
+    afirmar_log_contem "$REGISTRAR --resultado falhou"
+    afirmar_log_nao_contem "sem_conexao"
+    afirmar_log_nao_contem "compose pull"
+    rm -rf "$TMP_OP/.operacao.lock"
+  done
+}
+
+test_automatico_offline_com_arquivos_nao_revertidos_continua_falha() {
+  ambiente
+  modo_publicadas
+  com_cosign
+  export SHIM_PULL_ERRO='Get "https://ghcr.io/v2/": dial tcp: lookup ghcr.io on 127.0.0.53:53: no such host'
+  # as duas marcações de proteção (chamadas 1 e 2 de "tag") passam; a devolução delas (3 e 4) falha
+  export SHIM_FALHAR="3-4:tag *"
+  if automatico; then _falhou "sem devolver os arquivos não pode virar sem_conexao"; fi
+  grep -qF "não consegui restaurar tudo" "$TMP_OP/saida-update" || _falhou "deveria relatar a volta incompleta"
+  afirmar_log_contem "$REGISTRAR --resultado falhou"
+  afirmar_log_nao_contem "sem_conexao"
+}
+
+test_automatico_falha_de_verdade_continua_saindo_1() {
+  ambiente
+  modo_publicadas
+  digests_ok
+  SHIM_DIGEST_WEB="sha256:$(printf 'c%.0s' {1..64})"
+  export SHIM_DIGEST_WEB
+  if automatico; then _falhou "digest diferente é falha, não offline"; fi
+  afirmar_log_nao_contem "sem_conexao"
+}
+
+test_unidades_systemd_da_atualizacao() {
+  local s="$REPO_DIR/scripts/systemd/sentinela-atualizacao.service" t="$REPO_DIR/scripts/systemd/sentinela-atualizacao.timer"
+  local l
+  for l in "Type=oneshot" "WorkingDirectory=@DESTINO@" "ExecStart=@DESTINO@/update.sh --automatico" "TimeoutStartSec=45min" "Nice=10" "User=@USUARIO@"; do
+    grep -qxF "$l" "$s" || _falhou "o serviço deveria ter: $l"
+  done
+  for l in "OnCalendar=*-*-* 03:00:00" "RandomizedDelaySec=15min" "Persistent=false" "WantedBy=timers.target"; do
+    grep -qxF "$l" "$t" || _falhou "o timer deveria ter: $l"
+  done
+  ! grep -q "docker.sock" "$s" "$t" || _falhou "nada de socket"
+}
+
 executar_testes

@@ -3,6 +3,8 @@
 // aprovação automática. Funções puras (testadas no Node) + o pedaço do componente "painel".
 // Senha nunca volta para o formulário (a API nem a devolve: só `credencial_definida`).
 import { api } from "./api.js";
+import { avisoDoPainel, dispensarAviso, foiDispensado, textoDoAgendamento, textoDoResultado } from "./config-atualizacoes.js";
+import { horaNoFuso } from "./alertas.js";
 import { haQuanto } from "./lista.js";
 import { textoSeguro } from "./novos.js";
 
@@ -18,6 +20,55 @@ const ROTULOS_TIPO = {
 const MANTER = "deixe em branco para manter a atual";
 const MSG_FALHA = "Não foi possível concluir. Tente de novo.";
 const HEX64 = /^[0-9a-f]{64}$/;
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const CIDR_V4 = /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/;
+const MSG_GATEWAY_FORMATO = "Informe um endereço IPv4, como 192.168.15.1.";
+const MSG_GATEWAY_FORA = "O gateway precisa estar dentro da sub-rede.";
+const MSG_INTERVALO = "Informe de 15 a 240 minutos.";
+export const INTERVALO_MIN = 15;
+export const INTERVALO_MAX = 240;
+
+/** IPv4 "a.b.c.d" como número sem sinal; null se o formato ou algum octeto é inválido. */
+function ipv4ParaNumero(texto) {
+  const m = IPV4.exec(texto);
+  if (!m) return null;
+  let n = 0;
+  for (let i = 1; i <= 4; i++) {
+    const octeto = Number(m[i]);
+    if (octeto > 255) return null;
+    n = n * 256 + octeto;
+  }
+  return n;
+}
+
+/**
+ * Erro do campo "Gateway" de uma sub-rede ("" = pode enviar). Vazio apaga o gateway. Mesma regra
+ * do servidor: endereço de host dentro da sub-rede (nem o da rede nem o de broadcast).
+ */
+export function validarGatewaySubrede(texto, cidr) {
+  const t = String(texto ?? "").trim();
+  if (!t) return "";
+  const ip = ipv4ParaNumero(t);
+  if (ip === null) return MSG_GATEWAY_FORMATO;
+  const m = CIDR_V4.exec(String(cidr ?? ""));
+  const base = m ? ipv4ParaNumero(m[1]) : null;
+  const bits = m ? Number(m[2]) : -1;
+  if (base === null || bits < 0 || bits > 32) return ""; // CIDR que o front não entende: o servidor decide
+  const tamanho = 2 ** (32 - bits);
+  const rede = base - (base % tamanho);
+  if (ip < rede || ip >= rede + tamanho) return MSG_GATEWAY_FORA;
+  if (tamanho > 2 && (ip === rede || ip === rede + tamanho - 1)) return MSG_GATEWAY_FORA;
+  return "";
+}
+
+/** Intervalo da varredura automática (minutos): {valor, erro}; fora de 15 a 240 ou não inteiro → erro. */
+export function validarIntervaloVarredura(texto) {
+  const t = String(texto ?? "").trim();
+  if (!/^\d{1,4}$/.test(t)) return { valor: null, erro: MSG_INTERVALO };
+  const n = Number(t);
+  if (n < INTERVALO_MIN || n > INTERVALO_MAX) return { valor: null, erro: MSG_INTERVALO };
+  return { valor: n, erro: "" };
+}
 
 export function rotuloTipoFonte(tipo) {
   return Object.hasOwn(ROTULOS_TIPO, tipo) ? ROTULOS_TIPO[tipo] : textoSeguro(tipo, 32);
@@ -253,6 +304,8 @@ export function configuracoesDoPainel() {
   const recusas = new Map(); // id -> erro da última ação no cartão
   let carregada = false;
   let gravarLimiar = 0;
+  const gateways = new Map(); // id da sub-rede -> texto digitado no campo do gateway (ainda não salvo)
+  const gatewayErros = new Map(); // id -> erro do campo
 
   return {
     cfgFontes: [],
@@ -262,8 +315,11 @@ export function configuracoesDoPainel() {
     cfgAviso: "",
     cfgSubredes: [],
     cfgSubredesErro: "",
-    ajustes: { aprovacao_automatica: false, limiar: 80 },
+    ajustes: { aprovacao_automatica: false, limiar: 80, intervalo: 30 },
     ajustesErro: "",
+    intervaloCampo: "30",
+    intervaloErro: "",
+    intervaloEditado: false, // o campo tem texto que ainda não foi salvo
     tiposFonte: TIPOS_FONTE,
     // formulário da fonte (diálogo)
     fonteForm: valoresIniciais(null),
@@ -274,6 +330,7 @@ export function configuracoesDoPainel() {
     entrarEmConfiguracoes() {
       if (!this.admin) return;
       if (!carregada) this.carregarConfiguracoes();
+      this.carregarAtualizacao(); // o resultado da madrugada, sem esperar o relógio
     },
 
     async carregarConfiguracoes() {
@@ -503,14 +560,70 @@ export function configuracoesDoPainel() {
         return;
       }
       this.cfgSubredesErro = "";
-      this.cfgSubredes = r.dados.map((s) => ({
+      this.cfgSubredes = r.dados.map((s) => this.linhaDaSubrede(s));
+    },
+
+    linhaDaSubrede(s) {
+      const cidr = textoSeguro(s.cidr, 43);
+      const gateway = typeof s.gateway_ip === "string" ? textoSeguro(s.gateway_ip, 45) : "";
+      const campo = gateways.has(s.id) ? gateways.get(s.id) : gateway;
+      return {
         id: s.id,
-        cidr: textoSeguro(s.cidr, 43),
+        cidr,
         permite: Boolean(s.permite_varredura),
         marcado: s.permite_varredura ? "true" : "false",
-        rotuloChave: `Permitir varredura em ${textoSeguro(s.cidr, 43)}`,
-        rotuloIniciar: `Iniciar varredura em ${textoSeguro(s.cidr, 43)}`,
+        rotuloChave: `Permitir varredura em ${cidr}`,
+        rotuloIniciar: `Iniciar varredura em ${cidr}`,
+        gateway,
+        gatewayCampo: campo,
+        gatewayErro: gatewayErros.get(s.id) || "",
+        ultimaVarreduraIso: s.ultima_varredura_em || null,
+        idGateway: `cfg-gw-${s.id}`,
+        idGatewayErro: `cfg-gw-erro-${s.id}`,
+        rotuloGateway: `Gateway (roteador) de ${cidr}`,
+        rotuloSalvarGateway: `Salvar o gateway de ${cidr}`,
+        ultimaVarredura: s.ultima_varredura_em
+          ? `Última varredura: ${horaNoFuso(s.ultima_varredura_em, Date.now(), this.fuso)}`
+          : "Ainda não foi varrida.",
+      };
+    },
+
+    /** Digitou no campo do gateway: guarda (fora da reatividade das linhas) e limpa o erro. */
+    aoEditarGateway(evento) {
+      const id = Number(evento.target.dataset.id);
+      gateways.set(id, evento.target.value);
+      if (gatewayErros.delete(id)) this.renderizarSubredesCfg();
+    },
+    renderizarSubredesCfg() {
+      this.cfgSubredes = this.cfgSubredes.map((x) => this.linhaDaSubrede({
+        id: x.id, cidr: x.cidr, permite_varredura: x.permite, gateway_ip: x.gateway || null,
+        ultima_varredura_em: x.ultimaVarreduraIso,
       }));
+    },
+    async salvarGatewaySubrede(id) {
+      if (!this.admin || this.enviando) return;
+      const s = this.cfgSubredes.find((x) => x.id === id);
+      if (!s) return;
+      const texto = (gateways.has(id) ? gateways.get(id) : s.gateway).trim();
+      const erro = validarGatewaySubrede(texto, s.cidr);
+      if (erro) {
+        gatewayErros.set(id, erro);
+        this.renderizarSubredesCfg();
+        return;
+      }
+      this.enviando = true;
+      this.cfgSubredesErro = "";
+      const r = await api.editarSubrede(id, { gateway_ip: texto || null });
+      this.enviando = false;
+      if (!r.ok) {
+        gatewayErros.set(id, r.erro || MSG_FALHA);
+        this.renderizarSubredesCfg();
+        return;
+      }
+      gateways.delete(id);
+      gatewayErros.delete(id);
+      this.cfgAviso = texto ? `Gateway de ${s.cidr} salvo.` : `Gateway de ${s.cidr} removido.`;
+      await this.carregarSubredesCfg();
     },
 
     async alternarVarreduraSubrede(id) {
@@ -518,7 +631,7 @@ export function configuracoesDoPainel() {
       if (!s || this.enviando) return;
       this.enviando = true;
       this.cfgSubredesErro = "";
-      const r = await api.editarSubrede(id, !s.permite);
+      const r = await api.editarSubrede(id, { permite_varredura: !s.permite });
       this.enviando = false;
       if (!r.ok) {
         this.cfgSubredesErro = r.erro || MSG_FALHA;
@@ -558,7 +671,36 @@ export function configuracoesDoPainel() {
       this.ajustes = {
         aprovacao_automatica: Boolean(a.aprovacao_automatica),
         limiar: Math.round(Number(a.limiar_aprovacao) * 100) || 80,
+        intervalo: Number.isInteger(a.varredura_continua_min) ? a.varredura_continua_min : 30,
       };
+      if (!this.intervaloEditado) this.intervaloCampo = String(this.ajustes.intervalo);
+    },
+    /** Intervalo da varredura automática: 15 a 240 minutos; fora disso nada é enviado. */
+    aoEditarIntervalo() {
+      this.intervaloEditado = true;
+      this.intervaloErro = "";
+    },
+    async salvarIntervalo() {
+      if (!this.admin || this.enviando) return;
+      const { valor, erro } = validarIntervaloVarredura(this.intervaloCampo);
+      if (erro) {
+        this.intervaloErro = erro;
+        return;
+      }
+      this.enviando = true;
+      this.intervaloErro = "";
+      const r = await api.editarAjustes({ varredura_continua_min: valor });
+      this.enviando = false;
+      if (!r.ok || !r.dados) {
+        this.intervaloErro = r.erro || MSG_FALHA;
+        return;
+      }
+      this.intervaloEditado = false;
+      this.aplicarAjustes(r.dados);
+      this.cfgAviso = `A varredura automática vai rodar a cada ${valor} minutos.`;
+    },
+    get intervaloSemErro() {
+      return !this.intervaloErro;
     },
     get rotuloAutomatica() {
       return this.ajustes.aprovacao_automatica ? "true" : "false";
@@ -878,6 +1020,96 @@ export function backupDoPainel() {
       }
       this.bkAviso = "Backup feito.";
       await this.carregarBackup(false);
+    },
+  };
+}
+
+// ---------- cartão Atualizações e aviso de 24 h (Fase 5) ----------
+/**
+ * Estado e métodos de Configurações → Atualizações e do aviso abaixo do cabeçalho; mesmo `this`
+ * do componente "painel". Qualquer usuário lê o estado (o aviso é de todos); só o admin liga e
+ * desliga. A API só lê e grava o atualizacao.json: quem atualiza é o update.sh no servidor.
+ */
+export function atualizacaoDoPainel() {
+  let pedido = 0;
+
+  return {
+    atz: null, // estado bruto de GET /atualizacao
+    atzAvisoDispensado: false, // a pessoa já dispensou este aviso (guardado por pessoa)
+    atzSalvando: false,
+    atzErro: "",
+    atzAviso: "",
+
+    async carregarAtualizacao() {
+      const meu = ++pedido;
+      const r = await api.verAtualizacao();
+      if (meu !== pedido || !r.ok || !r.dados || typeof r.dados.versao !== "string") return;
+      this.atz = r.dados;
+      this.atzAvisoDispensado = foiDispensado(r.dados, this.usuario);
+    },
+
+    // ---- aviso abaixo do cabeçalho (todos os usuários) ----
+    get atzAvisoDados() {
+      return this.atz ? avisoDoPainel(this.atz, this.fuso) : null;
+    },
+    get atzAvisoVisivel() {
+      return this.atzAvisoDados !== null && !this.atzAvisoDispensado;
+    },
+    get atzAvisoTexto() {
+      const a = this.atzAvisoDados;
+      return a ? a.texto : "";
+    },
+    get atzAvisoClasse() {
+      const a = this.atzAvisoDados;
+      return a && a.tipo === "atencao" ? "aviso-atz aviso-atz-atencao" : "aviso-atz";
+    },
+    dispensarAvisoAtualizacao() {
+      if (!this.atz) return;
+      dispensarAviso(this.atz, this.usuario);
+      this.atzAvisoDispensado = true;
+    },
+
+    // ---- cartão em Configurações (admin) ----
+    get atzVersao() {
+      return this.atz ? `Versão instalada: ${textoSeguro(this.atz.versao, 32)}` : "";
+    },
+    get atzMarcado() {
+      return this.atz && this.atz.ativo ? "true" : "false";
+    },
+    get atzResultado() {
+      return this.atz ? textoDoResultado(this.atz, this.fuso) : "";
+    },
+    get atzResultadoClasse() {
+      const r = this.atz ? this.atz.resultado : null;
+      if (r === "voltou" || r === "falhou") return "alerta cfg-atz-resultado";
+      if (r === "atualizado") return "alerta alerta-ok cfg-atz-resultado";
+      return "alerta cfg-atz-resultado cfg-atz-neutro";
+    },
+    get atzAgendamento() {
+      return this.atz ? textoDoAgendamento(this.atz) : "";
+    },
+    get atzIlegivel() {
+      return Boolean(this.atz && this.atz.arquivo_ilegivel);
+    },
+    get atzCarregado() {
+      return this.atz !== null;
+    },
+
+    async alternarAtualizacao() {
+      if (!this.admin || !this.atz || this.atzSalvando) return;
+      this.atzSalvando = true;
+      this.atzErro = "";
+      this.atzAviso = "";
+      const r = await api.definirAtualizacao(!this.atz.ativo);
+      this.atzSalvando = false;
+      if (!r.ok || !r.dados) {
+        this.atzErro = r.erro || MSG_FALHA;
+        return;
+      }
+      this.atz = r.dados;
+      this.atzAviso = r.dados.ativo
+        ? "Atualização automática ligada."
+        : "Atualização automática desligada.";
     },
   };
 }

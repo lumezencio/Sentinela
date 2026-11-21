@@ -12,15 +12,16 @@
   ``DestinoAutorizado``.
 - Quem responde vira ``Achado(origem="varredura")``, entregue na hora a ``entregar``
   (o orquestrador mescla, classifica e publica).
-- Progresso no barramento: ``varredura`` com ``cidr``, ``feitos``, ``total``, ``achados`` e
-  ``estado`` (rodando/concluida/cancelada/falhou).
+- Progresso no barramento: ``varredura`` com ``cidr``, ``feitos``, ``total``, ``achados``,
+  ``origem`` (manual/agendada/primeiro_acesso), ``sub_rede_id`` e ``estado``
+  (rodando/concluida/cancelada/falhou). ``ao_terminar`` roda uma vez no fim com o estado final.
 """
 
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from ipaddress import IPv4Network
-from typing import Any
+from typing import Any, Literal
 
 import icmplib
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -41,6 +42,8 @@ VERIFICAR_A_CADA_IPS = 8  # releitura de ``permite_varredura`` durante a varredu
 
 Ping = Callable[[DestinoAutorizado], Awaitable[bool]]
 Entregar = Callable[[list[Achado]], Awaitable[None]]
+AoTerminar = Callable[[int, str], Awaitable[None]]
+OrigemVarredura = Literal["manual", "agendada", "primeiro_acesso"]
 
 
 class ErroVarredura(Exception):
@@ -78,6 +81,10 @@ async def _descartar(_achados: list[Achado]) -> None:
     return None
 
 
+async def _ignorar_fim(_sub_rede_id: int, _estado: str) -> None:
+    return None
+
+
 class Varredura:
     def __init__(
         self,
@@ -89,6 +96,7 @@ class Varredura:
         *,
         ping: Ping = ping_icmp,
         entregar: Entregar = _descartar,
+        ao_terminar: AoTerminar = _ignorar_fim,
     ) -> None:
         self._sessoes = sessoes
         self._guarda = guarda
@@ -97,6 +105,7 @@ class Varredura:
         self._relogio = relogio
         self._ping = ping
         self._entregar = entregar
+        self._ao_terminar = ao_terminar
         self._tarefa: asyncio.Task[None] | None = None
         self._progresso: dict[str, Any] = {}
         self._intervalo = 0.5
@@ -109,10 +118,11 @@ class Varredura:
         return self._tarefa is not None and not self._tarefa.done()
 
     def progresso(self) -> dict[str, Any] | None:
-        """``{"cidr", "feitos", "total", "achados"}`` da varredura em curso, ou None."""
+        """``{"cidr", "feitos", "total", "achados", "origem", "sub_rede_id"}`` da varredura
+        em curso, ou None."""
         return dict(self._progresso) if self._rodando() else None
 
-    async def iniciar(self, sub_rede_id: int) -> dict[str, Any]:
+    async def iniciar(self, sub_rede_id: int, origem: OrigemVarredura = "manual") -> dict[str, Any]:
         if self._rodando():
             raise VarreduraEmAndamento
         async with self._sessoes() as db:
@@ -132,6 +142,8 @@ class Varredura:
             "feitos": 0,
             "total": rede.num_addresses,
             "achados": 0,
+            "origem": origem,
+            "sub_rede_id": sub_rede_id,
         }
         self._tarefa = asyncio.create_task(
             self._rodar(rede, ajustes.intervalo_varredura_ips_s), name="sentinela-varredura"
@@ -186,6 +198,17 @@ class Varredura:
                 # presa); ela só cancela a varredura se ainda estiver rodando
                 await asyncio.gather(self._verificacao, return_exceptions=True)
             self._publicar(estado)
+            await self._avisar_fim(estado)
+
+    async def _avisar_fim(self, estado: str) -> None:
+        """Uma vez, no fim, com o estado final; erro do gancho só vai ao log."""
+        sub_rede_id = self._sub_rede_id
+        if sub_rede_id is None:
+            return
+        try:
+            await self._ao_terminar(sub_rede_id, estado)
+        except Exception as e:  # noqa: BLE001 - o gancho não pode quebrar a varredura
+            log.error("gancho de fim da varredura falhou: %s", type(e).__name__)
 
     async def _verificar_permissao(self, tarefa: asyncio.Task[None], sub_rede_id: int) -> None:
         """Relê a sub-rede; sem permissão (ou removida), cancela a varredura."""

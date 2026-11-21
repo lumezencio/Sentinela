@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# sudo de teste: registra e executa o resto sem privilégio. Comandos de sistema (usermod, apt-get)
+# só são registrados, para o teste não mexer no computador. Aceita -n, -E, -u X, -g X.
+printf 'sudo %s\n' "$*" >>"${SHIM_LOG:?}"
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -u | -g) shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "${1:-}" in
+  usermod | apt-get | chown) exit 0 ;;
+esac
+exec "$@"

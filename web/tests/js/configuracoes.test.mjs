@@ -166,3 +166,95 @@ test("cartaoDaFonte: tipo, endereço, TLS, ativa, última coleta e erro com orie
   assert.equal(n.erro, "");
   assert.equal(n.confiada, true);
 });
+
+import { validarGatewaySubrede, validarIntervaloVarredura } from "../../src/js/configuracoes.js";
+
+test("subrede gateway inválido bloqueia envio", () => {
+  const cidr = "192.168.15.0/24";
+  assert.equal(validarGatewaySubrede("192.168.15.1", cidr), "");
+  assert.equal(validarGatewaySubrede("  192.168.15.254 ", cidr), "");
+  assert.equal(validarGatewaySubrede("", cidr), "", "vazio apaga o gateway");
+  assert.equal(validarGatewaySubrede("roteador", cidr), "Informe um endereço IPv4, como 192.168.15.1.");
+  assert.equal(validarGatewaySubrede("192.168.15.256", cidr), "Informe um endereço IPv4, como 192.168.15.1.");
+  assert.equal(validarGatewaySubrede("10.0.0.1", cidr), "O gateway precisa estar dentro da sub-rede.");
+  assert.equal(validarGatewaySubrede("192.168.15.0", cidr), "O gateway precisa estar dentro da sub-rede.");
+  assert.equal(validarGatewaySubrede("192.168.15.255", cidr), "O gateway precisa estar dentro da sub-rede.");
+});
+
+test("intervalo fora de 15 a 240 bloqueia", () => {
+  assert.deepEqual(validarIntervaloVarredura("30"), { valor: 30, erro: "" });
+  assert.deepEqual(validarIntervaloVarredura(" 15 "), { valor: 15, erro: "" });
+  assert.equal(validarIntervaloVarredura("240").valor, 240);
+  for (const ruim of ["14", "241", "0", "", "abc", "30.5", "-30", "1e2"]) {
+    const r = validarIntervaloVarredura(ruim);
+    assert.equal(r.erro, "Informe de 15 a 240 minutos.", ruim);
+    assert.equal(r.valor, null);
+  }
+});
+
+async function painelConfig() {
+  const { configuracoesDoPainel } = await import("../../src/js/configuracoes.js");
+  const { api } = await import("../../src/js/api.js");
+  const p = {};
+  Object.defineProperties(p, Object.getOwnPropertyDescriptors(configuracoesDoPainel()));
+  Object.assign(p, { admin: true, enviando: false, fuso: "America/Sao_Paulo" });
+  return { p, api };
+}
+
+test("salvar gateway inválido não chama a API e mostra o erro na própria sub-rede", async () => {
+  const { p, api } = await painelConfig();
+  const chamadas = [];
+  const original = { editar: api.editarSubrede, listar: api.listarSubredes };
+  api.editarSubrede = async (...a) => { chamadas.push(a); return { ok: true, dados: {} }; };
+  api.listarSubredes = async () => ({ ok: true, dados: [{ id: 1, cidr: "192.168.15.0/24", permite_varredura: false, gateway_ip: "192.168.15.1", ultima_varredura_em: null }] });
+  try {
+    await p.carregarSubredesCfg();
+    assert.equal(p.cfgSubredes[0].gatewayCampo, "192.168.15.1");
+    p.aoEditarGateway({ target: { dataset: { id: "1" }, value: "10.0.0.1" } });
+    await p.salvarGatewaySubrede(1);
+    assert.deepEqual(chamadas, []);
+    assert.equal(p.cfgSubredes[0].gatewayErro, "O gateway precisa estar dentro da sub-rede.");
+    // corrigiu: o erro some ao digitar e o envio leva só o gateway
+    p.aoEditarGateway({ target: { dataset: { id: "1" }, value: "192.168.15.254" } });
+    assert.equal(p.cfgSubredes[0].gatewayErro, "");
+    await p.salvarGatewaySubrede(1);
+    assert.deepEqual(chamadas, [[1, { gateway_ip: "192.168.15.254" }]]);
+    // vazio apaga (null)
+    p.aoEditarGateway({ target: { dataset: { id: "1" }, value: "  " } });
+    await p.salvarGatewaySubrede(1);
+    assert.deepEqual(chamadas[1], [1, { gateway_ip: null }]);
+    // visualizador (não admin) não envia nada
+    p.admin = false;
+    await p.salvarGatewaySubrede(1);
+    assert.equal(chamadas.length, 2);
+  } finally {
+    api.editarSubrede = original.editar;
+    api.listarSubredes = original.listar;
+  }
+});
+
+test("salvar intervalo fora de 15 a 240 não chama a API; válido envia só o intervalo", async () => {
+  const { p, api } = await painelConfig();
+  const chamadas = [];
+  const original = api.editarAjustes;
+  api.editarAjustes = async (dados) => {
+    chamadas.push(dados);
+    return { ok: true, dados: { aprovacao_automatica: false, limiar_aprovacao: 0.8, varredura_continua_min: dados.varredura_continua_min } };
+  };
+  try {
+    p.intervaloCampo = "14";
+    await p.salvarIntervalo();
+    p.intervaloCampo = "241";
+    await p.salvarIntervalo();
+    assert.deepEqual(chamadas, []);
+    assert.equal(p.intervaloErro, "Informe de 15 a 240 minutos.");
+    p.intervaloCampo = "45";
+    await p.salvarIntervalo();
+    assert.deepEqual(chamadas, [{ varredura_continua_min: 45 }]);
+    assert.equal(p.intervaloErro, "");
+    assert.equal(p.ajustes.intervalo, 45);
+    assert.equal(p.intervaloCampo, "45");
+  } finally {
+    api.editarAjustes = original;
+  }
+});

@@ -11,3 +11,5 @@ Dockerfile      text eol=lf
 web/src/js/**/*.js text eol=lf
 web/build/* text eol=lf
 testes-operacao/shims/* text eol=lf
+*.service      text eol=lf
+*.timer        text eol=lf

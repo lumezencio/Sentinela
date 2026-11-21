@@ -190,3 +190,94 @@
     font-size: 15px;
   }
 }
+
+/* ---------- primeiro-acesso.html: assistente de quatro passos ---------- */
+.pa-trilha {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pa-trilha li {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--borda);
+}
+
+.pa-trilha li.feito {
+  background: linear-gradient(135deg, var(--primaria), var(--acento));
+}
+
+.seg-form h2:focus {
+  outline: none;
+}
+
+.pa-comando {
+  display: block;
+  padding: 12px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+  background: var(--superficie-2);
+  font-family: var(--fonte-mono);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.pa-novo-codigo {
+  display: grid;
+  gap: 8px;
+}
+
+.pa-novo-codigo.pa-destaque {
+  padding: 12px;
+  border-left: 3px solid var(--instavel);
+  border-radius: 6px;
+  background: var(--superficie-2);
+}
+
+.pa-varredura {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+}
+
+.pa-varredura .chave {
+  min-height: 44px;
+  text-align: left;
+}
+
+.pa-resumo {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.pa-resumo div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 16px;
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-p);
+}
+
+.pa-resumo dt {
+  color: var(--texto-suave);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pa-resumo dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.seg-form .mono {
+  font-family: var(--fonte-mono);
+}

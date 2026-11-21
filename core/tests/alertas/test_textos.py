@@ -184,3 +184,48 @@ def test_queda_fechada_sem_volta_segue_caiu() -> None:
     d = _d(fechado_em=T0 + timedelta(seconds=600))  # pausa/remoção: ninguém voltou
     assert texto_painel(d) == "Switch Bloco B caiu"
     assert texto_telegram(d, SP, False) == "🔴 Switch Bloco B caiu às 14:00"
+
+
+# ---- aparelho novo (Fase 5) -----------------------------------------------------------------
+
+SP = ZoneInfo("America/Sao_Paulo")
+
+
+def _novo(**kw: object) -> DadosAlerta:
+    base: dict[str, object] = {
+        "tipo": "aparelho_novo",
+        "nome": "Novo aparelho",
+        "ip": "10.99.5.20",
+        "classe": None,
+        "fabricante": "Intelbras",
+        "portas": (80, 554),
+    }
+    return _d(**(base | kw))
+
+
+def test_texto_painel_aparelho_novo() -> None:
+    assert texto_painel(_novo()) == "Novo aparelho conectou na rede: 10.99.5.20 (Intelbras)"
+    assert texto_painel(_novo(fabricante=None)) == "Novo aparelho conectou na rede: 10.99.5.20"
+
+
+def test_texto_telegram_aparelho_novo_sem_ip_por_padrao_e_com_ip_ligado() -> None:
+    # 17:00 UTC = 14:00 em São Paulo
+    assert (
+        texto_telegram(_novo(), SP, False)
+        == "🆕 Novo aparelho conectou na rede às 14:00 · Intelbras · portas 80, 554"
+    )
+    assert (
+        texto_telegram(_novo(), SP, True)
+        == "🆕 Novo aparelho conectou na rede às 14:00 — 10.99.5.20 · Intelbras · portas 80, 554"
+    )
+    assert (
+        texto_telegram(_novo(fabricante=None, portas=()), SP, False)
+        == "🆕 Novo aparelho conectou na rede às 14:00"
+    )
+
+
+def test_nome_sugerido_hostil_nunca_entra() -> None:
+    hostil = "<b>cam-do-fulano</b> 02:00:00:00:00:01"
+    d = _novo(nome=hostil, fabricante=None, portas=())
+    assert hostil not in texto_telegram(d, SP, True)
+    assert hostil not in texto_painel(d) and "cam-do-fulano" not in texto_painel(d)

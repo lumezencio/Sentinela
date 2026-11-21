@@ -16,7 +16,7 @@ from sentinela.alertas.agrupador import Agrupador
 from sentinela.alertas.silencios import Silencios
 from sentinela.barramento import Barramento, Mensagem
 from sentinela.db.base import Base
-from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte, Silencio
+from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento, Fonte, Silencio
 from sentinela.db.sementes import semear_classes
 from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.relogio import RelogioFalso
@@ -758,3 +758,194 @@ async def test_inalcancavel_sem_pai_na_causa_vira_queda(ctx: Ctx) -> None:
     await _enviar(ctx, x, "inalcancavel", 0)
     [a] = await _alertas(ctx)
     assert a.tipo == "queda" and a.quedas == [x] and a.equipamento_id == x
+
+
+# ---- aparelho novo (Fase 5) -----------------------------------------------------------------
+
+
+async def _descoberta(
+    c: Ctx, id: str = "d1", status: str = "pendente", classe: str | None = "camera"
+) -> str:
+    async with c.sessoes() as s:
+        s.add(
+            Descoberta(
+                id=id,
+                chave=f"ip:{id}",
+                ip="10.99.5.20",
+                status=status,
+                classe_sugerida=classe,
+                primeira_vez=T0,
+                ultima_vez=T0,
+            )
+        )
+        await s.commit()
+    return id
+
+
+def _novo(id: str) -> Mensagem:
+    return Mensagem("aparelho_novo", {"descoberta_id": id})
+
+
+def _removida(id: str) -> Mensagem:
+    return Mensagem("descoberta", {"acao": "removida", "id": id})
+
+
+async def test_aparelho_novo_abre_um_alerta_pendente_com_descoberta(ctx: Ctx) -> None:
+    d = await _descoberta(ctx)
+    await ctx.agrupador.processar(_novo(d))
+    [a] = await _alertas(ctx)
+    assert agrupador_mod.TIPO_APARELHO_NOVO == "aparelho_novo"
+    assert (a.tipo, a.descoberta_id, a.equipamento_id) == ("aparelho_novo", d, None)
+    assert (a.envio, a.silenciado, a.fechado_em, a.aberto_em) == ("pendente", False, None, T0)
+    assert [m["acao"] for m in ctx.alertas_publicados()] == ["aberto"]
+
+
+async def test_mensagem_repetida_nao_duplica(ctx: Ctx) -> None:
+    d = await _descoberta(ctx)
+    await ctx.agrupador.processar(_novo(d))
+    await ctx.agrupador.processar(_novo(d))
+    assert len(await _alertas(ctx)) == 1
+
+
+async def test_aparelho_novo_de_descoberta_que_ja_nao_esta_pendente_e_ignorado(ctx: Ctx) -> None:
+    d = await _descoberta(ctx, status="ignorada")
+    await ctx.agrupador.processar(_novo(d))
+    await ctx.agrupador.processar(_novo("inexistente"))
+    await ctx.agrupador.processar(Mensagem("aparelho_novo", {"descoberta_id": 7}))
+    assert await _alertas(ctx) == []
+
+
+async def test_ignorar_fecha_e_nao_envia(ctx: Ctx) -> None:
+    d = await _descoberta(ctx)
+    await ctx.agrupador.processar(_novo(d))
+    ctx.parede.agora = T0 + timedelta(seconds=20)
+    await ctx.agrupador.processar(_removida(d))
+    [a] = await _alertas(ctx)
+    assert a.fechado_em == T0 + timedelta(seconds=20)
+    assert a.envio == "nao_aplica"
+    assert [m["acao"] for m in ctx.alertas_publicados()] == ["aberto", "fechado"]
+
+
+async def test_aprovar_fecha(ctx: Ctx) -> None:
+    d = await _descoberta(ctx)
+    await ctx.agrupador.processar(_novo(d))
+    await _alterar(ctx, (await _alertas(ctx))[0].id, envio="enviado")  # já foi ao Telegram
+    ctx.parede.agora = T0 + timedelta(minutes=5)
+    await ctx.agrupador.processar(_removida(d))
+    [a] = await _alertas(ctx)
+    assert a.fechado_em == T0 + timedelta(minutes=5) and a.envio == "enviado"
+    assert [x.tipo for x in await _alertas(ctx)] == ["aparelho_novo"]  # sem "volta"
+
+
+async def test_removida_de_outra_descoberta_nao_fecha(ctx: Ctx) -> None:
+    d = await _descoberta(ctx)
+    await ctx.agrupador.processar(_novo(d))
+    await ctx.agrupador.processar(_removida("outra"))
+    [a] = await _alertas(ctx)
+    assert a.fechado_em is None
+
+
+async def test_tick_fecha_aparelho_novo_cuja_descoberta_deixou_a_fila(ctx: Ctx) -> None:
+    d = await _descoberta(ctx)
+    await ctx.agrupador.processar(_novo(d))
+    async with ctx.sessoes() as s:  # aprovada com o agrupador parado (mensagem perdida)
+        x = await s.get(Descoberta, d)
+        assert x is not None
+        x.status = "aprovada"
+        await s.commit()
+    ctx.parede.agora = T0 + timedelta(seconds=30)
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert a.fechado_em is not None and a.envio == "nao_aplica"
+
+
+async def test_silencio_da_classe_sugerida_silencia(ctx: Ctx) -> None:
+    async with ctx.sessoes() as s:
+        s.add(
+            Silencio(
+                tipo="silencio",
+                alvo_tipo="classe",
+                classe_id=ctx.classes["camera"],
+                inicio=T0 - timedelta(hours=1),
+                fim=T0 + timedelta(hours=4),
+                pausados=[],
+            )
+        )
+        await s.commit()
+    d1 = await _descoberta(ctx, "d1", classe="camera")
+    d2 = await _descoberta(ctx, "d2", classe="switch")
+    d3 = await _descoberta(ctx, "d3", classe=None)
+    for d in (d1, d2, d3):
+        await ctx.agrupador.processar(_novo(d))
+    por = {a.descoberta_id: a for a in await _alertas(ctx)}
+    assert (por[d1].silenciado, por[d1].envio) == (True, "nao_aplica")
+    assert (por[d2].silenciado, por[d2].envio) == (False, "pendente")
+    assert (por[d3].silenciado, por[d3].envio) == (False, "pendente")
+
+
+async def test_demo_nasce_nao_aplica(ctx: Ctx) -> None:
+    silencios = Silencios(ctx.sessoes, cast(Any, None), ctx.barramento, ctx.relogio, ctx.parede)
+    demo = Agrupador(ctx.sessoes, ctx.barramento, silencios, ctx.relogio, ctx.parede, enviar=False)
+    d = await _descoberta(ctx)
+    await demo.processar(_novo(d))
+    [a] = await _alertas(ctx)
+    assert (a.envio, a.silenciado) == ("nao_aplica", False)
+
+
+async def _silencio_de_classe(c: Ctx, classe: str) -> None:
+    async with c.sessoes() as s:
+        s.add(
+            Silencio(
+                tipo="silencio",
+                alvo_tipo="classe",
+                classe_id=c.classes[classe],
+                inicio=T0 - timedelta(hours=1),
+                fim=T0 + timedelta(hours=4),
+                pausados=[],
+            )
+        )
+        await s.commit()
+
+
+async def _classe_da_descoberta(c: Ctx, id: str, classe: str | None) -> None:
+    async with c.sessoes() as s:
+        d = await s.get(Descoberta, id)
+        assert d is not None
+        d.classe_sugerida = classe
+        await s.commit()
+
+
+async def test_classe_que_muda_na_espera_silencia_no_tick(ctx: Ctx) -> None:
+    await _silencio_de_classe(ctx, "camera")
+    d = await _descoberta(ctx, classe=None)  # nasce sem classe: ainda não coberto
+    await ctx.agrupador.processar(_novo(d))
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (False, "pendente")
+    await _classe_da_descoberta(ctx, d, "camera")  # a sondagem trouxe as portas
+    ctx.parede.agora = T0 + timedelta(seconds=10)
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio, a.fechado_em) == (True, "nao_aplica", None)
+    assert ctx.alertas_publicados()[-1]["acao"] == "atualizado"
+
+
+async def test_silencio_criado_depois_da_abertura_silencia_no_tick(ctx: Ctx) -> None:
+    d = await _descoberta(ctx, classe="camera")
+    await ctx.agrupador.processar(_novo(d))
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (False, "pendente")  # sem silêncio, segue na fila
+    await _silencio_de_classe(ctx, "camera")
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (True, "nao_aplica")
+
+
+async def test_alerta_ja_enviado_nao_e_reavaliado(ctx: Ctx) -> None:
+    d = await _descoberta(ctx, classe="camera")
+    await ctx.agrupador.processar(_novo(d))
+    await _alterar(ctx, (await _alertas(ctx))[0].id, envio="enviado")
+    await _silencio_de_classe(ctx, "camera")
+    await ctx.agrupador.tick()
+    [a] = await _alertas(ctx)
+    assert (a.silenciado, a.envio) == (False, "enviado")

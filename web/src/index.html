@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="css/componentes.css">
   <link rel="stylesheet" href="css/novos.css">
   <link rel="stylesheet" href="css/alertas.css">
+  <link rel="stylesheet" href="css/diagnostico.css">
   <script src="js/tema.js"></script>
   <script type="module" src="js/app.js"></script>
   <script type="module" src="js/versao-pagina.js"></script>
@@ -50,6 +51,7 @@
         <button class="aba" role="tab" type="button" id="aba-teia" aria-controls="conteudo-teia" aria-selected="false" :aria-selected="abaSelecionada('teia')" @click="irPara('teia')">Teia</button>
         <button class="aba" role="tab" type="button" id="aba-organograma" aria-controls="conteudo-organograma" aria-selected="false" :aria-selected="abaSelecionada('organograma')" @click="irPara('organograma')">Organograma</button>
         <button class="aba" role="tab" type="button" id="aba-alertas" aria-controls="conteudo-alertas" aria-selected="false" :aria-selected="abaSelecionada('alertas')" @click="irPara('alertas')">Alertas<span class="aba-contador aba-contador-alerta" id="contador-alertas" x-show="temAlertasAbertos" x-cloak><span x-text="rotuloAlertasAbertos">0</span><span class="so-leitor"> abertos</span></span></button>
+        <button class="aba" role="tab" type="button" id="aba-diagnostico" aria-controls="conteudo-diagnostico" aria-selected="false" :aria-selected="abaSelecionada('diagnostico')" @click="irPara('diagnostico')">Diagnóstico</button>
         <button class="aba" role="tab" type="button" id="aba-novos" aria-controls="conteudo-novos" aria-selected="false" :aria-selected="abaSelecionada('novos')" @click="irPara('novos')">Novos<span class="aba-contador" id="contador-pendentes" x-show="temPendentes" x-cloak><span x-text="rotuloPendentes">0</span><span class="so-leitor"> pendentes</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-configuracoes" aria-controls="conteudo-configuracoes" aria-selected="false" :aria-selected="abaSelecionada('configuracoes')" @click="irPara('configuracoes')" hidden :hidden="!admin">Configurações</button>
       </nav>
@@ -76,6 +78,15 @@
       </div>
     </div>
   </header>
+
+  <!-- aviso de atualização (24 h depois de atualizar ou voltar; 7 dias sem verificar): abaixo do cabeçalho, nunca cobre o conteúdo -->
+  <div class="casca aviso-atz-faixa" id="aviso-atualizacao" x-show="atzAvisoVisivel" x-cloak>
+    <div :class="atzAvisoClasse" role="status">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10M8 9l4 4 4-4M5 17v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2"/></svg>
+      <p class="aviso-atz-texto" x-text="atzAvisoTexto"></p>
+      <button class="botao botao-fantasma" type="button" @click="dispensarAvisoAtualizacao">Dispensar<span class="so-leitor"> o aviso de atualização</span></button>
+    </div>
+  </div>
 
   <!-- um único <main>: as três abas são painéis dentro dele (a ativa é a única visível) -->
   <main class="conteudo" id="conteudo" tabindex="-1">
@@ -534,6 +545,11 @@
           <span class="al-marca"><svg class="icone-status" aria-hidden="true"><use :href="a.icone"/></svg><span x-text="a.rotuloMarca"></span></span>
           <div class="al-corpo">
             <p class="al-texto" x-text="a.texto"></p>
+            <p class="al-info-novo" x-show="a.detalheNovo">
+              <span class="mono" x-show="a.ipNovo" x-text="a.ipNovo"></span>
+              <span x-show="a.fabricanteNovo" x-text="a.fabricanteNovo"></span>
+              <span x-show="a.portasNovo"><span class="suave">portas</span> <span class="mono" x-text="a.portasNovo"></span></span>
+            </p>
             <p class="al-meta">
               <span><span class="suave">Desde</span> <time x-text="a.hora"></time> <span class="suave">(<span x-text="a.quando"></span>)</span></span>
               <span x-show="a.classeNome" x-text="a.classeNome"></span>
@@ -545,6 +561,7 @@
           </div>
           <div class="al-acoes">
             <button class="botao botao-fantasma" type="button" x-show="a.afetados" @click="alternarAfetados(a.id)" :aria-expanded="a.ariaExpandido" :aria-controls="a.idDetalhe" x-text="a.rotuloVer"></button>
+            <button class="botao" type="button" x-show="a.verEmNovos" @click="verDescobertaEmNovos(a.verEmNovos)">Ver em Novos</button>
             <template x-if="admin">
               <button class="botao" type="button" x-show="a.reconhecivel" @click="reconhecerAlerta(a.id)" :aria-label="a.rotuloReconhecer">Reconhecer</button>
             </template>
@@ -570,6 +587,169 @@
     <div class="al-mais" x-show="alertasMais" x-cloak>
       <button class="botao" type="button" :disabled="alertasCarregando" @click="maisAlertas">Mostrar mais alertas</button>
     </div>
+  </section>
+
+  <section class="casca dg" id="conteudo-diagnostico" role="tabpanel" aria-labelledby="aba-diagnostico" hidden :hidden="!abaDiagnostico" :class="dgClasse" :aria-busy="dgOcupado">
+    <div class="banner" role="status" aria-live="polite" x-show="bannerVisivel" x-cloak :class="bannerErro ? 'banner-erro' : ''">
+      <span class="giro-banner" aria-hidden="true" x-show="!bannerErro"></span><span x-text="textoBanner"></span>
+    </div>
+    <header class="secao-cabeca dg-cabeca">
+      <div class="secao-intro">
+        <h1 class="secao-titulo" tabindex="-1">Diagnóstico</h1>
+        <p class="dica">Por que a rede caiu: o Sentinela junta as quedas que começaram quase juntas num incidente só e diz o que provavelmente aconteceu.</p>
+      </div>
+      <div class="segmentos dg-periodos" role="group" aria-label="Período do diagnóstico">
+        <template x-for="p in dgPeriodos" :key="p.valor">
+          <button class="segmento" type="button" :aria-pressed="periodoDiagnosticoAtivo(p.valor)" @click="trocarPeriodoDiagnostico(p.valor)" x-text="p.rotulo"></button>
+        </template>
+      </div>
+    </header>
+
+    <div class="dg-laudo-cabeca" aria-hidden="true">
+      <p class="dg-laudo-marca">Sentinela</p>
+      <h2 x-text="dgTituloLaudo"></h2>
+      <p x-text="dgPeriodoTexto"></p>
+      <p x-text="dgGeradoEm"></p>
+    </div>
+
+    <div class="dg-ferramentas" x-show="dgTemDados" x-cloak>
+      <p class="dg-periodo" id="dg-periodo-texto" x-text="dgPeriodoTexto"></p>
+      <div class="dg-acoes">
+        <button class="botao" id="dg-baixar-csv" type="button" :disabled="dgBaixando" @click="baixarCsv">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11M8 10l4 4 4-4M5 17v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2"/></svg>Baixar CSV
+        </button>
+        <button class="botao botao-primario" id="dg-imprimir" type="button" @click="imprimirLaudo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V3h10v6M7 17H5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-2M7 14h10v7H7z"/></svg>Imprimir laudo
+        </button>
+      </div>
+    </div>
+
+    <p class="dica dg-nota" id="dg-nota" x-show="dgTemDados" x-cloak>O período conta os incidentes que <strong>começaram</strong> nele: quedas iniciadas antes do período não entram no tempo fora.</p>
+    <p class="alerta" role="alert" id="dg-erro" x-show="dgErro" x-text="dgErro"></p>
+    <p class="alerta" role="alert" id="dg-erro-csv" x-show="dgErroCsv" x-text="dgErroCsv"></p>
+    <div class="dg-tentar" x-show="dgErro" x-cloak>
+      <button class="botao" type="button" @click="tentarDiagnosticoDeNovo" :disabled="dgCarregando">Tentar de novo</button>
+    </div>
+    <p class="vazio" id="dg-carregando" role="status" x-show="dgCarregando &amp;&amp; !dgTemDados" x-cloak>Carregando o diagnóstico…</p>
+    <p class="alerta dg-aviso" id="dg-aviso-gateway" role="note" x-show="dgAvisoGateway" x-cloak x-text="dgAvisoGateway"></p>
+    <p class="alerta dg-aviso" id="dg-aviso-truncado" role="note" x-show="dgTruncado" x-cloak>Este período tem mais quedas do que cabem no laudo: a lista e o CSV mostram só as mais recentes e parte dos aparelhos de cada incidente. Escolha um período menor para ver tudo.</p>
+
+    <div class="dg-vazio" id="dg-vazio" role="status" x-show="dgVazio" x-cloak>
+      <svg class="icone-status st-online" aria-hidden="true"><use href="#i-online"/></svg>
+      <div>
+        <p class="dg-vazio-titulo">Nenhuma queda no período.</p>
+        <p class="dica">O Sentinela seguiu vigiando e não registrou nenhum incidente neste período. Está tudo certo por aqui.</p>
+      </div>
+    </div>
+
+    <section class="dg-resumo" id="dg-resumo" aria-label="Resumo do período" x-show="dgTemDados &amp;&amp; !dgVazio" x-cloak>
+      <div class="dg-cartao dg-cartao-total">
+        <span class="dg-rot">Incidentes</span>
+        <span class="dg-num" id="dg-total" x-text="dgTotal"></span>
+        <span class="dg-leg">no período</span>
+      </div>
+      <div class="dg-cartao dg-cartao-total">
+        <span class="dg-rot">Tempo fora</span>
+        <span class="dg-num" id="dg-fora" x-text="dgFora"></span>
+        <span class="dg-leg">com algum aparelho fora, sem contar em dobro</span>
+      </div>
+      <template x-for="t in dgTiposResumo" :key="t.k">
+        <div class="dg-cartao">
+          <span class="dg-rot" x-text="t.rotulo"></span>
+          <span class="dg-num dg-num-tipo" x-text="t.total"></span>
+        </div>
+      </template>
+    </section>
+
+    <section class="cfg-bloco dg-bloco" id="dg-horas" aria-labelledby="dg-horas-titulo" x-show="dgTemDados &amp;&amp; !dgVazio" x-cloak>
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="dg-horas-titulo">Em que horas as quedas começam</h2>
+          <p class="dica">Incidentes por hora do dia, no horário local. Um horário que se repete aponta para a causa (por exemplo, o roteador reiniciando sempre na mesma hora).</p>
+        </div>
+        <p class="dg-pico-texto" id="dg-pico" x-text="dgPico"></p>
+      </div>
+      <div class="dg-grafico" aria-hidden="true">
+        <template x-for="b in dgBarras" :key="b.hora">
+          <div class="dg-coluna" :title="b.rotulo">
+            <span class="dg-numero" x-text="b.numero"></span>
+            <span class="dg-trilho"><span :class="b.classe" :style="b.estilo"></span></span>
+            <span class="dg-eixo" x-text="b.eixo"></span>
+          </div>
+        </template>
+      </div>
+      <p class="dica dg-legenda-eixo" aria-hidden="true">Hora do dia (0 a 23). A barra com contorno é a hora com mais incidentes.</p>
+      <table class="so-leitor" id="dg-tabela-horas">
+        <caption>Incidentes por hora do dia</caption>
+        <thead><tr><th scope="col">Hora</th><th scope="col">Incidentes</th></tr></thead>
+        <tbody>
+          <template x-for="b in dgBarras" :key="b.hora">
+            <tr><th scope="row" x-text="b.rotuloHora"></th><td x-text="b.total"></td></tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="cfg-bloco dg-bloco" id="dg-sugestoes" aria-labelledby="dg-sug-titulo" x-show="dgSugestoes.length" x-cloak>
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="dg-sug-titulo">O que conferir, por tipo de incidente</h2>
+        </div>
+      </div>
+      <div class="dg-sug-grade">
+        <template x-for="s in dgSugestoes" :key="s.tipo">
+          <article :class="'dg-sug dg-tipo-' + s.tipo">
+            <h3 x-text="s.rotulo"></h3>
+            <ul>
+              <template x-for="x in s.sugestoesItens" :key="x.k">
+                <li x-text="x.t"></li>
+              </template>
+            </ul>
+          </article>
+        </template>
+      </div>
+    </section>
+
+    <section class="cfg-bloco dg-bloco" id="dg-incidentes" aria-labelledby="dg-inc-titulo" x-show="dgTemIncidentes" x-cloak>
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="dg-inc-titulo">Incidentes</h2>
+          <p class="dica" id="dg-contagem" role="status" x-text="dgContagem"></p>
+        </div>
+      </div>
+      <ol class="dg-lista" id="lista-incidentes" aria-label="Incidentes do período">
+        <template x-for="i in dgIncidentes" :key="i.chave">
+          <li :class="'dg-inc ' + i.classe">
+            <div class="dg-inc-cabeca">
+              <h3 class="dg-inc-rotulo"><svg class="icone-status" aria-hidden="true"><use :href="i.icone"/></svg><span x-text="i.rotulo"></span></h3>
+              <p class="dg-inc-meta"><time x-text="i.quando"></time><span class="suave"> · duração </span><span x-text="i.duracao"></span></p>
+            </div>
+            <div class="dg-inc-porque">
+              <p class="dg-inc-sub">Por quê</p>
+              <ul>
+                <template x-for="x in i.porqueItens" :key="x.k">
+                  <li x-text="x.t"></li>
+                </template>
+              </ul>
+            </div>
+            <div class="dg-inc-equip">
+              <p class="dg-inc-sub">Aparelhos afetados</p>
+              <ul class="dg-nomes">
+                <template x-for="e in i.equipamentosItens" :key="e.k">
+                  <li x-text="e.nome"></li>
+                </template>
+              </ul>
+              <p class="dica" x-show="i.maisEquipamentos" x-text="i.maisEquipamentos"></p>
+            </div>
+          </li>
+        </template>
+      </ol>
+      <div class="dg-mais" x-show="dgTemMais" x-cloak>
+        <button class="botao" id="dg-mais" type="button" @click="mostrarMaisDiagnostico" x-text="dgRotuloMais"></button>
+      </div>
+    </section>
+
+    <p class="dica dg-energia-fim" id="dg-energia" x-show="dgTemDados" x-cloak x-text="dgAvisoEnergia"></p>
   </section>
 
   <section class="casca" id="conteudo-novos" role="tabpanel" aria-labelledby="aba-novos" hidden :hidden="!abaNovos">
@@ -621,7 +801,7 @@
             </button>
           </template>
           <template x-if="r.ehCartao">
-            <article class="nv-cartao" :class="r.d.classeCartao" :data-id="r.d.id" :aria-labelledby="r.d.idTitulo">
+            <article class="nv-cartao" :class="r.d.classeCartao" :data-id="r.d.id" :aria-labelledby="r.d.idTitulo" tabindex="-1">
               <div class="nv-sel" x-show="loteVisivel">
                 <input type="checkbox" :data-id="r.d.id" :checked="r.d.selecionada" :disabled="r.d.bloqueado" @change="aoSelecionar" :aria-label="r.d.rotuloSelecionar">
               </div>
@@ -797,17 +977,37 @@
         </div>
       </div>
       <p class="alerta" role="alert" x-show="cfgSubredesErro" x-text="cfgSubredesErro"></p>
+      <div class="cfg-intervalo" id="cfg-intervalo-bloco">
+        <div class="campo-form">
+          <label for="cfg-intervalo">Varredura automática a cada (minutos)</label>
+          <input id="cfg-intervalo" type="number" inputmode="numeric" min="15" max="240" step="1" autocomplete="off" x-model="intervaloCampo" @input="aoEditarIntervalo" aria-describedby="cfg-intervalo-dica cfg-intervalo-erro">
+        </div>
+        <button class="botao" id="cfg-intervalo-salvar" type="button" :disabled="enviando" @click="salvarIntervalo">Salvar intervalo</button>
+        <p class="dica" id="cfg-intervalo-dica">Nas sub-redes com varredura permitida, o Sentinela varre sozinho, uma sub-rede de cada vez, no ritmo lento de sempre. De 15 a 240 minutos; o padrão é 30.</p>
+        <p class="campo-erro" id="cfg-intervalo-erro" role="alert" x-show="intervaloErro" x-text="intervaloErro"></p>
+      </div>
       <ul class="cfg-subredes" id="cfg-subredes">
         <template x-for="s in cfgSubredes" :key="s.id">
           <li>
-            <code class="mono" x-text="s.cidr"></code>
-            <button class="chave" type="button" role="switch" :aria-checked="s.marcado" :aria-label="s.rotuloChave" :disabled="enviando" @click="alternarVarreduraSubrede(s.id)">
-              <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
-              <span class="chave-rotulo">Permitir varredura</span>
-            </button>
-            <button class="botao" type="button" x-show="s.permite" :disabled="varreduraOcupada" @click="iniciarVarreduraSubrede(s.id)" :aria-label="s.rotuloIniciar">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 12l5-3"/></svg>Iniciar varredura
-            </button>
+            <div class="cfg-subrede-topo">
+              <code class="mono" x-text="s.cidr"></code>
+              <button class="chave" type="button" role="switch" :aria-checked="s.marcado" :aria-label="s.rotuloChave" :disabled="enviando" @click="alternarVarreduraSubrede(s.id)">
+                <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+                <span class="chave-rotulo">Permitir varredura</span>
+              </button>
+              <button class="botao" type="button" x-show="s.permite" :disabled="varreduraOcupada" @click="iniciarVarreduraSubrede(s.id)" :aria-label="s.rotuloIniciar">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 12l5-3"/></svg>Iniciar varredura
+              </button>
+            </div>
+            <p class="dica cfg-subrede-meta" x-text="s.ultimaVarredura"></p>
+            <div class="cfg-subrede-gw">
+              <div class="campo-form">
+                <label :for="s.idGateway">Gateway (roteador)</label>
+                <input :id="s.idGateway" :data-id="s.id" maxlength="45" autocomplete="off" spellcheck="false" placeholder="192.168.15.1" :value="s.gatewayCampo" @input="aoEditarGateway" :aria-describedby="s.idGatewayErro" :aria-label="s.rotuloGateway">
+              </div>
+              <button class="botao" type="button" :disabled="enviando" @click="salvarGatewaySubrede(s.id)" :aria-label="s.rotuloSalvarGateway">Salvar gateway</button>
+            </div>
+            <p class="campo-erro" role="alert" :id="s.idGatewayErro" x-show="s.gatewayErro" x-text="s.gatewayErro"></p>
           </li>
         </template>
       </ul>
@@ -1006,6 +1206,27 @@
       </ul>
       <p class="dica cfg-bk-dir">Guardadas no volume de dados do Sentinela, em <span class="mono" x-text="bkDiretorio"></span>. Para restaurar, use o <span class="mono">backup.sh</span> no servidor.</p>
     </section>
+
+    <section class="cfg-bloco" id="cfg-atualizacoes" aria-labelledby="cfg-atz-titulo" x-show="admin" x-cloak>
+      <div class="cfg-bloco-cabeca">
+        <div>
+          <h2 id="cfg-atz-titulo">Atualizações</h2>
+          <p class="dica" id="atz-versao" x-text="atzVersao"></p>
+        </div>
+      </div>
+      <p class="alerta alerta-ok" id="atz-aviso" role="status" x-show="atzAviso" x-text="atzAviso"></p>
+      <p class="alerta" id="atz-erro" role="alert" x-show="atzErro" x-text="atzErro"></p>
+      <p class="alerta" id="atz-ilegivel" x-show="atzIlegivel" x-cloak><strong>Arquivo de estado ilegível.</strong> O Sentinela não conseguiu ler o registro das atualizações; vale o padrão (ligada) até a próxima verificação.</p>
+      <div class="cfg-atz-chave" x-show="atzCarregado" x-cloak>
+        <button class="chave" id="atz-ativo" type="button" role="switch" :aria-checked="atzMarcado" :disabled="atzSalvando" @click="alternarAtualizacao">
+          <span class="chave-trilho" aria-hidden="true"><span class="chave-botao"></span></span>
+          <span class="chave-rotulo">Atualizar sozinho</span>
+        </button>
+        <p class="dica" id="atz-agendamento" x-text="atzAgendamento"></p>
+      </div>
+      <p :class="atzResultadoClasse" id="atz-resultado" x-text="atzResultado"></p>
+      <p class="cfg-fuso"><span class="suave">Horários no fuso:</span> <strong class="mono" x-text="fuso"></strong></p>
+    </section>
     </div>
   </section>
   </main>
@@ -1058,6 +1279,7 @@
               </div>
               <p class="alerta" x-show="c.erroAcao" x-text="c.erroAcao"></p>
               <div class="ca-acoes">
+                <button class="botao botao-primario" type="button" x-show="c.verEmNovos" @click="verEmNovosDoCartao(c.id)">Ver em Novos</button>
                 <button class="botao" type="button" x-show="c.temEquipamento" @click="verNaTeiaDoCartao(c.id)">Ver na Teia</button>
                 <button class="botao" type="button" @click="verAlertaDoCartao(c.id)">Ver alerta</button>
                 <template x-if="admin">

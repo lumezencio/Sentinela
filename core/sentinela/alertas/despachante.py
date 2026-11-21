@@ -5,7 +5,8 @@ cifrado que não decifra vira o status fixo "Token ilegível."). Com Telegram co
 cada alerta ``pendente`` e não silenciado, em ordem de abertura:
 
 - queda espera ``CONFIRMAR_QUEDA_S`` depois de aberta (tempo para agrupar e para o
-  caiu-e-voltou); volta, instável, fonte e queda já fechada como caiu-e-voltou saem na hora;
+  caiu-e-voltou) e ``aparelho_novo`` espera ``CONFIRMAR_NOVO_S`` (a sondagem traz as portas);
+  volta, instável, fonte e queda já fechada como caiu-e-voltou saem na hora;
 - ``pendente`` + fechado (``fechado_em``) + ``telegram_msgs`` é o fim de uma queda já enviada
   (caiu-e-voltou ou queda fechada depois):
   ``editMessageText`` em cada chat guardado que segue configurado, e ``sendMessage`` do texto do
@@ -56,6 +57,7 @@ log = logging.getLogger(__name__)
 
 CICLO_S = 5.0
 CONFIRMAR_QUEDA_S = 60
+CONFIRMAR_NOVO_S = 60  # aparelho novo: tempo da sondagem trazer as portas
 ESPERA_INICIAL_S = 30
 ESPERA_MAX_S = 1800
 DESISTIR = timedelta(hours=24)
@@ -171,6 +173,7 @@ class Despachante:
         edicoes: list[_Item] = []
         envios: list[_Item] = []
         confirmar = timedelta(seconds=CONFIRMAR_QUEDA_S)
+        confirmar_novo = timedelta(seconds=CONFIRMAR_NOVO_S)
         for a in list(linhas):
             if agora - a.aberto_em >= DESISTIR:  # mesmo com nova tentativa marcada
                 vencidos.append(a.id)
@@ -178,6 +181,8 @@ class Despachante:
             if a.envio_proxima is not None and a.envio_proxima > agora:
                 continue
             if a.tipo == "queda" and not a.breve and agora - a.aberto_em < confirmar:
+                continue
+            if a.tipo == "aparelho_novo" and agora - a.aberto_em < confirmar_novo:
                 continue
             dados = await dados_do_alerta(db, a)
             item = _Item(

@@ -3,6 +3,7 @@
 // "painel". O texto do alerta vem do banco (nome de equipamento pode ser hostil e longo): só
 // vai à tela por x-text e nunca é cortado; quem exibe quebra a linha.
 import { api } from "./api.js";
+import { portasEmTexto } from "./cartoes.js";
 import { candidatosPai } from "./dependencia.js";
 import { ESTADOS, haQuanto } from "./lista.js";
 import { textoSeguro } from "./novos.js";
@@ -26,12 +27,14 @@ const MAX_DIAS = 30;
 const DIA_MS = 86_400_000;
 const MAX_MOTIVO = 200;
 const MAX_CANDIDATOS = 8;
+const TEXTO_APARELHO_NOVO = "Novo aparelho conectou na rede";
 const MSG_FALHA = "Não foi possível concluir. Tente de novo.";
 const MSG_ALERTAS = "Não foi possível carregar os alertas.";
 const MARCAS = {
   aberto: { icone: "#i-offline", rotulo: "Aberto" },
   instavel: { icone: "#i-instavel", rotulo: "Instável" },
   fechado: { icone: "#i-online", rotulo: "Resolvido" },
+  novo: { icone: "#i-desconhecido", rotulo: "Novo" },
 };
 const ENVIOS = {
   enviado: "Telegram enviado",
@@ -109,7 +112,8 @@ const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 /** Linha pronta para a tela (objeto plano; o texto do alerta fica INTEIRO). */
 export function linhaDoAlerta(a, agora = Date.now(), fuso = FUSO_PADRAO) {
   const fechado = Boolean(a.fechado_em);
-  const marca = fechado ? "fechado" : a.tipo === "instavel" ? "instavel" : "aberto";
+  const novo = a.tipo === "aparelho_novo";
+  const marca = fechado ? "fechado" : novo ? "novo" : a.tipo === "instavel" ? "instavel" : "aberto";
   const afetados = Number.isInteger(a.afetados_total) ? a.afetados_total : 0;
   let fechadoTexto = "";
   if (fechado) {
@@ -124,7 +128,8 @@ export function linhaDoAlerta(a, agora = Date.now(), fuso = FUSO_PADRAO) {
     rotuloMarca: MARCAS[marca].rotulo,
     hora: horaNoFuso(a.aberto_em, agora, fuso),
     quando: haQuanto(a.aberto_em, agora),
-    texto: String(a.texto ?? ""),
+    // aparelho novo: o texto do servidor já traz IP e fabricante, que a linha mostra à parte
+    texto: novo ? TEXTO_APARELHO_NOVO : String(a.texto ?? ""),
     rotuloEnvio: rotuloEnvio(a.envio, a.silenciado),
     afetados,
     rotuloAfetados: afetados ? plural(afetados, "afetado", "afetados") : "",
@@ -136,7 +141,23 @@ export function linhaDoAlerta(a, agora = Date.now(), fuso = FUSO_PADRAO) {
     equipamentoId: a.equipamento_id || "",
     equipamentoNome: textoSeguro(a.equipamento_nome, 200),
     classe: a.classe || "",
+    detalhe: novo ? detalheDoAparelhoNovo(a) : "",
+    // as mesmas três partes, para a tela compor com tipos de letra diferentes (IP e portas em mono)
+    ipNovo: novo ? textoSeguro(a.ip, 45) : "",
+    fabricanteNovo: novo ? textoSeguro(a.fabricante, 120) : "",
+    portasNovo: novo ? portasEmTexto(a.portas) : "",
+    verEmNovos: novo && !fechado && typeof a.descoberta_id === "string" ? a.descoberta_id : "",
   };
+}
+
+/** "192.168.15.23 · Fabricante · portas 80, 443" (o que faltar não aparece; nada é cortado). */
+function detalheDoAparelhoNovo(a) {
+  const portas = portasEmTexto(a.portas);
+  return [
+    textoSeguro(a.ip, 45),
+    textoSeguro(a.fabricante, 120),
+    portas ? `portas ${portas}` : "",
+  ].filter(Boolean).join(" · ");
 }
 
 const maisRecente = (a, b) => Date.parse(b.aberto_em) - Date.parse(a.aberto_em) || b.id - a.id;
@@ -406,6 +427,7 @@ export function alertasDoPainel(store) {
         const d = detalhes.get(a.id) || { carregando: false, erro: "", lista: [] };
         return {
           ...l,
+          detalheNovo: l.detalhe, // `detalhe` é o painel dos afetados (objeto) na linha da tela
           classeNome: classe ? classe.nome : textoSeguro(l.classe, 32),
           classeLinha: `al-linha al-${l.marca}`,
           expandido: aberto,

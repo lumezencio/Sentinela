@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sentinela.config import Settings
+from sentinela.config import Settings, pasta_dados
 
 CHAVE = secrets.token_hex(32)
 
@@ -53,3 +53,49 @@ def test_ca_adicional_inexistente_recusado(tmp_path: Path) -> None:
     pem = tmp_path / "ca.pem"
     pem.write_text("x")
     assert Settings(chave_sessao="x", chave_credenciais=CHAVE, ca_adicional=str(pem))
+
+
+def test_rede_sugerida_valida() -> None:
+    s = Settings(
+        chave_sessao="x",
+        chave_credenciais=CHAVE,
+        rede_sugerida="192.168.15.0/24",
+        gateway_sugerido="192.168.15.1",
+    )
+    assert (s.rede_sugerida, s.gateway_sugerido) == ("192.168.15.0/24", "192.168.15.1")
+    assert Settings(chave_sessao="x", chave_credenciais=CHAVE).rede_sugerida == ""
+
+
+@pytest.mark.parametrize("rede", ["8.8.8.0/24", "10.0.0.0/8", "lixo", "192.168.15.1/24"])
+def test_rede_sugerida_invalida_vira_vazia_sem_impedir_a_subida(rede: str) -> None:
+    s = Settings(
+        chave_sessao="x",
+        chave_credenciais=CHAVE,
+        rede_sugerida=rede,
+        gateway_sugerido="192.168.15.1",
+    )
+    assert (s.rede_sugerida, s.gateway_sugerido) == ("", "")
+
+
+@pytest.mark.parametrize(
+    "gateway", ["192.168.16.1", "192.168.15.0", "192.168.15.255", "lixo", "::1"]
+)
+def test_gateway_sugerido_invalido_vira_vazio(gateway: str) -> None:
+    s = Settings(
+        chave_sessao="x",
+        chave_credenciais=CHAVE,
+        rede_sugerida="192.168.15.0/24",
+        gateway_sugerido=gateway,
+    )
+    assert (s.rede_sugerida, s.gateway_sugerido) == ("192.168.15.0/24", "")
+
+
+def test_pasta_dados_e_a_do_banco(tmp_path: Path) -> None:
+    s = Settings(
+        chave_sessao="x", chave_credenciais=CHAVE, banco_url=f"sqlite+aiosqlite:///{tmp_path}/a.db"
+    )
+    assert pasta_dados(s) == tmp_path
+    assert pasta_dados(Settings(chave_sessao="x", chave_credenciais=CHAVE)) == Path("/dados")
+    memoria = Settings(chave_sessao="x", chave_credenciais=CHAVE, banco_url="sqlite+aiosqlite://")
+    with pytest.raises(ValueError, match="memória"):
+        pasta_dados(memoria)

@@ -12,6 +12,7 @@ URL local e ``SENTINELA_SMOKE_COMPOSE_LOCAL=1`` (senão o cenário é pulado).
 
 import gzip
 import hashlib
+import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,11 +21,11 @@ from typing import Any
 import pytest
 from playwright.sync_api import Browser, ConsoleMessage, Page, Response, Route, expect
 
-from conftest import Alvo
+from conftest import GATEWAY_DO_ASSISTENTE, REDE_DO_ASSISTENTE, Alvo, Instalacao
 
 TETO_PRIMEIRA_TELA = 150 * 1024  # gzip, §12
-TOTAL_DEMO = 300
-CAMERAS_DEMO = 120
+TOTAL_DEMO = 300 + 7  # rede sintética + os 7 aparelhos da rede do Diagnóstico (10.99.0.0/24)
+CAMERAS_DEMO = 120 + 3  # mais as 3 câmeras da rede do Diagnóstico
 POR_PAGINA = 50
 TIPOS_PRIMEIRA_TELA = ("document", "script", "stylesheet", "image", "fetch", "font")
 
@@ -1007,7 +1008,9 @@ def test_organograma_filtros_compartilhados_recolher_e_painel(page: Page, alvo: 
     page.get_by_role("combobox", name="Classe").select_option(label="Gravadores")
     secao = abrir_organograma(page)
     expect(secao.locator(".org-cartao")).to_have_count(1)
-    expect(secao.locator('.org-cartao[data-slug="gravador"] .org-item')).to_have_count(8)
+    expect(secao.locator('.org-cartao[data-slug="gravador"] .org-item')).to_have_count(
+        9
+    )  # 8 da rede sintética + o da rede do Diagnóstico
     expect(secao.get_by_role("combobox", name="Classe")).to_have_value("gravador")
     secao.get_by_role("combobox", name="Classe").select_option(label="Todas")
     page.get_by_role("tab", name="Lista").click()
@@ -3433,3 +3436,789 @@ def test_versao_aparece_no_painel_e_no_login_em_todas_as_larguras(
             assert m["y0"] >= 0 and m["rolagem"] <= largura, (largura, m)
         finally:
             contexto.close()
+
+
+# ---------------------------------------------------------------- primeiro acesso (Fase 5)
+COMANDO_NOVO_CODIGO = "docker compose exec core python -m sentinela.cli codigo-instalacao"
+LOGIN_64_ASSISTENTE = ("administrador-geral-da-rede-do-escritorio-" + "x" * 40)[:64]
+SENHA_ASSISTENTE = "senha-ficticia-do-smoke-1"
+
+
+def abrir_instalacao(browser: Browser, inst: Instalacao, largura: int = 1280) -> Page:
+    contexto = browser.new_context(
+        viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=inst.url
+    )
+    return contexto.new_page()
+
+
+def conferir_codigo(page: Page, texto: str) -> None:
+    page.get_by_label("Código de instalação", exact=True).fill(texto)
+    page.get_by_role("button", name="Continuar").click()
+
+
+def test_sem_usuario_login_leva_ao_primeiro_acesso(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/login.html")
+        page.wait_for_url("**/primeiro-acesso.html", timeout=10_000)
+        expect(page.get_by_role("heading", name="Código de instalação")).to_be_visible()
+        expect(page.locator("[data-versao]")).to_have_text(re.compile(r"^v\d+\.\d+\.\d+"))
+    finally:
+        page.context.close()
+
+
+def test_codigo_errado_mostra_erro_generico_e_fica_no_passo(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ZZZZ-0000")  # formato inválido: nem sai do navegador
+        expect(page.locator("#erro-codigo")).to_contain_text("O código tem 8 letras e números")
+        conferir_codigo(page, "ZZZZ-9876")
+        expect(page.locator("#erro-codigo")).to_have_text("Código inválido.")
+        expect(page.locator("#codigo")).to_have_value("")  # nunca fica o que foi digitado
+        expect(page.locator("#passo-codigo")).to_be_visible()
+        expect(page.locator("#passo-administrador")).to_be_hidden()
+        assert page.locator("#erro-codigo").get_attribute("role") == "alert"
+    finally:
+        page.context.close()
+
+
+def test_codigo_expirado_mostra_o_comando_para_gerar_outro(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    instalacao_nova.regravar_codigo(horas_atras=25)
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/primeiro-acesso.html")
+        expect(page.locator("#pa-comando")).to_have_text(COMANDO_NOVO_CODIGO)
+        expect(page.locator("#pa-novo-texto")).to_contain_text("não existe ou expirou")
+        conferir_codigo(page, "ABCD-2345")  # o código certo, mas vencido: resposta genérica
+        expect(page.locator("#erro-codigo")).to_have_text("Código inválido.")
+        expect(page.locator("#passo-administrador")).to_be_hidden()
+    finally:
+        page.context.close()
+
+
+def test_muitas_tentativas_mostra_como_gerar_codigo_novo(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        texto = (
+            "Muitas tentativas. Aguarde, ou gere um código novo no terminal "
+            "(python -m sentinela.cli codigo-instalacao)."
+        )
+        page.route(
+            "**/api/v1/primeiro-acesso/conferir",
+            lambda r: r.fulfill(
+                status=429,
+                content_type="application/json",
+                body=json.dumps({"detail": texto}),
+                headers={"Retry-After": "120"},
+            ),
+        )
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ABCD-2345")
+        expect(page.locator("#erro-codigo")).to_have_text(texto)
+        expect(page.locator("#continuar-codigo")).to_be_disabled()
+        expect(page.locator("#continuar-codigo")).to_contain_text("Aguarde")
+        expect(page.locator("#pa-comando")).to_have_text(COMANDO_NOVO_CODIGO)
+        expect(page.locator("#codigo")).to_have_value("")
+    finally:
+        page.context.close()
+
+
+def test_limite_do_nginx_nao_pede_codigo_novo(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.route(  # 429 do nginx: corpo HTML, sem JSON
+            "**/api/v1/primeiro-acesso/conferir",
+            lambda r: r.fulfill(status=429, content_type="text/html", body="<html>429</html>"),
+        )
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ABCD-2345")
+        expect(page.locator("#erro-codigo")).to_have_text(
+            "Muitas tentativas. Aguarde um minuto e tente de novo."
+        )
+        expect(page.locator("#continuar-codigo")).to_contain_text("Aguarde")
+        expect(page.locator("#pa-novo-texto")).not_to_contain_text("libera o bloqueio")
+        expect(page.locator("#pa-novo-codigo.pa-destaque")).to_have_count(0)
+    finally:
+        page.context.close()
+
+
+def test_codigo_expirado_sem_usuario_login_nao_redireciona(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    instalacao_nova.regravar_codigo(horas_atras=25)
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/login.html")
+        expect(page.get_by_role("button", name="Entrar")).to_be_visible()
+        aviso = page.locator("#aviso-instalacao")
+        expect(aviso).to_be_visible()
+        expect(aviso).to_contain_text("Instalação ainda sem administrador")
+        expect(aviso).to_contain_text("python -m sentinela.cli codigo-instalacao")
+        page.wait_for_timeout(1000)  # a consulta já voltou: nada de redirecionar
+        assert page.url.endswith("/login.html")
+    finally:
+        page.context.close()
+
+
+def test_passo_2_nao_tem_voltar_e_codigo_nao_fica_na_pagina(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "ABCD-2345")
+        expect(page.locator("#passo-administrador")).to_be_visible()
+        expect(page.locator("#passo-administrador [data-voltar]")).to_have_count(0)
+        expect(page.locator("#codigo")).to_have_value("")
+    finally:
+        page.context.close()
+
+
+def test_assistente_completo_entra_no_painel_com_roteador_e_varredura(
+    browser: Browser, instalacao_nova: Instalacao
+) -> None:
+    page = abrir_instalacao(browser, instalacao_nova)
+    try:
+        erros = vigiar_console(page)
+        page.goto("/primeiro-acesso.html")
+        conferir_codigo(page, "abcd 2345")  # minúsculas e espaço valem
+        expect(page.get_by_role("heading", name="Administrador")).to_be_visible()
+        assert "2345" not in page.content()  # o código não fica na página
+        page.get_by_label("Login", exact=True).fill(LOGIN_64_ASSISTENTE)
+        page.get_by_label("Senha", exact=True).fill("curta")
+        page.get_by_label("Repita a senha").fill("curta")
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.locator("#erro-administrador")).to_contain_text("pelo menos 12 caracteres")
+        page.get_by_label("Senha", exact=True).fill(SENHA_ASSISTENTE)
+        page.get_by_label("Repita a senha").fill(SENHA_ASSISTENTE)
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.get_by_role("heading", name="Sua rede")).to_be_visible()
+        expect(page.locator("#cidr")).to_have_value(REDE_DO_ASSISTENTE)
+        expect(page.locator("#gateway")).to_have_value(GATEWAY_DO_ASSISTENTE)
+        chave = page.get_by_role("switch", name="Achar os aparelhos sozinho (varredura)")
+        expect(chave).to_have_attribute("aria-checked", "true")
+        expect(page.locator("#pa-arp")).to_contain_text("pedido ARP")
+        page.get_by_label("Sub-rede", exact=True).fill("8.8.8.0/24")
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.locator("#erro-rede")).to_have_text("A sub-rede deve ser privada (RFC 1918).")
+        page.get_by_label("Sub-rede", exact=True).fill(REDE_DO_ASSISTENTE)
+        page.get_by_role("button", name="Continuar").click()
+        expect(page.get_by_role("heading", name="Tudo pronto?")).to_be_visible()
+        expect(page.locator("#res-login")).to_have_text(LOGIN_64_ASSISTENTE)
+        expect(page.locator("#res-cidr")).to_have_text(REDE_DO_ASSISTENTE)
+        page.get_by_role("button", name="Concluir e entrar").click()
+        page.wait_for_url("**/index.html", timeout=20_000)
+        expect(page.locator("#lista tbody tr.linha", has_text="Roteador")).to_have_count(
+            1, timeout=15_000
+        )
+        expect(page.locator("#faixa-varredura")).to_be_visible(timeout=15_000)
+        assert erros == [], erros
+        # o assistente acabou: a página volta ao login (o usuário agora existe)
+        page.goto("/primeiro-acesso.html")
+        page.wait_for_url("**/login.html", timeout=10_000)
+    finally:
+        page.context.close()
+
+
+def test_com_usuario_primeiro_acesso_html_volta_ao_login(browser: Browser, alvo: Alvo) -> None:
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        page = contexto.new_page()
+        page.goto("/primeiro-acesso.html")
+        page.wait_for_url("**/login.html", timeout=10_000)
+        expect(page.get_by_role("button", name="Entrar")).to_be_visible()
+        expect(page.locator("#aviso-instalacao")).to_be_hidden()  # há usuário: sem aviso
+        entrar(page, alvo)  # o login segue normal
+    finally:
+        contexto.close()
+
+
+def test_visualizador_nao_alcanca_o_primeiro_acesso(browser: Browser, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        page = contexto.new_page()
+        entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+        page.goto("/primeiro-acesso.html")
+        page.wait_for_url("**/login.html", timeout=10_000)
+        expect(page.locator("#passo-codigo")).to_have_count(0)
+        assert page.request.get("/api/v1/primeiro-acesso").status == 404
+        for rota in ("conferir", "concluir"):
+            r = page.request.post(f"/api/v1/primeiro-acesso/{rota}", data={"codigo": "ABCD2345"})
+            assert r.status == 404, (rota, r.status)
+    finally:
+        contexto.close()
+
+
+# ---------- Fase 5, Task 10: aparelho novo, Sub-redes e Atualizações ----------
+def aviso_de_atualizacao(**campos: Any) -> dict[str, Any]:
+    """Corpo de ``GET /atualizacao`` (fictício) para o smoke."""
+    import datetime as dt
+
+    agora = dt.datetime.now(dt.UTC).isoformat()
+    padrao: dict[str, Any] = {
+        "versao": "0.5.0",
+        "ativo": True,
+        "agendado": True,
+        "ultima_verificacao": agora,
+        "ultima_verificacao_ok": agora,
+        "resultado": "atualizado",
+        "de": "0.4.1",
+        "para": "0.5.0",
+        "mensagem": None,
+        "aviso": "Atualizado para 0.5.0",
+        "comando_manual": "./update.sh",
+        "arquivo_ilegivel": False,
+    }
+    return {**padrao, **campos}
+
+
+def servir_atualizacao(page: Page, corpo: dict[str, Any]) -> None:
+    """Responde ``GET /api/v1/atualizacao`` com ``corpo`` (a escrita segue para o servidor)."""
+
+    def tratar(route: Route) -> None:
+        if route.request.method == "GET":
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(corpo))
+        else:
+            route.continue_()
+
+    page.route("**/api/v1/atualizacao", tratar)
+
+
+def test_aviso_de_aparelho_novo_e_ver_em_novos_foca_o_cartao(
+    page: Page, alvo: Alvo, novo_aparelho: Any
+) -> None:
+    erros = vigiar_console(page)
+    a = novo_aparelho()
+    ponte = entrar_com_ponte(page, alvo)
+    alerta = injetar(page, ponte, "aberto", a["alerta_id"])
+    assert alerta["tipo"] == "aparelho_novo" and alerta["ip"] == a["ip"], alerta
+    cartao = cartao_de(page, a["alerta_id"])
+    expect(cartao).to_be_visible(timeout=10_000)
+    expect(cartao.locator(".ca-marca")).to_have_text("Novo na rede")
+    expect(cartao.locator(".ca-nome")).to_have_text("Novo aparelho conectou na rede")
+    expect(cartao.locator(".ca-dados")).to_contain_text(a["ip"])
+    expect(cartao.locator(".ca-dados")).to_contain_text("Fabricante Fictício")
+    expect(cartao.locator(".ca-dados")).to_contain_text("80, 443")
+    # a lista de alertas mostra a mesma linha, com o atalho
+    page.get_by_role("tab", name="Alertas").click()
+    linha = page.locator(f'#lista-alertas li[data-id="{a["alerta_id"]}"]')
+    expect(linha).to_be_visible(timeout=10_000)
+    info = linha.locator(".al-info-novo")
+    expect(info).to_contain_text(a["ip"])
+    expect(info).to_contain_text("Fabricante Fictício")
+    expect(info).to_contain_text("portas 80, 443")
+    expect(linha.get_by_role("button", name="Ver em Novos")).to_be_visible()
+    page.get_by_role("tab", name="Lista").click()
+    # "Ver em Novos" no cartão: abre a fila e destaca o cartão da descoberta, com o foco nele
+    cartao.get_by_role("button", name="Ver em Novos").click()
+    expect(page.get_by_role("tab", name="Novos")).to_have_attribute("aria-selected", "true")
+    alvo_novos = page.locator(f'#conteudo-novos .nv-cartao[data-id="{a["descoberta_id"]}"]')
+    expect(alvo_novos).to_be_visible(timeout=20_000)
+    expect(alvo_novos).to_have_class(re.compile(r"nv-destaque"))
+    expect(alvo_novos).to_be_focused()
+    box = alvo_novos.bounding_box()
+    altura = (page.viewport_size or {"height": 720})["height"]
+    assert box is not None and 0 <= box["y"] < altura, box
+    expect(cartao).to_have_count(0)  # o aviso cumpriu o papel
+    assert erros == [], erros
+
+
+def test_ignorar_em_novos_fecha_o_aviso(page: Page, alvo: Alvo, novo_aparelho: Any) -> None:
+    erros = vigiar_console(page)
+    a = novo_aparelho()
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Alertas").click()
+    linha = page.locator(f'#lista-alertas li[data-id="{a["alerta_id"]}"]')
+    expect(linha).to_be_visible(timeout=10_000)
+    linha.get_by_role("button", name="Ver em Novos").click()
+    alvo_novos = page.locator(f'#conteudo-novos .nv-cartao[data-id="{a["descoberta_id"]}"]')
+    expect(alvo_novos).to_be_focused(timeout=20_000)
+    alvo_novos.get_by_role("button", name=re.compile("^Ignorar")).click()
+    expect(alvo_novos).to_have_count(0, timeout=10_000)
+    page.get_by_role("tab", name="Alertas").click()
+    # o agrupador fecha o alerta (ao vivo): sai de "Abertos"
+    expect(linha).to_have_count(0, timeout=15_000)
+    r = api_json(page, "GET", f"/alertas/{a['alerta_id']}")
+    assert r["status"] == 200 and r["dados"]["fechado_em"] is not None, r
+    assert erros == [], erros
+
+
+def test_faixa_de_varredura_automatica(page: Page, alvo: Alvo) -> None:
+    from conftest import PonteWs
+
+    erros = vigiar_console(page)
+    ponte = PonteWs(page)
+    entrar(page, alvo)
+    faixa = page.locator("#faixa-varredura")
+    base = {
+        "tipo": "varredura", "estado": "rodando", "cidr": "10.99.10.0/24",
+        "total": 200, "feitos": 50, "achados": 1,
+    }  # fmt: skip
+    ponte.injetar({**base, "origem": "agendada"})
+    expect(faixa).to_contain_text("Varredura automática em 10.99.10.0/24: 25%.")
+    ponte.injetar({**base, "origem": "manual"})
+    expect(faixa).to_contain_text("Varredura lenta em 10.99.10.0/24: 25%.")
+    ponte.injetar({"tipo": "varredura", "estado": "concluida"})
+    expect(faixa).to_be_hidden()
+    assert erros == [], erros
+
+
+def test_cartao_atualizacoes_mostra_versao_e_chave(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    versao = api_json(page, "GET", "/atualizacao")["dados"]["versao"]
+    page.get_by_role("tab", name="Configurações").click()
+    cartao = page.locator("#cfg-atualizacoes")
+    expect(cartao).to_be_visible(timeout=10_000)
+    expect(cartao.locator("#atz-versao")).to_have_text(f"Versão instalada: {versao}")
+    chave = cartao.get_by_role("switch", name="Atualizar sozinho")
+    expect(chave).to_have_attribute("aria-checked", "true")  # ligada por padrão
+    expect(cartao.locator("#atz-agendamento")).to_contain_text("rode ./update.sh")
+    expect(cartao.locator("#atz-resultado")).to_have_text(
+        "Ainda não houve verificação de atualização."
+    )
+    try:
+        with page.expect_request(
+            lambda r: r.method == "PATCH" and r.url.endswith("/api/v1/atualizacao")
+        ) as pedido:
+            chave.click()
+        assert json.loads(pedido.value.post_data or "{}") == {"ativo": False}
+        expect(chave).to_have_attribute("aria-checked", "false")
+        expect(cartao.locator("#atz-aviso")).to_have_text("Atualização automática desligada.")
+        assert api_json(page, "GET", "/atualizacao")["dados"]["ativo"] is False
+    finally:
+        api_json(page, "PATCH", "/atualizacao", {"ativo": True})
+    page.reload()
+    page.get_by_role("tab", name="Configurações").click()
+    expect(cartao.get_by_role("switch", name="Atualizar sozinho")).to_have_attribute(
+        "aria-checked", "true"
+    )
+    assert erros == [], erros
+
+
+def test_visualizador_nao_ve_o_cartao_atualizacoes_mas_ve_o_aviso(
+    browser: Browser, alvo: Alvo
+) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    contexto = browser.new_context(ignore_https_errors=True, base_url=alvo.url)
+    try:
+        page = contexto.new_page()
+        erros = vigiar_console(page)
+        servir_atualizacao(page, aviso_de_atualizacao())
+        entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+        expect(page.locator("#aviso-atualizacao")).to_contain_text("Atualizado para 0.5.0")
+        page.goto("/index.html#configuracoes")
+        expect(page.get_by_role("tab", name="Lista")).to_have_attribute("aria-selected", "true")
+        expect(page.locator("#cfg-atualizacoes")).to_be_hidden()
+        r = page.request.patch(
+            "/api/v1/atualizacao", data={"ativo": False}, headers={"X-CSRF": "x"}
+        )
+        assert r.status in (401, 403), r.status
+        assert erros == [], erros
+    finally:
+        contexto.close()
+
+
+def test_aviso_de_24h_aparece_e_dispensa(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    servir_atualizacao(page, aviso_de_atualizacao())
+    entrar(page, alvo)
+    aviso = page.locator("#aviso-atualizacao")
+    expect(aviso).to_be_visible(timeout=10_000)
+    expect(aviso).to_contain_text("Atualizado para 0.5.0")
+    # abaixo do cabeçalho e acima do conteúdo: nunca cobre nada
+    topo = page.locator("header.topo").bounding_box()
+    caixa = aviso.bounding_box()
+    conteudo = page.locator("#conteudo").bounding_box()
+    assert topo and caixa and conteudo
+    assert caixa["y"] >= topo["y"] + topo["height"] - 1, (topo, caixa)
+    assert caixa["y"] + caixa["height"] <= conteudo["y"] + 1, (caixa, conteudo)
+    aviso.get_by_role("button", name=re.compile("^Dispensar")).click()
+    expect(aviso).to_be_hidden()
+    page.reload()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    page.wait_for_timeout(500)
+    expect(aviso).to_be_hidden()  # a dispensa fica guardada (por pessoa, neste navegador)
+    assert erros == [], erros
+
+
+def test_aviso_voltou_e_atencao_e_o_de_7_dias_usa_a_data_local(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    servir_atualizacao(
+        page,
+        aviso_de_atualizacao(
+            resultado="voltou",
+            aviso="A atualização para 0.5.0 falhou; o Sentinela voltou para 0.4.1",
+        ),
+    )
+    entrar(page, alvo)
+    aviso = page.locator("#aviso-atualizacao")
+    expect(aviso).to_contain_text("voltou para 0.4.1", timeout=10_000)
+    expect(aviso.locator(".aviso-atz")).to_have_class(re.compile("aviso-atz-atencao"))
+    page.unroute_all()
+    # 21/11 01:00 UTC é 20/11 22:00 no fuso da instalação (America/Sao_Paulo): a data é a local
+    servir_atualizacao(
+        page,
+        aviso_de_atualizacao(
+            resultado="sem_conexao",
+            ultima_verificacao_ok="2026-11-21T01:00:00+00:00",
+            aviso="O Sentinela não conseguiu verificar atualizações desde 21/11",
+        ),
+    )
+    page.reload()
+    expect(page.locator("#contador-total")).to_have_text(str(TOTAL_DEMO), timeout=15_000)
+    expect(aviso).to_contain_text("não conseguiu verificar atualizações", timeout=10_000)
+    fuso = api_json(page, "GET", "/config/geral")["dados"]["fuso"]
+    if fuso == "America/Sao_Paulo":
+        expect(aviso).to_contain_text("desde 20/11")
+    assert erros == [], erros
+
+
+def test_subrede_salva_gateway_e_intervalo(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    sub = next(
+        s for s in api_json(page, "GET", "/subredes")["dados"] if s["cidr"] == "10.99.10.0/24"
+    )
+    ajustes0 = api_json(page, "GET", "/config/descoberta")["dados"]
+    page.get_by_role("tab", name="Configurações").click()
+    secao = page.locator("#conteudo-configuracoes")
+    campo = secao.get_by_label("Gateway (roteador) de 10.99.10.0/24")
+    expect(campo).to_be_visible(timeout=10_000)
+    salvar = secao.get_by_role("button", name="Salvar o gateway de 10.99.10.0/24")
+    erro_gw = secao.locator(f"#cfg-gw-erro-{sub['id']}")
+    escritas: list[str] = []
+    page.on(
+        "request",
+        lambda r: escritas.append(r.url) if r.method == "PATCH" and "/api/v1/" in r.url else None,
+    )
+    try:
+        # inválido: nada é enviado
+        campo.fill("10.99.11.1")
+        salvar.click()
+        expect(erro_gw).to_have_text("O gateway precisa estar dentro da sub-rede.")
+        campo.fill("roteador")
+        salvar.click()
+        expect(erro_gw).to_have_text("Informe um endereço IPv4, como 192.168.15.1.")
+        assert escritas == [], escritas
+        # válido: grava e o servidor confirma
+        campo.fill("10.99.10.1")
+        salvar.click()
+        expect(secao.locator("#cfg-aviso")).to_have_text("Gateway de 10.99.10.0/24 salvo.")
+        lista = api_json(page, "GET", "/subredes")["dados"]
+        assert next(s for s in lista if s["id"] == sub["id"])["gateway_ip"] == "10.99.10.1"
+        # intervalo fora de 15 a 240: nada é enviado
+        n_antes = len(escritas)
+        intervalo = secao.get_by_label("Varredura automática a cada (minutos)")
+        botao = secao.get_by_role("button", name="Salvar intervalo")
+        for ruim in ("14", "241"):
+            intervalo.fill(ruim)
+            botao.click()
+            expect(secao.locator("#cfg-intervalo-erro")).to_have_text(
+                "Informe de 15 a 240 minutos."
+            )
+        assert len(escritas) == n_antes, escritas
+        intervalo.fill("45")
+        botao.click()
+        expect(secao.locator("#cfg-aviso")).to_contain_text("a cada 45 minutos")
+        assert api_json(page, "GET", "/config/descoberta")["dados"]["varredura_continua_min"] == 45
+    finally:
+        api_json(page, "PATCH", f"/subredes/{sub['id']}", {"gateway_ip": sub["gateway_ip"]})
+        api_json(
+            page,
+            "PATCH",
+            "/config/descoberta",
+            {"varredura_continua_min": ajustes0["varredura_continua_min"]},
+        )
+    assert erros == [], erros
+
+
+LARGURAS_T10 = (360, 390, 768, 1024, 1280, 1366, 1440, 1920)
+MEDIR_T10 = """(seletores) => {
+    const vw = document.documentElement.clientWidth;
+    const problemas = [];
+    for (const sel of seletores) {
+        for (const raiz of document.querySelectorAll(sel)) {
+            for (const el of [raiz, ...raiz.querySelectorAll('*')]) {
+                const cs = getComputedStyle(el);
+                if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+                if (el.closest('.so-leitor')) continue; // texto só para leitor de tela
+                const r = el.getBoundingClientRect();
+                if (!r.width || !r.height) continue;
+                if (r.left < -0.5 || r.right > vw + 0.5) {
+                    problemas.push([sel, el.className, 'fora', r.left, r.right]);
+                }
+                if (cs.textOverflow === 'ellipsis') {
+                    problemas.push([sel, el.className, 'reticencias']);
+                }
+                const folga = el.scrollWidth > el.clientWidth + 1;
+                if (el.children.length === 0 && folga && cs.overflowX !== 'visible') {
+                    problemas.push([sel, el.className, 'cortado', el.scrollWidth, el.clientWidth]);
+                }
+            }
+        }
+    }
+    return {vw, rolagem: document.documentElement.scrollWidth, problemas};
+}"""
+
+
+def test_telas_novas_sem_corte_nas_8_larguras(
+    browser: Browser, alvo: Alvo, novo_aparelho: Any
+) -> None:
+    """Sub-redes, Atualizações, aviso de 24 h e a linha de aparelho novo (fabricante de 120
+    caracteres, 12 portas, mensagem de 200): nada passa da janela, nada é cortado nem vira
+    reticências, em 360 a 1920 px."""
+    a = novo_aparelho(
+        fabricante=(
+            "Fabricante Internacional de Equipamentos de Rede e Telecomunicações Ltda., Divisão"
+            " Industrial de Câmeras IP e Gravadores de Vídeo"
+        )[:120],
+        sinais={"portas": [21, 22, 23, 80, 443, 554, 8000, 8080, 8443, 9000, 37777, 49152]},
+    )
+    mensagem = "Falha ao verificar a imagem: " + "x" * 160 + " fim."
+    corpo = aviso_de_atualizacao(
+        resultado="falhou", mensagem=mensagem[:200], aviso="A atualização falhou; " + "y" * 120
+    )
+    for largura in LARGURAS_T10:
+        contexto = browser.new_context(
+            viewport={"width": largura, "height": 900}, ignore_https_errors=True, base_url=alvo.url
+        )
+        try:
+            page = contexto.new_page()
+            servir_atualizacao(page, corpo)
+            entrar(page, alvo)
+            expect(page.locator("#aviso-atualizacao")).to_be_visible(timeout=10_000)
+            r = page.evaluate(MEDIR_T10, ["#aviso-atualizacao"])
+            assert r["rolagem"] <= r["vw"] and r["problemas"] == [], (largura, r)
+            page.get_by_role("tab", name="Alertas").click()
+            expect(page.locator(f'#lista-alertas li[data-id="{a["alerta_id"]}"]')).to_be_visible(
+                timeout=10_000
+            )
+            r = page.evaluate(MEDIR_T10, ["#lista-alertas"])
+            assert r["rolagem"] <= r["vw"] and r["problemas"] == [], (largura, r)
+            page.get_by_role("tab", name="Configurações").click()
+            expect(page.locator("#cfg-subredes li").first).to_be_visible(timeout=10_000)
+            page.locator("#cfg-atualizacoes").scroll_into_view_if_needed()
+            expect(page.locator("#atz-resultado")).to_contain_text(mensagem[:200])
+            r = page.evaluate(
+                MEDIR_T10, ["#cfg-subredes", "#cfg-intervalo-bloco", "#cfg-atualizacoes"]
+            )
+            assert r["rolagem"] <= r["vw"] and r["problemas"] == [], (largura, r)
+        finally:
+            contexto.close()
+
+
+# ---------- Diagnóstico (Fase 5, Task 11) ----------
+CODIGO_PERIODO = {"24 horas": "24h", "7 dias": "7d", "30 dias": "30d"}
+
+
+def abrir_diagnostico(page: Page, periodo: str = "30 dias") -> Any:
+    page.get_by_role("tab", name="Diagnóstico").click()
+    expect(page.get_by_role("tab", name="Diagnóstico")).to_have_attribute("aria-selected", "true")
+    assert page.url.endswith("#diagnostico"), page.url
+    secao = page.locator("#conteudo-diagnostico")
+    expect(secao.locator("#dg-resumo")).to_be_visible(timeout=20_000)  # 24 h, a abertura
+    with page.expect_response(
+        re.compile(rf"/api/v1/diagnostico\?periodo={CODIGO_PERIODO[periodo]}$")
+    ) as resposta:
+        secao.get_by_role("button", name=periodo, exact=True).click()
+    assert resposta.value.status == 200
+    expect(secao.get_by_role("button", name=periodo, exact=True)).to_have_attribute(
+        "aria-pressed", "true"
+    )
+    expect(secao.locator("#dg-resumo")).to_be_visible(timeout=20_000)
+    return secao
+
+
+def test_aba_diagnostico_mostra_resumo_barras_e_incidentes(page: Page, alvo: Alvo) -> None:
+    erros = vigiar_console(page)
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    assert int(secao.locator("#dg-total").inner_text()) >= 20  # o roteador reinicia quase todo dia
+    assert secao.locator("#dg-fora").inner_text().strip() not in ("", "0 s")
+    expect(secao.locator(".dg-coluna")).to_have_count(24)
+    expect(secao.locator("#dg-tabela-horas tbody tr")).to_have_count(24)
+    expect(secao.locator(".dg-barra.dg-barra-pico")).to_have_count(1)  # um só pico, às 19 h locais
+    expect(secao.locator("#dg-pico")).to_contain_text("19 h")
+    # "provável" (sem uptime não há "confirmado") e o porquê visível, não só em dica
+    primeiro = secao.locator("#lista-incidentes li.dg-inc").first
+    expect(primeiro).to_be_visible()
+    expect(primeiro.locator(".dg-inc-rotulo")).to_contain_text("provável")
+    expect(primeiro.get_by_text("Por quê", exact=True)).to_be_visible()
+    expect(primeiro.locator(".dg-inc-porque li").first).to_be_visible()
+    expect(primeiro.locator(".dg-nomes li").first).to_be_visible()
+    # sugestões por tipo, o texto de energia e a regra do período (incidentes que começaram nele)
+    expect(secao.locator("#dg-sugestoes")).to_contain_text("Trocar a fonte do roteador.")
+    expect(secao.locator("#dg-energia")).to_contain_text("nobreak")
+    expect(secao.locator("#dg-nota")).to_contain_text("começaram")
+    expect(secao.locator("#dg-carregando")).to_be_hidden()
+    assert erros == [], erros
+
+
+def test_trocar_periodo_recarrega(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page, "30 dias")
+    total30 = int(secao.locator("#dg-total").inner_text())
+    with page.expect_request(re.compile(r"/api/v1/diagnostico\?periodo=7d$")):
+        secao.get_by_role("button", name="7 dias", exact=True).click()
+    expect(secao.get_by_role("button", name="7 dias", exact=True)).to_have_attribute(
+        "aria-pressed", "true"
+    )
+    expect(secao.get_by_role("button", name="30 dias", exact=True)).to_have_attribute(
+        "aria-pressed", "false"
+    )
+    expect(secao.locator("#dg-total")).not_to_have_text(str(total30), timeout=10_000)
+    expect(secao.locator("#dg-periodo-texto")).to_contain_text("De ")
+
+
+def test_baixar_csv(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    with page.expect_download() as baixado:
+        secao.locator("#dg-baixar-csv").click()
+    arquivo = baixado.value
+    assert re.fullmatch(r"sentinela-diagnostico-\d{8}-30d\.csv", arquivo.suggested_filename)
+    texto = Path(arquivo.path()).read_bytes().decode("utf-8")
+    assert texto.startswith('﻿"inicio";"fim";"duracao";"classificacao";')
+    assert "Roteador reiniciou (provável)" in texto
+    assert "10.99." not in texto  # só nomes, nunca IP
+
+
+def test_impressao_esconde_navegacao(page: Page, alvo: Alvo) -> None:
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    expect(secao.locator(".dg-laudo-cabeca")).to_be_hidden()  # só no papel
+    page.emulate_media(media="print")
+    expect(page.locator(".topo")).to_be_hidden()
+    expect(page.locator("nav.abas")).to_be_hidden()
+    expect(page.locator("#cartoes-alerta")).to_be_hidden()
+    expect(page.locator(".campo")).to_be_hidden()
+    expect(secao.locator(".dg-ferramentas")).to_be_hidden()
+    expect(secao.locator(".dg-laudo-cabeca")).to_be_visible()
+    expect(secao.locator(".dg-laudo-cabeca h2")).to_have_text("Laudo de quedas: últimos 30 dias")
+    expect(secao.locator(".dg-laudo-cabeca")).to_contain_text("Gerado em")
+    expect(secao.locator("#lista-incidentes li.dg-inc").first).to_be_visible()
+    cor = secao.locator(".dg-inc").first.evaluate("e => getComputedStyle(e).backgroundColor")
+    assert cor == "rgb(255, 255, 255)", cor  # papel branco mesmo no tema escuro
+    largura = page.evaluate(
+        "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+    )
+    assert largura[0] <= largura[1], largura
+
+
+def test_sem_gateway_mostra_a_dica(page: Page, alvo: Alvo) -> None:
+    aviso = "Sem o gateway cadastrado, o Diagnóstico não consegue dizer se o roteador reiniciou."
+
+    def sem_gateway(rota: Route) -> None:
+        corpo = rota.fetch().json()
+        corpo["gateway_configurado"] = False
+        corpo["aviso_gateway"] = aviso
+        rota.fulfill(json=corpo)
+
+    page.route(re.compile(r"/api/v1/diagnostico\?"), sem_gateway)
+    entrar(page, alvo)
+    abrir_diagnostico(page)
+    expect(page.locator("#dg-aviso-gateway")).to_have_text(aviso)
+
+
+def test_diagnostico_vazio_truncado_e_429(page: Page, alvo: Alvo) -> None:
+    vazio = {
+        "periodo": "24h",
+        "de": "2026-11-19T15:00:00Z",
+        "ate": "2026-11-20T15:00:00Z",
+        "resumo": {"incidentes": 0, "por_tipo": {}, "fora_s": 0},
+        "horas": [0] * 24,
+        "incidentes": [],
+        "gateway_configurado": True,
+        "truncado": False,
+        "aviso_energia": "Queda de energia não é medida pelo Sentinela.",
+        "aviso_gateway": None,
+    }
+    estado = {"modo": "vazio"}
+
+    def responder(rota: Route) -> None:
+        if estado["modo"] == "429":
+            rota.fulfill(status=429, json={"detail": "x"}, headers={"Retry-After": "7"})
+        else:
+            rota.fulfill(json={**vazio, "truncado": estado["modo"] == "truncado"})
+
+    page.route(re.compile(r"/api/v1/diagnostico\?"), responder)
+    entrar(page, alvo)
+    page.get_by_role("tab", name="Diagnóstico").click()
+    secao = page.locator("#conteudo-diagnostico")
+    expect(secao.locator("#dg-vazio")).to_contain_text("Nenhuma queda no período")
+    expect(secao.locator("#dg-resumo")).to_be_hidden()
+    expect(secao.locator("#dg-aviso-truncado")).to_be_hidden()
+    estado["modo"] = "truncado"
+    secao.get_by_role("button", name="7 dias", exact=True).click()
+    expect(secao.locator("#dg-aviso-truncado")).to_be_visible()
+    estado["modo"] = "429"
+    secao.get_by_role("button", name="30 dias", exact=True).click()
+    expect(secao.locator("#dg-erro")).to_contain_text("Aguarde 7 s")
+    # o 429 não apaga o que já estava na tela: continua o período anterior, com o aviso
+    expect(secao.get_by_role("button", name="7 dias", exact=True)).to_have_attribute(
+        "aria-pressed", "true"
+    )
+    expect(secao.locator("#dg-aviso-truncado")).to_be_visible()
+    estado["modo"] = "vazio"
+    secao.get_by_role("button", name="Tentar de novo").click()
+    expect(secao.locator("#dg-erro")).to_be_hidden()
+    expect(secao.locator("#dg-vazio")).to_be_visible()
+
+
+def test_alternar_periodos_nao_chega_ao_429_e_usa_cache(page: Page, alvo: Alvo) -> None:
+    codigos: list[int] = []
+    page.on(
+        "response",
+        lambda r: codigos.append(r.status) if re.search(r"/api/v1/diagnostico\?", r.url) else None,
+    )
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page, "30 dias")
+    for _ in range(2):
+        for nome in ("24 horas", "7 dias", "30 dias"):
+            secao.get_by_role("button", name=nome, exact=True).click()
+            expect(secao.get_by_role("button", name=nome, exact=True)).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            expect(secao.locator("#dg-resumo")).to_be_visible()
+    assert 429 not in codigos and set(codigos) == {200}, codigos
+    assert len(codigos) == 3, codigos  # 24 h, 30 d e 7 d; o resto saiu do cache de 60 s
+    expect(secao.locator("#dg-erro")).to_be_hidden()
+
+
+def test_csv_com_429_mostra_o_aviso_na_pagina(page: Page, alvo: Alvo) -> None:
+    page.route(
+        re.compile(r"/api/v1/diagnostico/laudo\.csv"),
+        lambda r: r.fulfill(status=429, json={"detail": "x"}, headers={"Retry-After": "9"}),
+    )
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    secao.locator("#dg-baixar-csv").click()
+    expect(secao.locator("#dg-erro-csv")).to_contain_text("Aguarde 9 s")
+    expect(secao.locator("#dg-resumo")).to_be_visible()  # a tela não perdeu os dados
+
+
+def test_visualizador_ve_diagnostico(page: Page, alvo: Alvo) -> None:
+    if not alvo.login_leitor:
+        pytest.skip("sem usuário visualizador (SENTINELA_SMOKE_LEITOR_LOGIN/SENHA)")
+    erros = vigiar_console(page)
+    entrar(page, alvo, alvo.login_leitor, alvo.senha_leitor)
+    secao = abrir_diagnostico(page)
+    expect(secao.locator("#lista-incidentes li.dg-inc").first).to_be_visible()
+    expect(secao.locator("#dg-baixar-csv")).to_be_visible()
+    expect(page.get_by_role("tab", name="Configurações")).to_have_count(0)
+    assert erros == [], erros

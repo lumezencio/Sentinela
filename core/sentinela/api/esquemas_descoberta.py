@@ -8,7 +8,7 @@ global de ``main`` tira ``input`` e ``ctx``).
 from datetime import datetime
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, model_validator
 
 from sentinela.db.modelos import Descoberta, Fonte
 from sentinela.seguranca.cofre import Cofre, ErroCofre
@@ -309,13 +309,16 @@ class AjustesSaida(BaseModel):
     aprovacao_automatica: bool
     limiar_aprovacao: float
     intervalo_varredura_ips_s: float
+    varredura_continua_min: int
 
 
 class AjustesEdicao(_Fechado):
-    """Só aprovação automática e limiar mudam pela API (o ritmo da varredura é fixo)."""
+    """Aprovação automática, limiar e intervalo da varredura contínua mudam pela API (o ritmo
+    por IP da varredura é fixo)."""
 
     aprovacao_automatica: bool | None = None
     limiar_aprovacao: float | None = Field(default=None, ge=0.5, le=1.0)
+    varredura_continua_min: StrictInt | None = Field(default=None, ge=15, le=240)
 
     @model_validator(mode="after")
     def _sem_nulos(self) -> Self:

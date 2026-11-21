@@ -10,12 +10,20 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import sentinela.demo.simulador as simulador
 from sentinela.config import Settings
-from sentinela.db.modelos import Alerta, Classe, Equipamento, Parede, SubRede, Usuario
+from sentinela.db.modelos import (
+    Alerta,
+    Classe,
+    Descoberta,
+    Equipamento,
+    Parede,
+    SubRede,
+    Usuario,
+)
 from sentinela.demo.simulador import ChecagemSimulada, gerar_rede
 from sentinela.main import criar_app
 from sentinela.rede.guarda import DestinoAutorizado, Guarda
@@ -214,6 +222,10 @@ def test_nunca_abre_socket_em_subprocesso() -> None:
     assert r.stdout.strip() == "ok"
 
 
+# 300 da rede sintética + os aparelhos da rede do Diagnóstico (10.99.0.0/24)
+TOTAL_DEMO = 300 + len(simulador.APARELHOS_DIAGNOSTICO)
+
+
 @pytest.fixture
 def settings_demo(settings: Settings) -> Settings:
     return settings.model_copy(update={"demo": True})
@@ -225,9 +237,9 @@ async def test_app_demo_semeia_300_equipamentos(settings_demo: Settings) -> None
     async with app.router.lifespan_context(app):
         sessoes: async_sessionmaker[AsyncSession] = app.state.sessoes
         async with sessoes() as db:
-            assert await db.scalar(select(func.count()).select_from(Equipamento)) == 300
+            assert await db.scalar(select(func.count()).select_from(Equipamento)) == TOTAL_DEMO
             cidrs = set((await db.execute(select(SubRede.cidr))).scalars())
-        assert cidrs == {str(s) for s in SUB_REDES}
+        assert cidrs == {str(s) for s in SUB_REDES} | {simulador.SUB_REDE_DIAGNOSTICO}
         app.state.guarda.validar("10.99.10.10", None, "icmp")
 
 
@@ -238,8 +250,8 @@ async def test_semeadura_idempotente(settings_demo: Settings) -> None:
         async with app.router.lifespan_context(app):
             sessoes: async_sessionmaker[AsyncSession] = app.state.sessoes
             async with sessoes() as db:
-                assert await db.scalar(select(func.count()).select_from(Equipamento)) == 300
-                assert await db.scalar(select(func.count()).select_from(SubRede)) == 6
+                assert await db.scalar(select(func.count()).select_from(Equipamento)) == TOTAL_DEMO
+                assert await db.scalar(select(func.count()).select_from(SubRede)) == 7
 
 
 async def test_api_equipamentos_total_300(settings_demo: Settings) -> None:
@@ -255,7 +267,7 @@ async def test_api_equipamentos_total_300(settings_demo: Settings) -> None:
             assert r.status_code == 204
             r = await c.get("/api/v1/equipamentos", params={"limit": 5})
             assert r.status_code == 200
-            assert r.json()["total"] == 300
+            assert r.json()["total"] == TOTAL_DEMO
 
 
 async def test_demo_desligado_nao_semeia(settings: Settings) -> None:
@@ -318,7 +330,7 @@ async def test_demo_reabre_banco_marcado_como_demo(settings_demo: Settings) -> N
         async with app.router.lifespan_context(app):
             async with app.state.sessoes() as db:
                 total = await db.scalar(select(func.count()).select_from(Equipamento))
-            assert total == 300  # semeado uma vez só: reabrir não duplica
+            assert total == TOTAL_DEMO  # semeado uma vez só: reabrir não duplica
             assert await simulador.banco_e_demo(app.state.sessoes)
             assert len(app.state.guarda._sub_redes) > 0
 
@@ -376,8 +388,9 @@ async def test_demo_semeia_alertas(settings_demo: Settings) -> None:
     app = await _app_demo_aberto(settings_demo)
     async with app.router.lifespan_context(app):
         async with app.state.sessoes() as db:
-            alertas = (await db.execute(select(Alerta).order_by(Alerta.aberto_em))).scalars().all()
-        assert len(alertas) == 2
+            todos = (await db.execute(select(Alerta).order_by(Alerta.aberto_em))).scalars().all()
+        assert sorted(a.tipo for a in todos) == ["aparelho_novo", "queda", "queda"]
+        alertas = [a for a in todos if a.tipo == "queda"]
         assert all(a.envio == "nao_aplica" and a.fechado_em is not None for a in alertas)
         queda = next(a for a in alertas if len(a.afetados) == 14)
         assert not queda.breve and queda.tipo == "queda"
@@ -405,7 +418,7 @@ async def test_demo_alertas_idempotente(settings_demo: Settings) -> None:
         sessoes = app.state.sessoes
         assert await simulador.semear_alertas_demo(sessoes, datetime.now(UTC)) is False
         async with sessoes() as db:
-            assert await db.scalar(select(func.count()).select_from(Alerta)) == 2
+            assert await db.scalar(select(func.count()).select_from(Alerta)) == 3
             assert await db.scalar(select(func.count()).select_from(Parede)) == 1
 
 
@@ -465,5 +478,27 @@ async def test_demo_semeia_alertas_em_volume_com_alertas_existentes(
             await db.commit()
         assert await simulador.semear_alertas_demo(sessoes, datetime.now(UTC)) is True
         async with sessoes() as db:
-            assert await db.scalar(select(func.count()).select_from(Alerta)) == 3
+            assert await db.scalar(select(func.count()).select_from(Alerta)) == 4
+            novo = await db.scalar(select(Alerta).where(Alerta.tipo == "aparelho_novo"))
+            assert novo is not None and novo.envio == "nao_aplica" and novo.fechado_em is None
+            d = await db.get(Descoberta, novo.descoberta_id)
+            assert d is not None and d.status == "pendente" and d.ip.startswith("10.99.")
             assert await db.scalar(select(func.count()).select_from(Parede)) == 1
+
+
+async def test_demo_diagnostico_nao_semeia_sobre_marcador_antigo(settings_demo: Settings) -> None:
+    """Volume de demo semeado com o prefixo antigo (fd:01) sobe sem semear de novo (IP único)."""
+    app = await _app_demo_aberto(settings_demo)
+    async with app.router.lifespan_context(app):
+        sessoes = app.state.sessoes
+        async with sessoes() as db:
+            antes = await db.scalar(select(func.count()).select_from(Equipamento))
+            await db.execute(
+                update(Equipamento)
+                .where(Equipamento.mac.like(simulador.MAC_DIAGNOSTICO + "%"))
+                .values(mac=func.replace(Equipamento.mac, ":fd:d1:", ":fd:01:"))
+            )
+            await db.commit()
+        assert await simulador.semear_diagnostico_demo(sessoes, datetime.now(UTC)) is False
+        async with sessoes() as db:
+            assert await db.scalar(select(func.count()).select_from(Equipamento)) == antes

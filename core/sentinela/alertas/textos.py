@@ -5,7 +5,8 @@ veio, sem escape e sem truncar; quem exibe usa ``textContent`` e decide a quebra
 Telegram recebe o texto sem ``parse_mode``, então nada é interpretado como marcação.
 
 Telegram: só nome, horário (no fuso configurado) e duração; IP apenas com ``incluir_ip``
-(minimização de dados, desligado por padrão).
+(minimização de dados, desligado por padrão). ``aparelho_novo`` leva ainda fabricante e portas
+abertas (nunca nome sugerido, hostname nem MAC).
 """
 
 from dataclasses import dataclass
@@ -15,10 +16,11 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte
+from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento, Fonte
 from sentinela.horario import formatar_duracao, hora_local
 
 NOME_REMOVIDO = "Equipamento removido"
+NOME_APARELHO_NOVO = "Novo aparelho"
 TEXTO_TESTE = "✅ Teste do Sentinela: as mensagens estão chegando."
 
 
@@ -35,6 +37,8 @@ class DadosAlerta:
     breve: bool
     fonte: str | None
     voltou: bool = False  # alguém de ``quedas`` voltou (fechado sem volta = pausa/remoção)
+    fabricante: str | None = None  # só aparelho_novo
+    portas: tuple[int, ...] = ()  # só aparelho_novo
 
 
 def _duracao(d: DadosAlerta) -> str | None:
@@ -46,6 +50,9 @@ def _duracao(d: DadosAlerta) -> str | None:
 def texto_painel(d: DadosAlerta) -> str:
     if d.tipo == "fonte_falhou":
         return f"Fonte {d.fonte or d.nome} sem coleta"
+    if d.tipo == "aparelho_novo":
+        base = "Novo aparelho conectou na rede" + (f": {d.ip}" if d.ip else "")
+        return base + (f" ({d.fabricante})" if d.fabricante else "")
     if d.tipo == "instavel":
         return f"{d.nome} instável"
     if d.tipo == "volta":
@@ -72,6 +79,11 @@ def texto_painel(d: DadosAlerta) -> str:
 
 def texto_telegram(d: DadosAlerta, fuso: ZoneInfo, incluir_ip: bool) -> str:
     nome = f"{d.nome} ({d.ip})" if incluir_ip and d.ip else d.nome
+    if d.tipo == "aparelho_novo":
+        texto = f"🆕 Novo aparelho conectou na rede às {hora_local(d.aberto_em, fuso)}"
+        texto += f" — {d.ip}" if incluir_ip and d.ip else ""
+        texto += f" · {d.fabricante}" if d.fabricante else ""
+        return texto + (f" · portas {', '.join(str(p) for p in d.portas)}" if d.portas else "")
     if d.tipo == "fonte_falhou":
         return f"⚠️ Fonte {d.fonte or d.nome} sem coleta desde {hora_local(d.aberto_em, fuso)}"
     if d.tipo == "instavel":
@@ -131,6 +143,28 @@ async def dados_do_alerta(db: AsyncSession, alerta: Alerta) -> DadosAlerta:
         ).first()
         if linha is not None:
             nome, ip, classe = linha
+    fabricante: str | None = None
+    portas: tuple[int, ...] = ()
+    if alerta.tipo == "aparelho_novo":
+        nome = NOME_APARELHO_NOVO  # o nome sugerido vem do aparelho (hostil): nunca entra
+        achada = (
+            None
+            if alerta.descoberta_id is None
+            else (
+                await db.execute(
+                    select(Descoberta.ip, Descoberta.fabricante, Descoberta.sinais).where(
+                        Descoberta.id == alerta.descoberta_id
+                    )
+                )
+            ).first()
+        )
+        if achada is not None:
+            ip, fabricante, sinais = achada
+            lidas = (sinais or {}).get("portas")
+            if isinstance(lidas, list):
+                portas = tuple(
+                    sorted({p for p in lidas if isinstance(p, int) and not isinstance(p, bool)})
+                )
     fonte: str | None = None
     if alerta.fonte_id is not None:
         fonte = await db.scalar(select(Fonte.nome).where(Fonte.id == alerta.fonte_id))
@@ -160,4 +194,6 @@ async def dados_do_alerta(db: AsyncSession, alerta: Alerta) -> DadosAlerta:
         breve=alerta.breve,
         fonte=fonte,
         voltou=bool(alerta.voltaram),
+        fabricante=fabricante,
+        portas=portas,
     )

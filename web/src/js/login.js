@@ -188,3 +188,12 @@ alternar.addEventListener("click", () => {
 });
 
 voltar.addEventListener("click", voltarAoLogin);
+
+// Instalação nova: o /saude público diz primeiro_acesso="ativo" (sem usuário e com código válido:
+// o login leva ao primeiro-acesso.html) ou "expirado" (sem usuário e sem código válido: o login
+// fica e avisa como gerar um código novo). Qualquer outra resposta ou falha deixa o login como
+// está (e sem 404 no console, que a consulta a /primeiro-acesso causaria).
+api.estadoDaInstalacao().then((estado) => {
+  if (estado === "ativo") window.location.replace("primeiro-acesso.html");
+  else if (estado === "expirado") document.getElementById("aviso-instalacao").hidden = false;
+});

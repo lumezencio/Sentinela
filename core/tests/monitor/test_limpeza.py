@@ -14,6 +14,8 @@ from sentinela.db.modelos import (
     Classe,
     Equipamento,
     Evento,
+    Fonte,
+    LeituraUptime,
     Sessao,
     Silencio,
     Usuario,
@@ -97,7 +99,7 @@ async def test_limpar_aplica_retencao(sessoes: async_sessionmaker[AsyncSession])
         assert dias == [10, 364]
         assert list((await s.execute(select(Sessao.jti))).scalars()) == ["valida"]
     # idempotente
-    assert await limpar(sessoes, AGORA) == type(r)(0, 0, 0, 0, 0)
+    assert await limpar(sessoes, AGORA) == type(r)(0, 0, 0, 0, 0, 0)
 
 
 async def test_limpar_periodicamente_ao_subir_e_uma_vez_por_dia(
@@ -212,3 +214,36 @@ async def test_limpeza_apaga_silencios_encerrados_ou_vencidos_ha_mais_de_90_dias
     r = await limpar(sessoes, AGORA)
     assert r.silencios == 2
     assert await _contar(sessoes, Silencio) == 3
+
+
+async def test_limpeza_apaga_leituras_de_uptime_com_mais_de_35_dias(
+    sessoes: async_sessionmaker[AsyncSession],
+) -> None:
+    async with sessoes() as s:
+        s.add(
+            Fonte(
+                id="f1",
+                tipo="snmp",
+                nome="f",
+                host="10.99.0.9",
+                porta=161,
+                credencial_cifrada=b"x",
+            )
+        )
+        await s.flush()
+        for dias in (34, 36):
+            s.add(
+                LeituraUptime(
+                    fonte_id="f1",
+                    equipamento_id="eq1",
+                    lido_em=AGORA - timedelta(days=dias),
+                    uptime_s=100.0,
+                )
+            )
+        await s.commit()
+    r = await limpar(sessoes, AGORA)
+    assert r.leituras_uptime == 1
+    async with sessoes() as s:
+        restantes = list((await s.execute(select(LeituraUptime.lido_em))).scalars())
+    assert len(restantes) == 1
+    assert (AGORA - restantes[0]).days == 34

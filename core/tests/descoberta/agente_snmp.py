@@ -24,6 +24,7 @@ SENHA_PRIV = "senha-priv-marca-2"
 
 BASE_SISTEMA = (1, 3, 6, 1, 2, 1, 1)
 OID_SYSDESCR = (*BASE_SISTEMA, 1, 0)
+OID_SYSUPTIME = (*BASE_SISTEMA, 3, 0)
 OID_SYSNAME = (*BASE_SISTEMA, 5, 0)
 OID_ARP_NOVA = (1, 3, 6, 1, 2, 1, 4, 35, 1, 4)
 OID_ARP_ANTIGA = (1, 3, 6, 1, 2, 1, 4, 22, 1, 2)
@@ -82,11 +83,14 @@ class AgenteSnmp:
         fdb_antiga: dict[str, int] | None = None,
         lldp: list[tuple[str, str, str]] | None = None,  # (mac chassi, nome, descrição)
         linhas_extras: int = 0,
+        uptime_ticks: int | None = None,  # sysUpTime em centésimos de segundo
     ) -> None:
         v: dict[tuple[int, ...], Any] = {
             OID_SYSDESCR: rfc1902.OctetString(sysdescr.encode()),
             OID_SYSNAME: rfc1902.OctetString(sysname.encode()),
         }
+        if uptime_ticks is not None:
+            v[OID_SYSUPTIME] = rfc1902.TimeTicks(uptime_ticks)
         for ip, mac in (arp_nova or {}).items():
             v[(*OID_ARP_NOVA, 2, 1, 4, *_sufixo_ip(ip))] = rfc1902.OctetString(mac_bytes(mac))
         for ip, mac in (arp_antiga or {}).items():

@@ -41,6 +41,7 @@ async def saida_alerta(db: AsyncSession, a: Alerta) -> AlertaSaida:
         if a.reconhecido_por is not None
         else None
     )
+    novo = a.tipo == "aparelho_novo"
     return AlertaSaida(
         id=a.id,
         tipo=a.tipo,
@@ -56,6 +57,10 @@ async def saida_alerta(db: AsyncSession, a: Alerta) -> AlertaSaida:
         reconhecido_em=a.reconhecido_em,
         silenciado=a.silenciado,
         envio=a.envio,
+        descoberta_id=a.descoberta_id if novo else None,
+        ip=d.ip if novo else None,
+        fabricante=d.fabricante if novo else None,
+        portas=list(d.portas) if novo else [],
     )
 
 

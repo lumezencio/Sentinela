@@ -4,4 +4,8 @@ if [[ "${1:-}" == "-m" ]]; then
   echo "${SHIM_UNAME_M-x86_64}"
   exit 0
 fi
+if [[ "${1:-}" == "-s" && -n "${SHIM_UNAME_S:-}" ]]; then
+  echo "$SHIM_UNAME_S"
+  exit 0
+fi
 exec "$(command -p -v uname)" "$@"

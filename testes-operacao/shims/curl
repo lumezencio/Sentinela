@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
-# curl de teste: só serve o digests.txt do release (conteúdo em $SHIM_DIGESTS_TXT); sem ele, falha como rede fora.
+# curl de teste: serve o digests.txt do release (conteúdo em $SHIM_DIGESTS_TXT) e o get.docker.com
+# (script sh em $SHIM_GET_DOCKER, gravado no arquivo do -o); sem eles, falha como rede fora.
 printf 'curl %s\n' "$*" >>"${SHIM_LOG:?}"
+[[ -z "${SHIM_CURL_RC:-}" ]] || exit "$SHIM_CURL_RC"
+if [[ "$*" == *"https://get.docker.com"* ]]; then
+  [[ -n "${SHIM_GET_DOCKER:-}" ]] || exit 22
+  saida=""
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == "-o" ]] && saida="$2"
+    shift
+  done
+  [[ -n "$saida" ]] || exit 23
+  printf '%s\n' "$SHIM_GET_DOCKER" >"$saida"
+  exit 0
+fi
 [[ -n "${SHIM_DIGESTS_TXT:-}" ]] || exit 22
 printf '%s\n' "$SHIM_DIGESTS_TXT"

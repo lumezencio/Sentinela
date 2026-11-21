@@ -100,6 +100,8 @@ def transformador_parede(
             acao = str(m.dados.get("acao"))
             async with sessoes() as db:
                 alerta = None if acao == "removido" else await db.get(Alerta, id)
+                if alerta is not None and alerta.tipo == "aparelho_novo":
+                    return None  # o telão nunca mostra IP: este alerta é só do painel
                 if alerta is None:
                     return {"tipo": "alerta", "acao": "removido", "id": id}
                 if alerta.fechado_em is not None:

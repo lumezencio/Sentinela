@@ -19,6 +19,13 @@ anterior são ignoradas):
    fecha o alerta (não enviado vira ``nao_aplica``; enviado e de volta a ``online`` gera
    ``volta``).
 
+5. ``aparelho_novo`` (mensagem do orquestrador, uma por descoberta): abre um alerta por
+   ``descoberta_id`` (sem equipamento); repetida com o alerta aberto é ignorada. Aprovar ou
+   ignorar a descoberta (``descoberta`` ``removida``) o fecha (o que ainda era ``pendente``
+   vira ``nao_aplica``: nunca vai ao Telegram); o ``tick`` fecha o que perdeu a descoberta
+   sem a mensagem (agrupador parado, descoberta apagada). Silêncio de classe cobre pela
+   ``classe_sugerida``.
+
 Silêncio ou manutenção no próprio, na classe ou num ancestral (até 8 níveis) registra o
 alerta com ``silenciado=true`` e ``envio='nao_aplica'``. Falha de fonte em 3 coletas
 seguidas abre ``fonte_falhou``; a próxima coleta boa (ou a remoção da fonte) o fecha.
@@ -41,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.alertas.silencios import Cobertura, Silencios, ancestrais
 from sentinela.barramento import Barramento, Mensagem
-from sentinela.db.modelos import Alerta, Classe, Equipamento, Fonte
+from sentinela.db.modelos import Alerta, Classe, Descoberta, Equipamento, Fonte
 from sentinela.monitor.estados import CAUSA_PAI, Estado
 from sentinela.relogio import Relogio
 
@@ -51,6 +58,7 @@ JANELA_AGRUPAR_S = 30
 BREVE_S = 120
 INSTAVEL_MIN_S = 300
 FALHAS_FONTE = 3
+TIPO_APARELHO_NOVO = "aparelho_novo"
 TICK_S = 5
 TAMANHO_FILA = 10_000  # rajada de uma queda grande sem perder transições
 TENTATIVAS = 2  # perdeu a disputa pelo ``envio``: relê e decide de novo uma vez
@@ -161,6 +169,10 @@ class Agrupador:
                 await self._estado(msg.dados)
             elif msg.tipo == "fonte" and isinstance(msg.dados.get("ok"), bool):
                 await self._fonte(msg.dados)
+            elif msg.tipo == TIPO_APARELHO_NOVO:
+                await self._aparelho_novo(msg.dados)
+            elif msg.tipo == "descoberta" and msg.dados.get("acao") == "removida":
+                await self._descoberta_removida(msg.dados)
 
     async def tick(self) -> None:
         """Abre ``instavel`` para quem passou de 5 min (uma vez por instabilidade) e fecha o
@@ -171,6 +183,7 @@ class Agrupador:
     async def _tick(self, db: AsyncSession, eventos: Eventos) -> None:
         agora = self._agora_parede()
         await self._fechar_orfaos(db, eventos, agora)
+        await self._reavaliar_silencio_novos(db, eventos, agora)
         minimo = timedelta(seconds=INSTAVEL_MIN_S)
         vencidos = {e: d for e, d in self._instavel_desde.items() if agora - d >= minimo}
         if not vencidos:
@@ -195,6 +208,11 @@ class Agrupador:
         for a in await _instaveis(db):
             if a.equipamento_id is None:
                 await self._fechar_instavel(db, eventos, a, agora, None)
+        abertos = await _novos_abertos(db)
+        status = await _status_das_descobertas(db, [a.descoberta_id for a in abertos])
+        for a in abertos:
+            if status.get(a.descoberta_id or "") != "pendente":
+                await _fechar_aparelho_novo(db, eventos, a, agora)
         orfaos = await db.execute(
             select(Alerta).where(
                 Alerta.tipo == "fonte_falhou",
@@ -427,6 +445,71 @@ class Agrupador:
 
         await self._transacao(corpo)
 
+    # ---- aparelho novo ----------------------------------------------------------------------
+
+    async def _aparelho_novo(self, dados: dict[str, Any]) -> None:
+        did = dados.get("descoberta_id")
+        if not isinstance(did, str):
+            return
+        agora = self._agora_parede()
+
+        async def corpo(db: AsyncSession, eventos: Eventos) -> None:
+            if any(a.descoberta_id == did for a in await _novos_abertos(db)):
+                return  # mensagem repetida
+            d = await db.get(Descoberta, did)
+            if d is None or d.status != "pendente":
+                return  # já aprovada/ignorada (ou apagada) antes de a mensagem chegar
+            cobertura = await self._silencios.cobertura(db, agora)
+            silenciado = await _classe_coberta(db, cobertura, d.classe_sugerida)
+            await _abrir(
+                db,
+                eventos,
+                TIPO_APARELHO_NOVO,
+                None,
+                [],
+                agora,
+                silenciado,
+                descoberta_id=did,
+                enviar=self._enviar,
+            )
+
+        await self._transacao(corpo)
+
+    async def _reavaliar_silencio_novos(
+        self, db: AsyncSession, eventos: Eventos, agora: datetime
+    ) -> None:
+        """Aparelho novo ainda ``pendente`` e não silenciado: a classe sugerida muda com a
+        sondagem (dentro dos 60 s de espera) e silêncios podem nascer depois da abertura;
+        coberto agora, ele sai da fila de envio (``silenciado``, ``nao_aplica``)."""
+        pendentes = [a for a in await _novos_abertos(db) if a.envio == "pendente"]
+        pendentes = [a for a in pendentes if not a.silenciado and a.descoberta_id]
+        if not pendentes:
+            return
+        linhas = await db.execute(
+            select(Descoberta.id, Descoberta.classe_sugerida).where(
+                Descoberta.id.in_([a.descoberta_id for a in pendentes])
+            )
+        )
+        classes = {id: classe for id, classe in linhas}
+        cobertura = await self._silencios.cobertura(db, agora)
+        for a in pendentes:
+            if await _classe_coberta(db, cobertura, classes.get(a.descoberta_id or "")):
+                await _gravar(db, a, silenciado=True, envio="nao_aplica")
+                eventos.append(("atualizado", a.id))
+
+    async def _descoberta_removida(self, dados: dict[str, Any]) -> None:
+        did = dados.get("id")
+        if not isinstance(did, str):
+            return
+        agora = self._agora_parede()
+
+        async def corpo(db: AsyncSession, eventos: Eventos) -> None:
+            for a in await _novos_abertos(db):
+                if a.descoberta_id == did:
+                    await _fechar_aparelho_novo(db, eventos, a, agora)
+
+        await self._transacao(corpo)
+
     # ---- apoio ----------------------------------------------------------------------------
 
     def _instante(self, desde: Any) -> datetime:
@@ -468,6 +551,15 @@ async def _gravar(db: AsyncSession, a: Alerta, **valores: Any) -> None:
         raise _Perdeu
 
 
+async def _fechar_aparelho_novo(db: AsyncSession, eventos: Eventos, a: Alerta, t: datetime) -> None:
+    """Descoberta aprovada ou ignorada: o alerta fecha e, se ainda não foi enviado, nunca vai."""
+    valores: dict[str, Any] = {"fechado_em": t}
+    if a.envio == "pendente":
+        valores["envio"] = "nao_aplica"
+    await _gravar(db, a, **valores)
+    eventos.append(("fechado", a.id))
+
+
 async def _apagar(db: AsyncSession, a: Alerta) -> None:
     """DELETE só de alerta aberto e ainda não enviado (``envio`` lido)."""
     r = await db.execute(
@@ -493,12 +585,14 @@ async def _abrir(
     afetados: list[str] | None = None,
     *,
     fonte_id: str | None = None,
+    descoberta_id: str | None = None,
     enviar: bool = True,
 ) -> None:
     a = Alerta(
         tipo=tipo,
         equipamento_id=principal,
         fonte_id=fonte_id,
+        descoberta_id=descoberta_id,
         quedas=quedas,
         afetados=afetados or [],
         voltaram=[],
@@ -548,6 +642,29 @@ async def _instaveis(db: AsyncSession, eid: str | None = None) -> list[Alerta]:
     consulta = select(Alerta).where(Alerta.tipo == "instavel", Alerta.fechado_em.is_(None))
     if eid is not None:
         consulta = consulta.where(Alerta.equipamento_id == eid)
+    return list((await db.execute(consulta)).scalars())
+
+
+async def _classe_coberta(db: AsyncSession, cobertura: Cobertura, slug: str | None) -> bool:
+    """Silêncio ou manutenção ativo na classe de slug ``slug`` (a classe sugerida)."""
+    if not slug:
+        return False
+    classe_id = await db.scalar(select(Classe.id).where(Classe.slug == slug))
+    return classe_id is not None and classe_id in cobertura.classes
+
+
+async def _status_das_descobertas(db: AsyncSession, ids: list[str | None]) -> dict[str, str]:
+    validos = [i for i in ids if i]
+    if not validos:
+        return {}
+    linhas = await db.execute(
+        select(Descoberta.id, Descoberta.status).where(Descoberta.id.in_(validos))
+    )
+    return {id: status for id, status in linhas}
+
+
+async def _novos_abertos(db: AsyncSession) -> list[Alerta]:
+    consulta = select(Alerta).where(Alerta.tipo == TIPO_APARELHO_NOVO, Alerta.fechado_em.is_(None))
     return list((await db.execute(consulta)).scalars())
 
 

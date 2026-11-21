@@ -71,3 +71,18 @@ async def test_bloqueio_fantasma_reserva() -> None:
     assert esperas[:5] == [0, 0, 0, 0, 0]
     assert esperas[5] == pytest.approx(60)
     assert esperas[6] == pytest.approx(60)  # bloqueado não acumula falha
+
+
+def test_fantasma_limpar_zera_a_chave_e_limitador_reinicia() -> None:
+    b = BloqueioFantasma(RelogioFalso())
+    for _ in range(5):
+        b.reservar("k")
+    assert b.restante("k") > 0
+    b.limpar("k")
+    assert b.restante("k") == 0 and len(b) == 0
+    b.limpar("nunca-vista")  # sem efeito
+    lim = LimitadorIP(RelogioFalso())
+    lim.registrar_falha("10.99.0.5")
+    assert lim.contagem("10.99.0.5") == 1
+    lim.reiniciar()
+    assert len(lim) == 0

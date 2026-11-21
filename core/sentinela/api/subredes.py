@@ -6,11 +6,12 @@ ou remover a sub-rede cancela na hora a varredura dela, se estiver rodando (nenh
 ARP a mais naquela sub-rede); as sondagens em fundo reconferem a permissão antes de sair.
 """
 
-from ipaddress import IPv4Network
+from datetime import datetime
+from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,20 +58,57 @@ class SubRedeEntrada(BaseModel):
     cidr: str = Field(min_length=1, max_length=43)
 
 
+MSG_GATEWAY = "O gateway precisa estar dentro da sub-rede."
+MSG_EDICAO_VAZIA = "Informe permite_varredura ou gateway_ip."
+
+
 class SubRedeEdicao(BaseModel):
+    """Só os campos enviados mudam; ``gateway_ip: null`` apaga o gateway."""
+
     model_config = ConfigDict(extra="forbid")
 
-    permite_varredura: bool
+    permite_varredura: bool | None = None
+    gateway_ip: str | None = Field(default=None, max_length=45)
+
+    @model_validator(mode="after")
+    def _algo_a_mudar(self) -> "SubRedeEdicao":
+        if not self.model_fields_set:
+            raise ValueError(MSG_EDICAO_VAZIA)
+        if "permite_varredura" in self.model_fields_set and self.permite_varredura is None:
+            raise ValueError("permite_varredura não aceita nulo.")
+        return self
 
 
 class SubRedeSaida(BaseModel):
     id: int
     cidr: str
     permite_varredura: bool
+    gateway_ip: str | None
+    ultima_varredura_em: datetime | None
+    linha_base_em: datetime | None
 
     @classmethod
     def de(cls, s: SubRede) -> "SubRedeSaida":
-        return cls(id=s.id, cidr=s.cidr, permite_varredura=bool(s.permite_varredura))
+        return cls(
+            id=s.id,
+            cidr=s.cidr,
+            permite_varredura=bool(s.permite_varredura),
+            gateway_ip=s.gateway_ip,
+            ultima_varredura_em=s.ultima_varredura_em,
+            linha_base_em=s.linha_base_em,
+        )
+
+
+def _gateway_valido(texto: str, cidr: str) -> str:
+    """Endereço de host dentro da sub-rede (nem rede nem broadcast); motivo fixo sem eco."""
+    try:
+        ip = IPv4Address(texto.strip())
+        rede = IPv4Network(cidr)
+    except (AddressValueError, ValueError):
+        raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_GATEWAY) from None
+    if ip not in rede or ip in (rede.network_address, rede.broadcast_address):
+        raise erro(status.HTTP_422_UNPROCESSABLE_CONTENT, MSG_GATEWAY)
+    return str(ip)
 
 
 def _varredura(request: Request) -> Varredura:
@@ -98,7 +136,7 @@ async def marcar_fora_das_subredes(db: AsyncSession, guarda: Guarda) -> None:
             d.fora_das_subredes = fora
 
 
-async def _aplicar(request: Request, db: SessaoDB) -> None:
+async def aplicar_guarda(request: Request, db: AsyncSession) -> None:
     """Classifica os equipamentos com a lista nova, faz o commit e só então troca a Guarda."""
     agendador: Agendador = request.app.state.agendador
     guarda: Guarda = request.app.state.guarda
@@ -131,7 +169,7 @@ async def criar_subrede(request: Request, db: AsyncSession, admin: Usuario, text
     db.add(sub)
     await db.flush()
     auditar(db, request, admin, "subrede.criar", cidr, depois={"cidr": cidr})
-    await _aplicar(request, db)
+    await aplicar_guarda(request, db)
     return sub
 
 
@@ -146,16 +184,27 @@ async def criar(
 async def editar(
     sub_id: int, edicao: SubRedeEdicao, request: Request, db: SessaoDB, admin: Admin
 ) -> SubRedeSaida:
-    """Liga/desliga ``permite_varredura`` (o CIDR não muda: remova e crie outra)."""
+    """Liga/desliga ``permite_varredura`` e/ou define o gateway (o CIDR não muda: remova e
+    crie outra). Só os campos enviados mudam."""
     sub = await db.get(SubRede, sub_id)
     if sub is None:
         raise nao_encontrado()
-    antes = {"permite_varredura": bool(sub.permite_varredura)}
-    sub.permite_varredura = edicao.permite_varredura
-    depois = {"permite_varredura": edicao.permite_varredura}
+    antes: dict[str, object] = {}
+    depois: dict[str, object] = {}
+    desligou = False
+    if "permite_varredura" in edicao.model_fields_set and edicao.permite_varredura is not None:
+        antes["permite_varredura"] = bool(sub.permite_varredura)
+        depois["permite_varredura"] = edicao.permite_varredura
+        desligou = not edicao.permite_varredura
+        sub.permite_varredura = edicao.permite_varredura
+    if "gateway_ip" in edicao.model_fields_set:
+        novo = None if edicao.gateway_ip is None else _gateway_valido(edicao.gateway_ip, sub.cidr)
+        antes["gateway_ip"] = sub.gateway_ip
+        depois["gateway_ip"] = novo
+        sub.gateway_ip = novo
     auditar(db, request, admin, "subrede.editar", sub.cidr, antes, depois)
     await db.commit()
-    if not edicao.permite_varredura:
+    if desligou:
         await _varredura(request).revogar(sub_id)
     return SubRedeSaida.de(sub)
 
@@ -169,5 +218,5 @@ async def remover(sub_id: int, request: Request, db: SessaoDB, admin: Admin) -> 
     auditar(db, request, admin, "subrede.remover", sub.cidr, antes={"cidr": sub.cidr})
     await db.delete(sub)
     await db.flush()
-    await _aplicar(request, db)
+    await aplicar_guarda(request, db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

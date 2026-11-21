@@ -1,12 +1,16 @@
 """Linha de comando administrativa.
 
     python -m sentinela.cli criar-admin --login X
+    python -m sentinela.cli codigo-instalacao
     python -m sentinela.cli sub-rede adicionar|remover CIDR
     python -m sentinela.cli sub-rede listar
     python -m sentinela.cli totp-zerar LOGIN
     python -m sentinela.cli backup-criar [--origem manual|atualizacao]
     python -m sentinela.cli backup-verificar ARQUIVO
     python -m sentinela.cli restaurar ARQUIVO
+    python -m sentinela.cli atualizacao-registrar --resultado R [--de V] [--para V] [--mensagem T]
+    python -m sentinela.cli atualizacao-registrar --agendado
+    python -m sentinela.cli atualizacao-ativa
     python -m sentinela.cli oui-atualizar ARQUIVO.csv [...] [--saida oui.tsv.gz]
 
 A senha é lida com ``getpass`` (duas vezes, para confirmar). Fora de produção, se
@@ -19,6 +23,14 @@ com o core no ar). ``backup-verificar`` sai com 1 e mensagem genérica se o arqu
 pelo nome de serviço ``core`` na rede do compose (``compose run``); fora do compose a sonda não vê
 o core, e a trava final é o banco ter escritor ativo. O caminho seguro é o ``restore.sh``, que
 para o core antes. O ``.env`` nunca entra no backup: os comandos repetem o aviso em texto fixo.
+
+``codigo-instalacao`` gera o código do primeiro acesso pela tela, grava só o hash argon2id em
+``<pasta do banco>/instalacao.json`` (0600, substitui o anterior) e imprime SÓ o código no
+stdout. Com algum usuário já criado, sai com 3 e não grava nada.
+
+``atualizacao-registrar`` guarda o resultado da última atualização em ``atualizacao.json`` (quem
+chama é o ``update.sh``; ``--agendado`` marca que o timer foi instalado). ``atualizacao-ativa``
+sai com 0 se a atualização automática está ligada (o padrão) e com 3 se foi desligada.
 
 ``sub-rede`` usa a mesma validação da API, grava a auditoria com ``usuario_id`` nulo e ação
 ``cli:subrede.*`` e pausa/retoma os equipamentos como a API faz. Ela escreve só no banco: com
@@ -39,7 +51,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinela import __version__
+from sentinela import __version__, atualizacao
 from sentinela.api.backup import AVISO as AVISO_ENV
 from sentinela.api.comum import sincronizar
 from sentinela.api.subredes import (
@@ -57,13 +69,14 @@ from sentinela.backup.arquivo import (
     verificar_backup,
 )
 from sentinela.backup.porta import HOSTS_DO_CORE, porta_responde
-from sentinela.config import Settings, obter_settings
+from sentinela.config import Settings, obter_settings, pasta_dados
 from sentinela.db.modelos import Auditoria, SubRede, Usuario
 from sentinela.db.sessao import criar_motor, fabrica_sessao
 from sentinela.descoberta.classificador.oui import CAMINHO_PADRAO as OUI_PADRAO
 from sentinela.descoberta.classificador.oui import atualizar_de_csv
 from sentinela.monitor.montagem import sub_redes_do_banco
 from sentinela.rede.guarda import DestinoProibido, Guarda
+from sentinela.seguranca import instalacao
 from sentinela.seguranca.politica import zerar_totp
 from sentinela.seguranca.senhas import gerar_hash_async, validar_senha
 
@@ -114,6 +127,30 @@ async def _criar_admin(settings: Settings, login: str) -> None:
                 raise ErroCli(f"o login {login!r} já existe; nada foi alterado", 1) from None
     finally:
         await motor.dispose()
+
+
+MSG_JA_HA_ADMIN = "já existe um administrador; o primeiro acesso está encerrado"
+
+
+async def _codigo_instalacao(settings: Settings) -> None:
+    """Gera o código do primeiro acesso: só o hash vai ao disco; o código só ao stdout."""
+    try:
+        pasta = pasta_dados(settings)
+    except ValueError:
+        raise ErroCli("o banco configurado não é um arquivo", 2) from None
+    motor = criar_motor(settings.banco_url)
+    try:
+        async with fabrica_sessao(motor)() as db:
+            if await db.scalar(select(Usuario.id).limit(1)) is not None:
+                raise ErroCli(MSG_JA_HA_ADMIN, 3)
+    finally:
+        await motor.dispose()
+    codigo = instalacao.gerar_codigo()
+    try:
+        await instalacao.gravar(pasta, codigo, datetime.now(UTC))
+    except OSError:
+        raise ErroCli("não foi possível gravar o código de instalação", 1) from None
+    print(codigo)
 
 
 AVISO_REINICIO = (
@@ -254,6 +291,55 @@ async def _restaurar(settings: Settings, arquivo: str) -> None:
     print(f"aviso: {AVISO_ENV}", file=sys.stderr)
 
 
+def _pasta_atualizacao(settings: Settings) -> Path:
+    try:
+        return pasta_dados(settings)
+    except ValueError:
+        raise ErroCli("o banco configurado não é um arquivo", 2) from None
+
+
+def _atualizacao_registrar(
+    settings: Settings,
+    resultado: str | None,
+    de: str | None,
+    para: str | None,
+    mensagem: str | None,
+    agendado: bool,
+) -> None:
+    pasta = _pasta_atualizacao(settings)
+    if agendado:
+        if resultado or de or para or mensagem:
+            raise ErroCli("--agendado não se combina com os dados do resultado", 2)
+        try:
+            atualizacao.marcar_agendado(pasta)
+        except OSError:
+            raise ErroCli("não foi possível gravar o estado da atualização", 1) from None
+        return
+    if resultado not in atualizacao.RESULTADOS:
+        raise ErroCli(
+            "informe --resultado (atualizado, sem_novidade, voltou, falhou ou sem_conexao)", 2
+        )
+    for versao in (de, para):
+        if versao is not None and atualizacao.versao_valida(versao) is None:
+            raise ErroCli("versão inválida: use X.Y.Z", 2)
+    try:
+        atualizacao.registrar(
+            pasta,
+            resultado,  # type: ignore[arg-type]
+            de,
+            para,
+            mensagem,
+            datetime.now(UTC),
+        )
+    except OSError:
+        raise ErroCli("não foi possível gravar o estado da atualização", 1) from None
+
+
+def _atualizacao_ativa(settings: Settings) -> None:
+    if not atualizacao.ler(_pasta_atualizacao(settings)).ativo:
+        raise ErroCli("a atualização automática está desligada", 3)
+
+
 def _oui_atualizar(arquivos: list[str], saida: str | None) -> None:
     """Regera a base OUI a partir de CSVs da IEEE já baixados (nunca acessa a rede)."""
     destino = Path(saida) if saida else OUI_PADRAO
@@ -269,6 +355,9 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     comandos = parser.add_subparsers(dest="comando", required=True)
     criar = comandos.add_parser("criar-admin", help="cria um usuário administrador")
     criar.add_argument("--login", required=True)
+    comandos.add_parser(
+        "codigo-instalacao", help="gera o código do primeiro acesso pela tela (8 caracteres)"
+    )
     sub = comandos.add_parser("sub-rede", help="declara as sub-redes privadas monitoradas")
     sub.add_argument("acao", choices=["adicionar", "remover", "listar"])
     sub.add_argument("cidr", nargs="?", help="ex. 10.99.0.0/24")
@@ -284,6 +373,17 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
         "restaurar", help="restaura um backup (com o core parado); guarda o banco atual antes"
     )
     restaura.add_argument("arquivo")
+    areg = comandos.add_parser(
+        "atualizacao-registrar", help="guarda o resultado da última atualização (update.sh)"
+    )
+    areg.add_argument("--resultado")
+    areg.add_argument("--de")
+    areg.add_argument("--para")
+    areg.add_argument("--mensagem")
+    areg.add_argument("--agendado", action="store_true")
+    comandos.add_parser(
+        "atualizacao-ativa", help="sai com 0 se a atualização automática está ligada, 3 se não"
+    )
     oui = comandos.add_parser(
         "oui-atualizar", help="regera a base OUI a partir de CSVs da IEEE (MA-L, MA-M, MA-S)"
     )
@@ -295,6 +395,17 @@ async def executar(argv: list[str], settings: Settings | None = None) -> int:
     try:
         if args.comando == "oui-atualizar":
             _oui_atualizar(args.arquivos, args.saida)
+            return 0
+        if args.comando == "codigo-instalacao":
+            await _codigo_instalacao(settings)
+            return 0
+        if args.comando == "atualizacao-registrar":
+            _atualizacao_registrar(
+                settings, args.resultado, args.de, args.para, args.mensagem, args.agendado
+            )
+            return 0
+        if args.comando == "atualizacao-ativa":
+            _atualizacao_ativa(settings)
             return 0
         if args.comando == "backup-criar":
             _backup_criar(settings, args.origem)

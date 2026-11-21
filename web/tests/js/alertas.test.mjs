@@ -231,3 +231,34 @@ test("horaNoFuso: no mesmo dia só a hora; 1 h depois da meia-noite traz a data 
   assert.equal(horaNoFuso(quase + 600e3, quase, FUSO), "23:50");
   assert.equal(horaNoFuso(quase + 3600e3, quase, FUSO), "19/11 00:40");
 });
+
+const novoAparelho = (extra = {}) => alerta({
+  id: 7, tipo: "aparelho_novo", texto: "novo aparelho conectou na rede", equipamento_id: null,
+  equipamento_nome: null, classe: null, afetados_total: 0, envio: "nao_aplica",
+  descoberta_id: "d-1", ip: "192.168.15.23", fabricante: "Fabricante Fictício", portas: [80, 443], ...extra,
+});
+
+test("linha de aparelho novo tem IP, fabricante, portas e ver em Novos", () => {
+  const l = linhaDoAlerta(novoAparelho(), AGORA, FUSO);
+  assert.equal(l.marca, "novo");
+  assert.equal(l.rotuloMarca, "Novo");
+  assert.equal(l.texto, "Novo aparelho conectou na rede", "o texto do servidor repete IP e fabricante");
+  assert.equal(l.detalhe, "192.168.15.23 · Fabricante Fictício · portas 80, 443");
+  assert.equal(l.verEmNovos, "d-1");
+  // sem fabricante nem portas: só o IP; fechado não oferece mais o atalho
+  assert.equal(linhaDoAlerta(novoAparelho({ fabricante: null, portas: [] }), AGORA, FUSO).detalhe, "192.168.15.23");
+  assert.equal(linhaDoAlerta(novoAparelho({ fechado_em: "2026-11-18T17:35:00Z" }), AGORA, FUSO).verEmNovos, "");
+  // os alertas antigos seguem iguais
+  const queda = linhaDoAlerta(alerta(), AGORA, FUSO);
+  assert.equal(queda.detalhe, "");
+  assert.equal(queda.verEmNovos, "");
+});
+
+test("aparelho novo: fabricante de 120 caracteres e 12 portas ficam inteiros", () => {
+  const fab = "F".repeat(120);
+  const portas = [21, 22, 23, 80, 443, 554, 8000, 8080, 8443, 9000, 37777, 49152];
+  const l = linhaDoAlerta(novoAparelho({ fabricante: fab, portas }), AGORA, FUSO);
+  assert.ok(l.detalhe.includes(fab));
+  assert.ok(l.detalhe.endsWith(`portas ${portas.join(", ")}`));
+  assert.ok(!l.detalhe.includes("…"));
+});

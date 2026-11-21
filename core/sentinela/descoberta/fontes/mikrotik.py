@@ -20,6 +20,7 @@ from sentinela.descoberta.fontes.base import (
 )
 from sentinela.descoberta.fontes.mikrotik_api import ClienteRouterOS, ErroComandoRouterOS
 from sentinela.descoberta.texto import limpar
+from sentinela.descoberta.uptime import ler_uptime_mikrotik
 from sentinela.monitor.limitador import Limitador
 from sentinela.rede.guarda import DestinoAutorizado, DestinoProibido, Guarda
 from sentinela.rede.mac import normalizar_mac
@@ -42,6 +43,7 @@ _POLITICAS_PERIGOSAS = frozenset({"write", "policy", "full"})
 
 CMD_IDENTIDADE = ["/system/identity/print", "=.proplist=name"]
 CMD_RECURSOS = ["/system/resource/print", "=.proplist=version,board-name"]
+CMD_UPTIME = ["/system/resource/print", "=.proplist=uptime"]
 CMD_ARP = ["/ip/arp/print", "=.proplist=address,mac-address,interface"]
 CMD_DHCP = ["/ip/dhcp-server/lease/print", "=.proplist=address,mac-address,host-name"]
 CMD_VIZINHOS = [
@@ -99,6 +101,7 @@ class FonteMikrotik:
         self._cofre = cofre
         self._guarda = guarda
         self._limitador = limitador
+        self.ultimo_uptime_s: float | None = None
 
     async def _ficha(self) -> None:
         await self._limitador.adquirir(1, prioridade="baixa")
@@ -141,6 +144,7 @@ class FonteMikrotik:
         return limpar(linhas[0].get("version"), 64) if linhas else None
 
     async def coletar(self) -> list[Achado]:
+        self.ultimo_uptime_s = None
         async with self._sessao() as (cliente, _):
             versao = await self._versao(cliente)
             achados = self._achados(await self._cmd(cliente, CMD_ARP), "arp", self._de_arp)
@@ -148,7 +152,16 @@ class FonteMikrotik:
             vizinhos = await self._cmd(cliente, CMD_VIZINHOS)
             achados += self._achados(vizinhos, "vizinho", self._de_vizinho)
             achados += self._achados(await self._wifi(cliente, versao), "wifi", self._de_wifi)
+            self.ultimo_uptime_s = await self._uptime(cliente)
         return achados
+
+    async def _uptime(self, cliente: ClienteRouterOS) -> float | None:
+        """Tempo ligado na mesma sessão (um comando a mais). Falha ou ausência → ``None``."""
+        try:
+            linhas = await self._cmd(cliente, CMD_UPTIME)
+        except ErroColeta:
+            return None
+        return ler_uptime_mikrotik(linhas[0].get("uptime", "")) if linhas else None
 
     async def _wifi(self, cliente: ClienteRouterOS, versao: str | None) -> list[dict[str, str]]:
         casamento = _VERSAO.match(versao or "")

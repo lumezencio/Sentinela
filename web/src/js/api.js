@@ -87,6 +87,28 @@ export const api = {
       json: recuperacao !== undefined ? { recuperacao } : { codigo },
       redirecionar401: false,
     }),
+  // ---- primeiro acesso (Fase 5): rotas sem sessão; 404 = já existe usuário ----
+  /** `/saude` público: "ativo" (assistente aberto), "expirado" (sem usuário e sem código válido) ou "". */
+  estadoDaInstalacao: async () => {
+    const r = await requisitar("GET", "/saude", { redirecionar401: false });
+    const v = r.ok && r.dados !== null ? r.dados.primeiro_acesso : null;
+    return v === "ativo" || v === "expirado" ? v : "";
+  },
+  /** `estado`: "ativo" | "expirado" | "ausente" (vazio se não foi 200). 404 = o assistente acabou. */
+  estadoPrimeiroAcesso: async () => {
+    const r = await requisitar("GET", "/primeiro-acesso", { redirecionar401: false });
+    const valor = r.ok && r.dados ? r.dados.codigo : "";
+    return { ...r, estado: ["ativo", "expirado", "ausente"].includes(valor) ? valor : "" };
+  },
+  /** 200 {rede: {cidr, gateway}} (sugestão detectada); 401 genérico; 429 com a espera. */
+  conferirCodigo: (codigo) =>
+    requisitar("POST", "/primeiro-acesso/conferir", { json: { codigo }, redirecionar401: false }),
+  /** 204 = administrador criado e já logado. */
+  concluirPrimeiroAcesso: ({ codigo, login, senha, cidr, gateway, varredura }) =>
+    requisitar("POST", "/primeiro-acesso/concluir", {
+      json: { codigo, login, senha, cidr, gateway: gateway || null, varredura: Boolean(varredura) },
+      redirecionar401: false,
+    }),
   sair: () => requisitar("POST", "/auth/logout", { redirecionar401: false }),
   eu: () => requisitar("GET", "/auth/eu"),
   // ---- segundo fator, política e usuários (Fase 4B) ----
@@ -141,16 +163,24 @@ export const api = {
   confiarFonte: (id, impressao) =>
     requisitar("POST", `/fontes/${encodeURIComponent(id)}/confiar`, { json: { impressao } }),
   coletarFonte: (id) => requisitar("POST", `/fontes/${encodeURIComponent(id)}/coletar`),
-  editarSubrede: (id, permite) =>
-    requisitar("PATCH", `/subredes/${encodeURIComponent(id)}`, {
-      json: { permite_varredura: permite },
-    }),
+  /** `campos`: `permite_varredura` (bool) e/ou `gateway_ip` (IPv4 da sub-rede; null apaga). */
+  editarSubrede: (id, campos) =>
+    requisitar("PATCH", `/subredes/${encodeURIComponent(id)}`, { json: campos }),
   verVarredura: () => requisitar("GET", "/varredura"),
   iniciarVarredura: (subRedeId) =>
     requisitar("POST", "/varredura", { json: { sub_rede_id: subRedeId } }),
   cancelarVarredura: () => requisitar("DELETE", "/varredura"),
   verAjustes: () => requisitar("GET", "/config/descoberta"),
   editarAjustes: (dados) => requisitar("PATCH", "/config/descoberta", { json: dados }),
+  // ---- atualização automática (Fase 5): qualquer usuário lê; só o admin liga e desliga ----
+  verAtualizacao: () => requisitar("GET", "/atualizacao"),
+  definirAtualizacao: (ativo) => requisitar("PATCH", "/atualizacao", { json: { ativo: Boolean(ativo) } }),
+  // ---- diagnóstico de quedas (Fase 5): qualquer usuário com sessão; 429 traz Retry-After ----
+  verDiagnostico: (periodo) =>
+    requisitar(
+      "GET",
+      `/diagnostico?periodo=${["24h", "7d", "30d"].includes(periodo) ? periodo : "24h"}`,
+    ),
   // ---- alertas, silêncios e Telegram (Fase 4) ----
   listarAlertas: ({ filtro = "abertos", classe = "", desde = "", pagina = 1, porPagina = 50 }) => {
     const q = new URLSearchParams({ filtro, pagina: String(pagina), por_pagina: String(porPagina) });

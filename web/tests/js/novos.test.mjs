@@ -217,3 +217,55 @@ test("sanitização única: limparTexto tira controle, bidi (U+202E) e largura z
   assert.equal(textoSeguro("a".repeat(300)).length, 200); // limites de cada módulo seguem
   assert.equal(limpar("a".repeat(500)).length, 400);
 });
+
+// ---- focarDescoberta (Task 10): Ver em Novos ----
+async function painelNovos(descobertas) {
+  const { novosDoPainel } = await import(`../../src/js/novos.js?${Math.random()}`);
+  const { criarStore } = await import("../../src/js/lista.js");
+  const base = novosDoPainel(criarStore());
+  const obj = {};
+  Object.defineProperties(obj, Object.getOwnPropertyDescriptors(base));
+  obj.admin = true;
+  obj.aba = "novos";
+  obj.$nextTick = (fn) => fn();
+  const tocados = [];
+  const cartao = (id) => ({
+    dataset: { id }, classList: { add() {}, remove() {} },
+    scrollIntoView() { tocados.push(`rolou ${id}`); }, focus() { tocados.push(`foco ${id}`); },
+  });
+  globalThis.document = {
+    querySelectorAll: () => descobertas.map((d) => cartao(d.id)),
+    querySelector: () => null,
+  };
+  globalThis.window = { setTimeout: () => 1, clearTimeout() {} };
+  const { api } = await import("../../src/js/api.js");
+  const original = api.listarDescobertas;
+  api.listarDescobertas = async () => ({ ok: true, dados: { itens: descobertas, total: descobertas.length } });
+  await obj.carregarNovos(true);
+  api.listarDescobertas = original;
+  return { obj, tocados };
+}
+
+test("focarDescoberta: acha o cartão, rola até ele e o destaca; ausente é falso, sem erro", async () => {
+  const { obj, tocados } = await painelNovos([desc("d-1"), desc("d-2")]);
+  try {
+    assert.equal(obj.focarDescoberta("d-2"), true);
+    assert.deepEqual(tocados, ["rolou d-2", "foco d-2"]);
+    assert.equal(obj.novosLinhas.find((l) => l.d.id === "d-2").d.classeCartao.includes("nv-destaque"), true);
+    assert.equal(obj.novosLinhas.find((l) => l.d.id === "d-1").d.classeCartao.includes("nv-destaque"), false);
+    assert.equal(obj.focarDescoberta("nao-existe"), false);
+    assert.equal(obj.focarDescoberta(undefined), false);
+    assert.equal(obj.focarDescoberta(7), false);
+  } finally {
+    delete globalThis.document; delete globalThis.window;
+  }
+});
+
+test("focar descoberta ausente é falso", async () => {
+  const { obj } = await painelNovos([desc("d-1")]);
+  try {
+    assert.equal(obj.focarDescoberta("outra"), false);
+  } finally {
+    delete globalThis.document; delete globalThis.window;
+  }
+});

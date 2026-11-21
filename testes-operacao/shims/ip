@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# ip de teste: só LÊ (route/addr show). Registra em $SHIM_LOG; qualquer outra subcomando falha com 99.
+#   SHIM_IP_ROUTE  saída de "ip -4 route show default" (vazia = sem rota)
+#   SHIM_IP_ADDR   saída de "ip -4 -o addr show dev <if>"
+printf 'ip %s\n' "$*" >>"${SHIM_LOG:?}"
+args=" $* "
+case "$args" in
+  *" route show default "*) [[ -z "${SHIM_IP_ROUTE:-}" ]] || printf '%s\n' "$SHIM_IP_ROUTE" ;;
+  *" addr show "*) [[ -z "${SHIM_IP_ADDR:-}" ]] || printf '%s\n' "$SHIM_IP_ADDR" ;;
+  *)
+    echo "shim ip: só leitura é permitida: ip $*" >&2
+    exit 99
+    ;;
+esac
+exit 0
