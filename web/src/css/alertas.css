@@ -714,7 +714,7 @@ html[data-aba="configuracoes"] {
 }
 
 /* 1280 a 1599 px: o conteúdo fica com ~900 a 1180 px, a mesma conta do tablet: contadores em 3
-   colunas, filtros em duas linhas e a tabela sem "Desde" e "Checagem" (continuam na ficha), sem
+   colunas, filtros em duas linhas e a tabela sem "Desde" (continua na ficha e no título), sem
    largura fixa de coluna (nada vira reticências); a Teia usa os painéis estreitos */
 @media (min-width: 1280px) and (max-width: 1599px) {
   .contadores {
@@ -753,9 +753,7 @@ html[data-aba="configuracoes"] {
     padding-right: 16px;
   }
   .tabela th:nth-child(5),
-  .tabela td:nth-child(5),
-  .tabela th:nth-child(7),
-  .tabela td:nth-child(7) {
+  .tabela td:nth-child(5) {
     display: none;
   }
   .teia {
