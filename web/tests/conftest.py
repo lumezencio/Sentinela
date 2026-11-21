@@ -49,7 +49,6 @@ CSP_PRODUCAO = (
 
 class Core(Protocol):
     def derrubar(self) -> None: ...
-    def zerar_taxa(self) -> None: ...
     def levantar(self) -> None: ...
 
 
@@ -478,13 +477,6 @@ class ServidorLocal:
         self._thread: threading.Thread | None = None
         # IPs que a checagem simulada dá como caídos (sobrevive a derrubar/levantar)
         self.quedas_forcadas: set[str] = set()
-        self.app: Any = None
-
-    def zerar_taxa(self) -> None:
-        """Zera o limite de 10 pedidos/min por usuário: vários testes do smoke fazem login com o
-        mesmo admin e o Diagnóstico conta contra ele (em produção o limite vale, claro)."""
-        if self.app is not None:
-            self.app.state.taxa_descoberta._falhas.clear()
 
     def forcar_queda(self, ips: list[str]) -> None:
         self.quedas_forcadas.update(ips)
@@ -554,7 +546,6 @@ class ServidorLocal:
             gateway_sugerido=self._gateway_sugerido,
         )
         app = criar_app(settings)
-        self.app = app
 
         async def com_csp(request: Any, chamar: Any) -> Any:
             resposta = await chamar(request)
@@ -605,9 +596,6 @@ class CoreIntocavel:
         "SENTINELA_SMOKE_COMPOSE_LOCAL=1; cenário pulado"
     )
 
-    def zerar_taxa(self) -> None:
-        return None  # alvo remoto: o limite fica como está
-
     def derrubar(self) -> None:
         pytest.skip(self.MOTIVO)
 
@@ -623,9 +611,6 @@ def _compose_local_autorizado(url: str) -> bool:
 
 
 class CoreCompose:
-    def zerar_taxa(self) -> None:
-        return None  # compose real: o limite fica como está
-
     def _compose(self, acao: str) -> None:
         subprocess.run(  # noqa: S603 - comando fixo
             ["docker", "compose", acao, "core"],  # noqa: S607

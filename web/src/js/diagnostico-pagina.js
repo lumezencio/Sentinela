@@ -9,15 +9,18 @@ const TITULOS_LAUDO = {
   "7d": "Laudo de quedas: últimos 7 dias",
   "30d": "Laudo de quedas: últimos 30 dias",
 };
-const FRESCO_MS = 30000;
+const FRESCO_MS = 60000; // cache por período: alternar 24 h/7 d/30 d não refaz o pedido
 const POR_LOTE = 20;
 const MSG_FALHA = "Não foi possível carregar o diagnóstico. Tente de novo.";
+const MSG_CSV = "Não foi possível baixar o CSV. Tente de novo.";
 const FUSO_PADRAO = "America/Sao_Paulo";
 
 export function diagnosticoDoPainel() {
   let pedido = 0; // descarta resposta de um período anterior
   let modulo = null;
-  let carregadoEm = 0;
+  const cache = new Map(); // período -> {visao, em}
+  let mostrado = ""; // período da visão que está na tela
+  let falhou = ""; // período que o último pedido não conseguiu trazer
   let ouvindoImpressao = false;
 
   return {
@@ -25,6 +28,8 @@ export function diagnosticoDoPainel() {
     dgPeriodos: PERIODOS.map((valor) => ({ valor, rotulo: ROTULOS[valor] })),
     dgCarregando: false,
     dgErro: "",
+    dgErroCsv: "",
+    dgBaixando: false,
     dgVisao: null,
     dgLimite: POR_LOTE,
 
@@ -39,35 +44,103 @@ export function diagnosticoDoPainel() {
           this.dgLimite = POR_LOTE;
         });
       }
-      if (!this.dgVisao || Date.now() - carregadoEm > FRESCO_MS) this.carregarDiagnostico();
+      this.carregarDiagnostico();
     },
 
-    async carregarDiagnostico() {
+    /** Mostra o período escolhido: do cache (até 60 s) ou do servidor; `forcar` ignora o cache. */
+    async carregarDiagnostico(forcar = false) {
       const meu = ++pedido;
       const periodo = this.dgPeriodo;
+      const guardado = cache.get(periodo);
+      this.dgErroCsv = "";
+      if (!forcar && guardado && Date.now() - guardado.em < FRESCO_MS) {
+        this.dgCarregando = false;
+        this.dgErro = "";
+        falhou = "";
+        mostrado = periodo;
+        this.dgLimite = POR_LOTE;
+        this.dgVisao = guardado.visao;
+        return;
+      }
       this.dgCarregando = true;
       this.dgErro = "";
-      this.dgLimite = POR_LOTE;
       const r = await api.verDiagnostico(periodo);
       if (meu !== pedido) return;
       this.dgCarregando = false;
+      let motivo = "";
       if (!r.ok || !r.dados || !Array.isArray(r.dados.incidentes)) {
-        this.dgVisao = null; // nunca deixa na tela os números de outro período
-        this.dgErro =
+        motivo =
           r.status === 429
             ? `Muitas consultas seguidas. Aguarde ${r.espera || 30} s e tente de novo.`
             : r.status === 401 ? "" : r.erro || MSG_FALHA;
-        return;
-      }
-      try {
-        modulo = modulo || (await import("./diagnostico.js"));
-      } catch {
-        this.dgErro = MSG_FALHA;
-        return;
+      } else {
+        try {
+          modulo = modulo || (await import("./diagnostico.js"));
+        } catch {
+          motivo = MSG_FALHA;
+        }
       }
       if (meu !== pedido) return;
-      carregadoEm = Date.now();
-      this.dgVisao = modulo.visaoDoDiagnostico(r.dados, this.fuso || FUSO_PADRAO, Date.now());
+      if (motivo || !modulo) {
+        // a tela continua com o que já tinha (mesmo período, mesmo vencido, ou o anterior) e avisa
+        falhou = periodo;
+        const seguro = guardado ? guardado.visao : this.dgVisao;
+        this.dgVisao = seguro;
+        if (seguro) {
+          this.dgPeriodo = guardado ? periodo : mostrado || periodo;
+          this.dgErro = guardado
+            ? `${motivo} Mostrando os números de ${ROTULOS[periodo]} de há pouco.`
+            : `${motivo} Continua na tela o período de ${ROTULOS[mostrado] || "antes"}.`;
+        } else {
+          this.dgErro = motivo;
+        }
+        return;
+      }
+      falhou = "";
+      const visao = modulo.visaoDoDiagnostico(r.dados, this.fuso || FUSO_PADRAO, Date.now());
+      cache.set(periodo, { visao, em: Date.now() });
+      mostrado = periodo;
+      this.dgLimite = POR_LOTE;
+      this.dgVisao = visao;
+    },
+
+    tentarDiagnosticoDeNovo() {
+      if (falhou) this.dgPeriodo = falhou;
+      this.carregarDiagnostico(true);
+    },
+
+    /** CSV por fetch: erro (429 etc.) aparece na página em vez de virar download quebrado. */
+    async baixarCsv() {
+      const url = this.dgUrlCsv;
+      if (!url || this.dgBaixando) return;
+      this.dgBaixando = true;
+      this.dgErroCsv = "";
+      try {
+        const r = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+        if (!r.ok) {
+          const espera = Number.parseInt(r.headers.get("Retry-After") || "0", 10) || 30;
+          this.dgErroCsv =
+            r.status === 429
+              ? `Muitos downloads seguidos. Aguarde ${espera} s e tente de novo.`
+              : r.status === 401 ? "" : MSG_CSV;
+          if (r.status === 401) window.location.replace("login.html");
+          return;
+        }
+        const blob = await r.blob();
+        const link = document.createElement("a");
+        const endereco = URL.createObjectURL(blob);
+        link.href = endereco;
+        const nome = /filename="([\w.-]{1,100})"/.exec(r.headers.get("Content-Disposition") || "");
+        link.download = nome ? nome[1] : this.dgNomeCsv; // o nome do servidor leva a data
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(endereco), 10000);
+      } catch {
+        this.dgErroCsv = MSG_CSV;
+      } finally {
+        this.dgBaixando = false;
+      }
     },
 
     trocarPeriodoDiagnostico(valor) {
@@ -106,7 +179,7 @@ export function diagnosticoDoPainel() {
       return Boolean(this.dgVisao);
     },
     get dgVazio() {
-      return Boolean(this.dgVisao && this.dgVisao.vazio && !this.dgErro);
+      return Boolean(this.dgVisao && this.dgVisao.vazio);
     },
     get dgTemIncidentes() {
       return Boolean(this.dgVisao && this.dgVisao.incidentes.length);

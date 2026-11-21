@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import sentinela.demo.simulador as simulador
@@ -484,3 +484,21 @@ async def test_demo_semeia_alertas_em_volume_com_alertas_existentes(
             d = await db.get(Descoberta, novo.descoberta_id)
             assert d is not None and d.status == "pendente" and d.ip.startswith("10.99.")
             assert await db.scalar(select(func.count()).select_from(Parede)) == 1
+
+
+async def test_demo_diagnostico_nao_semeia_sobre_marcador_antigo(settings_demo: Settings) -> None:
+    """Volume de demo semeado com o prefixo antigo (fd:01) sobe sem semear de novo (IP único)."""
+    app = await _app_demo_aberto(settings_demo)
+    async with app.router.lifespan_context(app):
+        sessoes = app.state.sessoes
+        async with sessoes() as db:
+            antes = await db.scalar(select(func.count()).select_from(Equipamento))
+            await db.execute(
+                update(Equipamento)
+                .where(Equipamento.mac.like(simulador.MAC_DIAGNOSTICO + "%"))
+                .values(mac=func.replace(Equipamento.mac, ":fd:d1:", ":fd:01:"))
+            )
+            await db.commit()
+        assert await simulador.semear_diagnostico_demo(sessoes, datetime.now(UTC)) is False
+        async with sessoes() as db:
+            assert await db.scalar(select(func.count()).select_from(Equipamento)) == antes

@@ -128,7 +128,7 @@ async def diagnostico(
     _usuario: UsuarioAtual,
     periodo: PeriodoQuery = "24h",
 ) -> DiagnosticoSaida:
-    limitar_taxa(request, _usuario)
+    limitar_taxa(request, _usuario, "taxa_diagnostico")
     r = await montar(db, agora_utc(), periodo, zona(request.app.state.settings))
     return await _saida(db, r)
 
@@ -140,7 +140,7 @@ async def laudo_csv(
     usuario: UsuarioAtual,
     periodo: PeriodoQuery = "24h",
 ) -> Response:
-    limitar_taxa(request, usuario)
+    limitar_taxa(request, usuario, "taxa_laudo")
     fuso = zona(request.app.state.settings)
     agora = agora_utc()
     r = await montar(db, agora, periodo, fuso)

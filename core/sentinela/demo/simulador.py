@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinela.db.modelos import (
@@ -397,6 +397,7 @@ async def semear_alertas_demo(sessoes: async_sessionmaker[AsyncSession], agora: 
 # rede fictícia do Diagnóstico: o gateway 10.99.0.1 e quem fica atrás dele
 GATEWAY_DEMO = "10.99.0.1"
 SUB_REDE_DIAGNOSTICO = "10.99.0.0/24"
+MAC_DIAGNOSTICO_ANTIGO = "02:00:00:fd:01:"  # prefixo das semeaduras anteriores a c8fc82b
 MAC_DIAGNOSTICO = "02:00:00:fd:d1:"  # marca da semeadura (fd:01 é da fonte simulada)
 # (nome, ip, classe, final do MAC)
 APARELHOS_DIAGNOSTICO: tuple[tuple[str, str, str, int], ...] = (
@@ -422,8 +423,20 @@ async def semear_diagnostico_demo(
     fuso = ZoneInfo("America/Sao_Paulo")
     rng = random.Random(1919)  # noqa: S311 - dados sintéticos, sem uso criptográfico  # nosec B311
     async with sessoes() as db:
+        # o marcador antigo (fd:01, com o nome "(demo)") também vale: um volume semeado antes da
+        # troca do prefixo não pode semear de novo (o IP é único)
         if await db.scalar(
-            select(Equipamento.id).where(Equipamento.mac.like(MAC_DIAGNOSTICO + "%")).limit(1)
+            select(Equipamento.id)
+            .where(
+                or_(
+                    Equipamento.mac.like(MAC_DIAGNOSTICO + "%"),
+                    and_(
+                        Equipamento.mac.like(MAC_DIAGNOSTICO_ANTIGO + "%"),
+                        Equipamento.nome.like("%(demo)"),
+                    ),
+                )
+            )
+            .limit(1)
         ):
             return False
         if not await db.scalar(select(SubRede.id).where(SubRede.cidr == SUB_REDE_DIAGNOSTICO)):

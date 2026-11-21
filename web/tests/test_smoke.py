@@ -4026,14 +4026,6 @@ def test_telas_novas_sem_corte_nas_8_larguras(
 CODIGO_PERIODO = {"24 horas": "24h", "7 dias": "7d", "30 dias": "30d"}
 
 
-@pytest.fixture(autouse=True)
-def _zerar_taxa_do_diagnostico(request: pytest.FixtureRequest) -> None:
-    # o Diagnóstico conta no limite de 10/min por usuário (o mesmo admin faz login em todos os
-    # testes): cada teste dele começa com a janela limpa
-    if "diagnostico" in request.node.name or request.node.name.startswith("test_baixar_csv"):
-        request.getfixturevalue("alvo").core.zerar_taxa()
-
-
 def abrir_diagnostico(page: Page, periodo: str = "30 dias") -> Any:
     page.get_by_role("tab", name="Diagnóstico").click()
     expect(page.get_by_role("tab", name="Diagnóstico")).to_have_attribute("aria-selected", "true")
@@ -4177,7 +4169,47 @@ def test_diagnostico_vazio_truncado_e_429(page: Page, alvo: Alvo) -> None:
     estado["modo"] = "429"
     secao.get_by_role("button", name="30 dias", exact=True).click()
     expect(secao.locator("#dg-erro")).to_contain_text("Aguarde 7 s")
-    expect(secao.locator("#dg-vazio")).to_be_hidden()
+    # o 429 não apaga o que já estava na tela: continua o período anterior, com o aviso
+    expect(secao.get_by_role("button", name="7 dias", exact=True)).to_have_attribute(
+        "aria-pressed", "true"
+    )
+    expect(secao.locator("#dg-aviso-truncado")).to_be_visible()
+    estado["modo"] = "vazio"
+    secao.get_by_role("button", name="Tentar de novo").click()
+    expect(secao.locator("#dg-erro")).to_be_hidden()
+    expect(secao.locator("#dg-vazio")).to_be_visible()
+
+
+def test_alternar_periodos_nao_chega_ao_429_e_usa_cache(page: Page, alvo: Alvo) -> None:
+    codigos: list[int] = []
+    page.on(
+        "response",
+        lambda r: codigos.append(r.status) if re.search(r"/api/v1/diagnostico\?", r.url) else None,
+    )
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page, "30 dias")
+    for _ in range(2):
+        for nome in ("24 horas", "7 dias", "30 dias"):
+            secao.get_by_role("button", name=nome, exact=True).click()
+            expect(secao.get_by_role("button", name=nome, exact=True)).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            expect(secao.locator("#dg-resumo")).to_be_visible()
+    assert 429 not in codigos and set(codigos) == {200}, codigos
+    assert len(codigos) == 3, codigos  # 24 h, 30 d e 7 d; o resto saiu do cache de 60 s
+    expect(secao.locator("#dg-erro")).to_be_hidden()
+
+
+def test_csv_com_429_mostra_o_aviso_na_pagina(page: Page, alvo: Alvo) -> None:
+    page.route(
+        re.compile(r"/api/v1/diagnostico/laudo\.csv"),
+        lambda r: r.fulfill(status=429, json={"detail": "x"}, headers={"Retry-After": "9"}),
+    )
+    entrar(page, alvo)
+    secao = abrir_diagnostico(page)
+    secao.locator("#dg-baixar-csv").click()
+    expect(secao.locator("#dg-erro-csv")).to_contain_text("Aguarde 9 s")
+    expect(secao.locator("#dg-resumo")).to_be_visible()  # a tela não perdeu os dados
 
 
 def test_visualizador_ve_diagnostico(page: Page, alvo: Alvo) -> None:

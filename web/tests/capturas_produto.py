@@ -521,7 +521,6 @@ def capturar_diagnostico(destinos: list[str], saida: Path) -> None:
                         impressao = destino == "diagnostico-impressao"
                         for tema in TEMAS:
                             for largura in (1280,) if impressao else LARGURAS:
-                                servidor.zerar_taxa()  # o limite de 10 pedidos/min vale na tela
                                 ctx = navegador.new_context(
                                     viewport={"width": largura, "height": ALTURA},
                                     ignore_https_errors=True,

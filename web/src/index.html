@@ -615,9 +615,9 @@
     <div class="dg-ferramentas" x-show="dgTemDados" x-cloak>
       <p class="dg-periodo" id="dg-periodo-texto" x-text="dgPeriodoTexto"></p>
       <div class="dg-acoes">
-        <a class="botao" id="dg-baixar-csv" :href="dgUrlCsv" :download="dgNomeCsv">
+        <button class="botao" id="dg-baixar-csv" type="button" :disabled="dgBaixando" @click="baixarCsv">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11M8 10l4 4 4-4M5 17v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2"/></svg>Baixar CSV
-        </a>
+        </button>
         <button class="botao botao-primario" id="dg-imprimir" type="button" @click="imprimirLaudo">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V3h10v6M7 17H5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-2M7 14h10v7H7z"/></svg>Imprimir laudo
         </button>
@@ -626,8 +626,9 @@
 
     <p class="dica dg-nota" id="dg-nota" x-show="dgTemDados" x-cloak>O período conta os incidentes que <strong>começaram</strong> nele: quedas iniciadas antes do período não entram no tempo fora.</p>
     <p class="alerta" role="alert" id="dg-erro" x-show="dgErro" x-text="dgErro"></p>
+    <p class="alerta" role="alert" id="dg-erro-csv" x-show="dgErroCsv" x-text="dgErroCsv"></p>
     <div class="dg-tentar" x-show="dgErro" x-cloak>
-      <button class="botao" type="button" @click="carregarDiagnostico" :disabled="dgCarregando">Tentar de novo</button>
+      <button class="botao" type="button" @click="tentarDiagnosticoDeNovo" :disabled="dgCarregando">Tentar de novo</button>
     </div>
     <p class="vazio" id="dg-carregando" role="status" x-show="dgCarregando &amp;&amp; !dgTemDados" x-cloak>Carregando o diagnóstico…</p>
     <p class="alerta dg-aviso" id="dg-aviso-gateway" role="note" x-show="dgAvisoGateway" x-cloak x-text="dgAvisoGateway"></p>
@@ -707,7 +708,6 @@
           </article>
         </template>
       </div>
-      <p class="dica dg-energia" id="dg-energia" x-text="dgAvisoEnergia"></p>
     </section>
 
     <section class="cfg-bloco dg-bloco" id="dg-incidentes" aria-labelledby="dg-inc-titulo" x-show="dgTemIncidentes" x-cloak>
@@ -749,7 +749,7 @@
       </div>
     </section>
 
-    <p class="dica dg-energia-fim" x-show="dgVazio" x-cloak x-text="dgAvisoEnergia"></p>
+    <p class="dica dg-energia-fim" id="dg-energia" x-show="dgTemDados" x-cloak x-text="dgAvisoEnergia"></p>
   </section>
 
   <section class="casca" id="conteudo-novos" role="tabpanel" aria-labelledby="aba-novos" hidden :hidden="!abaNovos">

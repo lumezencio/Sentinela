@@ -48,11 +48,11 @@ def nao_encontrado() -> HTTPException:
 MSG_TAXA = "Muitas solicitações; aguarde um pouco."
 
 
-def limitar_taxa(request: Request, usuario: Usuario) -> None:
+def limitar_taxa(request: Request, usuario: Usuario, balde: str = "taxa_descoberta") -> None:
     """10 por minuto por usuário nas ações que falam com a rede (testar, coletar, sondar,
     iniciar varredura): a mesma janela deslizante do bloqueio de login (``LimitadorIP``),
     com a chave no id do usuário. 429 com ``Retry-After`` quando estourar."""
-    limitador: LimitadorIP = request.app.state.taxa_descoberta
+    limitador: LimitadorIP = getattr(request.app.state, balde)
     espera = limitador.reservar(f"usuario:{usuario.id}")
     if espera:
         raise HTTPException(

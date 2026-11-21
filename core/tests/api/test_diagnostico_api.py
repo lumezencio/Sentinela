@@ -135,8 +135,29 @@ async def test_demo_tem_incidentes_de_exemplo(settings: Settings) -> None:
 
 
 async def test_json_tem_limite_de_taxa(cliente_visualizador: httpx.AsyncClient) -> None:
-    codigos = [(await cliente_visualizador.get(URL)).status_code for _ in range(12)]
-    assert codigos[0] == 200 and codigos[-1] == 429
+    codigos = [(await cliente_visualizador.get(URL)).status_code for _ in range(62)]
+    assert codigos[:60] == [200] * 60 and codigos[-1] == 429  # 60 por minuto
+
+
+async def test_baldes_separados_do_diagnostico(
+    app: FastAPI, cliente_visualizador: httpx.AsyncClient
+) -> None:
+    # esgotar a descoberta (10/min) não tira o Diagnóstico, e alternar períodos várias vezes
+    # nunca chega ao limite
+    async with app.state.sessoes() as db:
+        uid = await db.scalar(select(Usuario.id).where(Usuario.login == "visual-teste"))
+    for _ in range(12):
+        app.state.taxa_descoberta.reservar(f"usuario:{uid}")
+    assert app.state.taxa_descoberta.restante(f"usuario:{uid}") > 0
+    codigos = [
+        (await cliente_visualizador.get(URL, params={"periodo": p})).status_code
+        for p in ["24h", "7d", "30d", "24h"] * 4
+    ]
+    assert codigos == [200] * 16
+    # e o CSV tem o balde dele: esgotá-lo não derruba o JSON
+    for _ in range(12):
+        await cliente_visualizador.get(f"{URL}/laudo.csv")
+    assert (await cliente_visualizador.get(URL)).status_code == 200
 
 
 async def test_resposta_tem_teto_de_equipamentos(
