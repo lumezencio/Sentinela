@@ -810,7 +810,8 @@ html[data-aba="organograma"] .aviso-sem-alpine {
   .ferramentas {
     grid-template-columns: 1fr 1fr;
   }
-  .ferramentas .busca {
+  .ferramentas .busca,
+  .ferramentas .acoes-admin {
     grid-column: 1 / -1;
   }
 }

@@ -397,6 +397,10 @@ html[data-aba="configuracoes"] {
   .al-silencio .botao {
     flex: 1 1 auto;
   }
+  /* "Todo o período" não cabe em meia largura: os dois filtros empilham */
+  .ferramentas.al-ferramentas {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ---------- Configurações: Telões ---------- */
@@ -516,7 +520,7 @@ html[data-aba="configuracoes"] {
   align-items: start;
   gap: 12px;
   min-height: 0;
-  max-height: min(46vh, 440px); /* no fluxo: o conteúdo continua à vista logo abaixo */
+  max-height: min(56vh, 520px); /* no fluxo: o conteúdo continua à vista logo abaixo */
   padding: 12px;
   margin: -12px;
   overflow-y: auto;
@@ -557,6 +561,9 @@ html[data-aba="configuracoes"] {
    tablet: filtros em duas linhas e a tabela sem as colunas "Desde" e "Checagem" (continuam na
    ficha), sem largura fixa de coluna (nada vira reticências) */
 @media (min-width: 1440px) and (max-width: 1739px) {
+  body:has(.ca-pilha .ca) .contadores {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   body:has(.ca-pilha .ca) .ferramentas {
     grid-template-columns: 1fr 1fr;
   }
