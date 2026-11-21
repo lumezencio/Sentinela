@@ -31,7 +31,8 @@ from playwright.sync_api import Browser, Page, expect, sync_playwright
 
 from conftest import inserir_alerta
 
-NOME_TELAO = "TV da portaria principal do bloco administrativo B, ao lado da"  # 62 caracteres
+# nome longo e completo (o máximo aceito é 64): a frase inteira tem de aparecer, quebrando linha
+NOME_TELAO = "TV da portaria principal do bloco administrativo B, recepção"  # 60 caracteres
 SEM_WEBGL = ["--disable-webgl", "--disable-3d-apis"]
 
 PEDIR_CODIGO = """async () => {

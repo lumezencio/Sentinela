@@ -196,6 +196,38 @@ def esvaziar_classes(manter: tuple[str, ...] | None = None) -> Callable[[str], s
     return reescrever
 
 
+# Página inteira como a pessoa vê rolando: o céu (.campo) e a coluna de alertas são
+# position:fixed; o screenshot full_page do Chromium não rola a página, só estica a imagem, então o
+# céu parava na altura da janela (emenda reta a ~900 px) e a coluna ficava solta no meio. Aqui eles
+# viram absolutos: o céu cobre a página toda e a coluna fica onde está com a página no topo.
+PREPARAR_PAGINA_INTEIRA = """() => {
+    window.scrollTo(0, 0);
+    const alto = document.documentElement.scrollHeight;
+    const topo = document.querySelector('.topo');
+    if (topo) topo.style.position = 'static';
+    const campo = document.querySelector('.campo');
+    if (campo) {
+        campo.style.position = 'absolute';
+        campo.style.height = alto + 'px';
+        campo.style.bottom = 'auto';
+    }
+    const pilha = document.querySelector('.ca-pilha');
+    if (pilha && getComputedStyle(pilha).position === 'fixed') {
+        const r = pilha.getBoundingClientRect();
+        pilha.style.position = 'absolute';
+        pilha.style.top = r.top + 'px';
+    }
+}"""
+
+
+def pagina_inteira(page: Page, caminho: str | Path) -> None:
+    """Captura da página inteira sem os artefatos de position:fixed (ver acima)."""
+    page.wait_for_timeout(400)  # fim de animações de entrada (cartão ao vivo)
+    page.evaluate(PREPARAR_PAGINA_INTEIRA)
+    page.wait_for_timeout(100)
+    page.screenshot(path=str(caminho), full_page=True)
+
+
 def _abrir_teia(page: Page, perto: bool) -> None:
     """Teia na vista geral (esferas pequenas: sem IP) ou de perto (Câmeras e o 1º equipamento
     focados: IP dentro das esferas)."""
@@ -356,9 +388,7 @@ def _capturar_tela(
     page.screenshot(path=f"{base}.png")
     if destino.startswith("teia") or destino in ("login", "lista", "configuracoes-topo") or sufixo:
         return  # a Teia ocupa a janela; nas outras a janela de 900 px é o que importa
-    # página inteira: o cabeçalho fixo sairia no meio da imagem
-    page.evaluate("document.querySelector('.topo').style.position = 'static'")
-    page.screenshot(path=f"{base}-pagina.png", full_page=True)
+    pagina_inteira(page, f"{base}-pagina.png")
 
 
 def _criar_silencios(page: Page) -> list[int]:

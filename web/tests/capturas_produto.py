@@ -40,7 +40,7 @@ from typing import Any
 
 from playwright.sync_api import Page, expect
 
-from capturar_telas import ALTURA, LARGURAS, TEMAS, pasta_saida, sync_playwright
+from capturar_telas import ALTURA, LARGURAS, TEMAS, pagina_inteira, pasta_saida, sync_playwright
 
 DESTINOS: tuple[str, ...] = (
     "codigo",
@@ -373,10 +373,7 @@ def capturar_painel(destinos: list[str], saida: Path) -> None:
                                     _abrir_painel(page, destino, servidor.aparelho, ponte)
                                     base = saida / f"{destino}-{tema}-{largura}"
                                     page.screenshot(path=f"{base}.png")
-                                    page.evaluate(
-                                        "document.querySelector('.topo').style.position = 'static'"
-                                    )
-                                    page.screenshot(path=f"{base}-pagina.png", full_page=True)
+                                    pagina_inteira(page, f"{base}-pagina.png")
                                 finally:
                                     ctx.close()
                 finally:
@@ -549,11 +546,7 @@ def capturar_diagnostico(destinos: list[str], saida: Path) -> None:
                                             )
                                     else:
                                         page.screenshot(path=f"{base}.png")
-                                        page.evaluate(
-                                            "document.querySelector('.topo').style.position"
-                                            " = 'static'"
-                                        )
-                                        page.screenshot(path=f"{base}-pagina.png", full_page=True)
+                                        pagina_inteira(page, f"{base}-pagina.png")
                                 finally:
                                     ctx.close()
                 finally:
@@ -605,10 +598,7 @@ def main() -> None:
                                 try:
                                     page = ctx.new_page()
                                     _abrir(page, destino)
-                                    page.screenshot(
-                                        path=saida / f"{destino}-{tema}-{largura}.png",
-                                        full_page=True,
-                                    )
+                                    pagina_inteira(page, saida / f"{destino}-{tema}-{largura}.png")
                                 finally:
                                     ctx.close()
                 finally:

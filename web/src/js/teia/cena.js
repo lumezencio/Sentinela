@@ -14,6 +14,7 @@ import {
 import { calcularPosicoes, ESTILOS, RAIO_CLASSES } from "./estilos.js";
 import {
   DIST_MAX_ROTULO, enquadrar, enquadrarVistaGeral, manterRotuloNoPalco, posicaoDoRotulo, raioEnvolvente,
+  rotulosQueCabem,
   separarRotulos,
 } from "./enquadramento.js";
 import {
@@ -541,12 +542,17 @@ export function montarTeia(container, opcoes = {}) {
     // dois rótulos nunca se sobrepõem: o do servidor e os de mais equipamentos ficam onde estão,
     // os outros deslizam na vertical o mínimo necessário
     lista.sort((p, q) => (p.r.no === srv ? -1 : q.r.no === srv ? 1 : (q.r.no.total || 0) - (p.r.no.total || 0)));
-    const dys = separarRotulos(
-      lista.map((e) => ({ x: e.dentro.x, topo: e.dentro.y + e.deslocado, l: e.larg, a: e.alt })),
-      { limite: altura },
-    );
+    const caixas = lista.map((e) => ({ x: e.dentro.x, topo: e.dentro.y + e.deslocado, l: e.larg, a: e.alt }));
+    const dys = separarRotulos(caixas, { limite: altura });
+    // nível de detalhe: o que não couber sem encostar em outro (palco baixo, celular) some
+    const cabe = rotulosQueCabem(caixas, dys, { limite: altura });
     lista.forEach((e, i) => {
       const { r, pos, dentro } = e;
+      if (!cabe[i]) {
+        if (!r.el.hidden) r.el.hidden = true;
+        r.ultimo = "";
+        return;
+      }
       const y = dentro.y + dys[i];
       const chave = `${dentro.x},${y},${pos.escala}`;
       if (chave === r.ultimo) return;

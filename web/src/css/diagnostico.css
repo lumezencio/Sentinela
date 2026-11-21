@@ -115,11 +115,39 @@ html[data-aba="diagnostico"] {
 }
 
 /* ---------- resumo ---------- */
+/* quantas colunas conforme quantos cartões (2 fixos + 1 por tipo de incidente): nunca sobra um
+   cartão sozinho numa linha. Celular: 1 coluna; tablet: 2 (com 2 ou 4) ou 3 (com 3, 5 ou 6);
+   desktop: todos numa linha (até 6) */
 .dg-resumo {
+  --dg-col: 2;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 176px), 1fr));
+  grid-template-columns: repeat(var(--dg-col), minmax(0, 1fr));
   gap: 12px;
   margin: 0 0 24px;
+}
+
+.dg-resumo:has(> .dg-cartao:nth-of-type(3):last-of-type),
+.dg-resumo:has(> .dg-cartao:nth-of-type(5):last-of-type),
+.dg-resumo:has(> .dg-cartao:nth-of-type(6):last-of-type) {
+  --dg-col: 3;
+}
+
+@media (min-width: 1024px) {
+  .dg-resumo:has(> .dg-cartao:nth-of-type(4):last-of-type) {
+    --dg-col: 4;
+  }
+  .dg-resumo:has(> .dg-cartao:nth-of-type(5):last-of-type) {
+    --dg-col: 5;
+  }
+  .dg-resumo:has(> .dg-cartao:nth-of-type(6):last-of-type) {
+    --dg-col: 6;
+  }
+}
+
+@media (max-width: 559px) {
+  .dg-resumo {
+    --dg-col: 1 !important;
+  }
 }
 
 .dg-cartao {
@@ -402,10 +430,6 @@ html[data-aba="diagnostico"] {
 }
 
 @media (max-width: 767px) {
-  .dg-resumo {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
-  }
-
   .dg-acoes,
   .dg-acoes .botao,
   .dg-periodos {
@@ -546,8 +570,7 @@ html[data-aba="diagnostico"] {
   }
 
   .dg-resumo {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6pt;
+    gap: 6pt; /* colunas pela quantidade de cartões, como na tela (sem órfão) */
   }
 
   .dg-cartao,

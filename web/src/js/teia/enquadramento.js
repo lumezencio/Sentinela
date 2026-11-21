@@ -241,3 +241,21 @@ export function separarRotulos(caixas, { folga = 4, limite = Infinity } = {}) {
   }
   return dy;
 }
+
+/**
+ * Nível de detalhe dos rótulos: depois de `separarRotulos`, quem ainda bate num rótulo já posto
+ * (ou sai do palco, quando o palco é baixo como no celular) não aparece. A ordem é a mesma da
+ * separação (servidor e classes maiores primeiro), então os mais importantes ficam.
+ */
+export function rotulosQueCabem(caixas, dy, { folga = 4, limite = Infinity } = {}) {
+  const postas = [];
+  return caixas.map((c, i) => {
+    const topo = c.topo + (dy[i] || 0);
+    const cabeNoPalco = topo >= 0 && topo + c.a <= limite;
+    const bate = postas.some((o) => Math.abs(o.x - c.x) < (o.l + c.l) / 2 + folga
+      && topo < o.topo + o.a + folga && topo + c.a + folga > o.topo);
+    const fica = i === 0 || (cabeNoPalco && !bate);
+    if (fica) postas.push({ x: c.x, topo, l: c.l, a: c.a });
+    return fica;
+  });
+}

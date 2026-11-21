@@ -15,24 +15,17 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
 }
 
 /* ---------- abas: contador de pendentes ---------- */
-/* pílula no canto da aba, fora do fluxo: o número que chega ou muda não empurra as outras abas
-   (sem deslocamento de layout no cabeçalho) */
-.aba {
-  position: relative;
-}
-
+/* selo dentro da aba, no fluxo, com o lugar sempre reservado (largura mínima de 3 algarismos e
+   invisível quando zerado): o número que chega ou muda não empurra as outras abas e nunca invade
+   outra linha do trilho */
 .aba-contador {
-  position: absolute;
-  top: -6px;
-  left: calc(100% - 14px); /* ancorada à esquerda: crescer de 9 para 10 não move o início */
-  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
+  min-width: 32px;
   height: 20px;
   padding: 0 6px;
-  box-shadow: 0 0 0 2px var(--fundo);
+  font-variant-numeric: tabular-nums;
   border-radius: 999px;
   background: #2dd4bf;
   color: #042f2e;
@@ -654,11 +647,6 @@ html[data-aba="configuracoes"] .aviso-sem-alpine {
   flex: 1;
   margin: 0;
   font-size: 15px;
-}
-
-.cfg-teste-cabeca .botao-icone {
-  width: 32px;
-  min-height: 32px;
 }
 
 .cfg-avisos {

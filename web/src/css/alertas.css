@@ -40,6 +40,10 @@ html[data-aba="configuracoes"] {
   color: #ffffff;
 }
 
+.aba-contador[data-vazio="sim"] {
+  visibility: hidden;
+}
+
 /* ---------- lista de alertas ---------- */
 .al-lista,
 .al-silencios,
@@ -171,6 +175,11 @@ html[data-aba="configuracoes"] {
   padding: 0 14px;
 }
 
+/* "Silenciar…" (fantasma) ganha contorno na linha: todas as ações têm o mesmo desenho */
+.al-acoes .botao-fantasma {
+  border-color: var(--borda-forte);
+}
+
 .al-detalhe {
   grid-column: 1 / -1;
   display: grid;
@@ -232,6 +241,20 @@ html[data-aba="configuracoes"] {
   gap: 12px;
 }
 
+.dialogo .rodape {
+  flex-wrap: wrap;
+}
+
+.dialogo .rodape .botao {
+  white-space: nowrap;
+}
+
+@media (max-width: 559px) {
+  .dialogo .rodape .botao {
+    flex: 1 1 auto;
+  }
+}
+
 .al-candidatos {
   display: grid;
   gap: 4px;
@@ -282,7 +305,7 @@ html[data-aba="configuracoes"] {
 .campo-form textarea {
   width: 100%;
   min-height: 84px;
-  padding: 10px 12px;
+  padding: 10px 16px;
   border: 1px solid var(--borda-forte);
   border-radius: var(--raio-p);
   background: var(--fundo);
@@ -343,9 +366,13 @@ html[data-aba="configuracoes"] {
   .al-linha {
     grid-template-columns: 120px minmax(0, 1fr);
   }
+  /* ações numa grade de colunas iguais, alinhadas à esquerda: nenhum botão fica sozinho no
+     meio da linha */
   .al-linha .al-acoes {
+    display: grid;
     grid-column: 2;
-    justify-content: flex-start;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    justify-content: start;
   }
   .al-silencio {
     grid-template-columns: 144px minmax(0, 1fr);
@@ -392,9 +419,11 @@ html[data-aba="configuracoes"] {
   .al-silencio > .botao {
     grid-column: 1;
   }
-  .al-linha .al-acoes .botao,
   .al-silencio .botao {
     flex: 1 1 auto;
+  }
+  .al-linha .al-acoes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   /* "Todo o período" não cabe em meia largura: os dois filtros empilham */
   .ferramentas.al-ferramentas {
@@ -646,7 +675,8 @@ html[data-aba="configuracoes"] {
   .ca-pilha {
     position: fixed;
     top: 88px; /* cabeçalho de 72 px (uma linha a partir de 1280 px) + 16 px */
-    right: 24px;
+    /* a borda direita da coluna acompanha a do quadro (cabeçalho e conteúdo usam o mesmo) */
+    right: max(16px, calc((100% - 1320px - var(--reserva-cartoes)) / 2 + 16px));
     z-index: 30;
     display: flex !important; /* sempre à vista, mesmo vazia */
     flex-direction: column;
@@ -656,9 +686,9 @@ html[data-aba="configuracoes"] {
     margin: 0;
     padding: 0;
   }
-  /* com a faixa da varredura no cabeçalho, a coluna desce junto */
-  /* (antes do Alpine a faixa ainda tem x-cloak: não conta, senão a coluna pularia na carga) */
-  body:has(#faixa-varredura:not([x-cloak]):not([style*="display: none"])) .ca-pilha {
+  /* com a faixa da varredura no cabeçalho, a coluna desce junto (o Alpine marca a própria
+     coluna com data-varredura, a partir do mesmo estado que mostra a faixa) */
+  .ca-pilha[data-varredura="sim"] {
     top: 140px;
     max-height: calc(100vh - 156px);
   }
@@ -684,7 +714,12 @@ html[data-aba="configuracoes"] {
   .ca-cartoes {
     grid-template-columns: minmax(0, 1fr);
   }
-  /* coluna reservada o tempo todo: largura da coluna + 24 px da borda + 16 px de vão */
+  /* na coluna o título usa 18 px: um nome de 60 caracteres cabe em 2 a 3 linhas */
+  .ca-nome {
+    font-size: 18px;
+    line-height: 24px;
+  }
+  /* coluna reservada o tempo todo: largura da coluna + 16 px de vão + 16 px da borda */
   .casca {
     width: min(1320px, calc(100% - var(--reserva-cartoes)));
     margin-left: max(0px, calc((100% - var(--reserva-cartoes) - 1320px) / 2));
@@ -694,22 +729,35 @@ html[data-aba="configuracoes"] {
   }
 }
 
+/* largura da coluna por faixa de tela; a reserva é a coluna + 32 px */
 :root {
   --reserva-cartoes: 0px;
 }
 
 @media (min-width: 1280px) {
   :root {
-    --reserva-cartoes: 360px;
+    --reserva-cartoes: 376px;
+  }
+  .ca-pilha {
+    --coluna-cartoes: 344px;
   }
 }
 
 @media (min-width: 1440px) {
   :root {
-    --reserva-cartoes: 420px;
+    --reserva-cartoes: 432px;
   }
   .ca-pilha {
-    --coluna-cartoes: 380px;
+    --coluna-cartoes: 400px;
+  }
+}
+
+@media (min-width: 1680px) {
+  :root {
+    --reserva-cartoes: 472px;
+  }
+  .ca-pilha {
+    --coluna-cartoes: 440px;
   }
 }
 
@@ -855,12 +903,21 @@ html[data-aba="configuracoes"] {
   }
 }
 
+/* os dois botões (recolher e fechar) ficam no canto, ao lado do selo; o título usa a largura toda
+   do cartão logo abaixo (não divide a linha com os botões) */
 .ca-cabeca {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 4px;
-  margin: -8px -12px 0 0;
+  position: relative;
+  display: block;
+}
+
+.ca-cabeca > .botao-icone {
+  position: absolute;
+  top: -8px;
+  right: -12px;
+}
+
+.ca-cabeca > .ca-alternar {
+  right: 32px;
 }
 
 .ca-titulo {
@@ -868,7 +925,11 @@ html[data-aba="configuracoes"] {
   justify-items: start;
   gap: 8px;
   min-width: 0;
-  margin: 8px 0 0;
+  margin: 0;
+}
+
+.ca-marca {
+  margin-right: 80px; /* lugar dos dois botões do canto */
 }
 
 .ca-marca {
@@ -897,7 +958,7 @@ html[data-aba="configuracoes"] {
   font-family: var(--fonte-titulo);
   font-size: 20px;
   line-height: 26px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word; /* só entre palavras (palavra maior que a linha é o único caso) */
 }
 
 .ca-cabeca .botao-icone {
@@ -939,7 +1000,7 @@ html[data-aba="configuracoes"] {
 
 .ca-dados > div {
   display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
+  grid-template-columns: 104px minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -950,11 +1011,13 @@ html[data-aba="configuracoes"] {
 .ca-dados dd {
   margin: 0;
   color: var(--ca-titulo);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
+/* IP, MAC e checagem nunca se partem */
 .ca-dados dd.mono {
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .ca-nota {
@@ -967,6 +1030,7 @@ html[data-aba="configuracoes"] {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
+  gap: 0 12px;
   width: 100%;
   min-height: 44px;
   padding: 4px 12px;
@@ -1005,7 +1069,7 @@ html[data-aba="configuracoes"] {
 .ca-afetado-texto {
   display: grid;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .ca-acoes {

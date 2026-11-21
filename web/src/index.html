@@ -53,9 +53,9 @@
         <button class="aba" role="tab" type="button" id="aba-lista" aria-controls="conteudo-lista" aria-selected="true" :aria-selected="abaSelecionada('lista')" @click="irPara('lista')">Lista</button>
         <button class="aba" role="tab" type="button" id="aba-teia" aria-controls="conteudo-teia" aria-selected="false" :aria-selected="abaSelecionada('teia')" @click="irPara('teia')">Teia</button>
         <button class="aba" role="tab" type="button" id="aba-organograma" aria-controls="conteudo-organograma" aria-selected="false" :aria-selected="abaSelecionada('organograma')" @click="irPara('organograma')">Organograma</button>
-        <button class="aba" role="tab" type="button" id="aba-alertas" aria-controls="conteudo-alertas" aria-selected="false" :aria-selected="abaSelecionada('alertas')" @click="irPara('alertas')">Alertas<span class="aba-contador aba-contador-alerta" id="contador-alertas" x-show="temAlertasAbertos" x-cloak><span x-text="rotuloAlertasAbertos">0</span><span class="so-leitor"> abertos</span></span></button>
+        <button class="aba" role="tab" type="button" id="aba-alertas" aria-controls="conteudo-alertas" aria-selected="false" :aria-selected="abaSelecionada('alertas')" @click="irPara('alertas')">Alertas<span class="aba-contador aba-contador-alerta" id="contador-alertas" data-vazio="sim" :data-vazio="temAlertasAbertos ? 'nao' : 'sim'"><span x-text="rotuloAlertasAbertos">0</span><span class="so-leitor"> abertos</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-diagnostico" aria-controls="conteudo-diagnostico" aria-selected="false" :aria-selected="abaSelecionada('diagnostico')" @click="irPara('diagnostico')">Diagnóstico</button>
-        <button class="aba" role="tab" type="button" id="aba-novos" aria-controls="conteudo-novos" aria-selected="false" :aria-selected="abaSelecionada('novos')" @click="irPara('novos')">Novos<span class="aba-contador" id="contador-pendentes" x-show="temPendentes" x-cloak><span x-text="rotuloPendentes">0</span><span class="so-leitor"> pendentes</span></span></button>
+        <button class="aba" role="tab" type="button" id="aba-novos" aria-controls="conteudo-novos" aria-selected="false" :aria-selected="abaSelecionada('novos')" @click="irPara('novos')">Novos<span class="aba-contador" id="contador-pendentes" data-vazio="sim" :data-vazio="temPendentes ? 'nao' : 'sim'"><span x-text="rotuloPendentes">0</span><span class="so-leitor"> pendentes</span></span></button>
         <button class="aba" role="tab" type="button" id="aba-configuracoes" aria-controls="conteudo-configuracoes" aria-selected="false" :aria-selected="abaSelecionada('configuracoes')" @click="irPara('configuracoes')" hidden :hidden="!admin">Configurações</button>
       </nav>
 
@@ -96,10 +96,12 @@
   <!-- cartões de alerta ao vivo: coluna sempre reservada à direita (>= 1280 px) ou faixa de altura
        fixa no topo do conteúdo que abre por cima ao toque (abaixo disso). Nada se mexe quando um
        alerta chega e nada cobre filtros e botões. -->
-  <section class="ca-pilha" :class="classePilha" id="cartoes-alerta" aria-label="Alertas ao vivo">
+  <section class="ca-pilha" :class="classePilha" id="cartoes-alerta" aria-label="Alertas ao vivo" data-varredura="nao" :data-varredura="faixaVarredura ? 'sim' : 'nao'">
+    <!-- anúncio fora do botão (filhos de botão não são anunciados em alguns leitores de tela) -->
+    <p class="so-leitor" aria-live="polite"><span x-text="rotuloResumoCartoes"></span> <span x-text="detalheResumoCartoes"></span></p>
     <button class="ca-resumo" type="button" @click="alternarCartoes" :disabled="!temCartoes" :aria-expanded="ariaCartoesAbertos" aria-controls="ca-painel" disabled aria-expanded="false">
       <span class="ca-resumo-ponto" aria-hidden="true"></span>
-      <span class="ca-resumo-texto" aria-live="polite"><span x-text="rotuloResumoCartoes">Nenhum alerta ao vivo</span><span class="so-leitor" x-text="detalheResumoCartoes"></span></span>
+      <span class="ca-resumo-texto" x-text="rotuloResumoCartoes">Nenhum alerta ao vivo</span>
       <span class="ca-resumo-acao" x-show="temCartoes" x-cloak x-text="rotuloAcaoCartoes">Ver</span>
       <svg viewBox="0 0 24 24" aria-hidden="true" x-show="temCartoes" x-cloak><path d="M6 9l6 6 6-6"/></svg>
     </button>
@@ -329,6 +331,12 @@
     </div>
 
     <div class="teia-topo">
+      <!-- celular: os 5 estilos numa lista de escolha (os botões não cabem numa linha) -->
+      <select class="teia-estilo-select vidro" aria-label="Estilo da Teia" @change="escolherEstiloDoSelect">
+        <template x-for="e in estilos" :key="e.id">
+          <option :value="e.id" :selected="estiloEhAtual(e.id)" x-text="e.nome"></option>
+        </template>
+      </select>
       <div class="teia-estilos vidro" role="group" aria-label="Estilo da Teia">
         <template x-for="e in estilos" :key="e.id">
           <button class="teia-estilo" type="button" @click="escolherEstilo(e.id)" :aria-pressed="estiloPressionado(e.id)" x-text="e.nome"></button>
@@ -339,10 +347,15 @@
       </button>
     </div>
 
-    <aside class="teia-classes vidro" id="teia-classes" aria-label="Classes">
+    <aside class="teia-classes vidro" :class="classePainelClasses" id="teia-classes" aria-label="Classes">
       <div class="teia-classes-todas" x-show="semClasseFocada">
         <h2 class="teia-titulo">Classes</h2>
-        <ul class="teia-lista-classes">
+        <!-- celular: a lista de classes fica recolhida atrás deste botão (a cena ganha a tela) -->
+        <button class="botao teia-classes-alternar" type="button" @click="alternarClassesTeia" :aria-expanded="ariaClassesTeia" aria-controls="teia-lista-classes" aria-expanded="false">
+          <span>Classes</span><span class="teia-classes-qtd" x-text="teiaClasses.length"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <ul class="teia-lista-classes" id="teia-lista-classes">
           <template x-for="c in teiaClasses" :key="c.slug">
             <li>
               <button class="teia-classe" type="button" :data-slug="c.slug" @click="focarClasse(c.slug)" :aria-label="c.rotulo">

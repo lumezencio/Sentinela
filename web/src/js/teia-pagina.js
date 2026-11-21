@@ -55,6 +55,7 @@ export function visoesDoPainel(store) {
     falhaDeCarga: false, // o aviso .aviso-sem-alpine só aparece se o Alpine não subir
     estilo: estiloSalvo(),
     estilos: ESTILOS.map((id) => ({ id, nome: NOMES_ESTILO[id] })),
+    teiaClassesAbertas: false, // celular: lista de classes recolhida até o toque
     teiaCarregando: false,
     teiaErro: "",
     teiaClasses: [],
@@ -233,6 +234,7 @@ export function visoesDoPainel(store) {
         caixa("teia-classes"),
         this.equipAberto ? caixa("painel-equipamento") : null,
         dentro("#conteudo-teia .teia-estilos"),
+        dentro("#conteudo-teia .teia-estilo-select"),
         dentro("#conteudo-teia .teia-ver-tudo"),
         dentro("#conteudo-teia .teia-legenda"),
       ]);
@@ -289,6 +291,21 @@ export function visoesDoPainel(store) {
     },
     estiloPressionado(id) {
       return this.estilo === id ? "true" : "false";
+    },
+    estiloEhAtual(id) {
+      return this.estilo === id;
+    },
+    escolherEstiloDoSelect(evento) {
+      this.escolherEstilo(evento.target.value);
+    },
+    alternarClassesTeia() {
+      this.teiaClassesAbertas = !this.teiaClassesAbertas;
+    },
+    get ariaClassesTeia() {
+      return this.teiaClassesAbertas ? "true" : "false";
+    },
+    get classePainelClasses() {
+      return this.teiaClassesAbertas || this.classeFocada !== "" ? "aberta" : "";
     },
 
     // ---------- classes ----------

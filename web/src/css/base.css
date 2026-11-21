@@ -395,7 +395,7 @@ input,
 select {
   width: 100%;
   min-height: 44px;
-  padding: 0 12px;
+  padding: 0 16px; /* o texto (rolado até o fim, num valor longo) nunca encosta na borda */
   border: 1px solid var(--borda-forte);
   border-radius: var(--raio-p);
   background: var(--fundo);

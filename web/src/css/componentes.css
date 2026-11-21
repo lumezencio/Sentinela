@@ -38,7 +38,8 @@ html[data-aba="organograma"] #conteudo-lista {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 20px;
-  width: min(1320px, 100%);
+  /* o mesmo quadro do conteúdo: 1320 px + a coluna de alertas (>= 1280 px), centralizado */
+  width: min(100%, calc(1320px + var(--reserva-cartoes)));
   min-height: 72px;
   margin: 0 auto;
   padding: 10px 16px;
@@ -828,16 +829,63 @@ html[data-aba="organograma"] .aviso-sem-alpine {
   }
 }
 
+/* cartão "equipamentos · N aguardando" tem o rótulo mais longo: coluna mais larga em 6 */
+@media (min-width: 1025px) {
+  .contadores {
+    grid-template-columns: minmax(0, 1.6fr) repeat(5, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 767px) {
   .topo-interno {
-    flex-wrap: wrap;
-    gap: 8px 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 8px;
+  }
+  .marca {
+    gap: 8px;
+    min-width: 0;
+    font-size: 18px;
+  }
+  .marca .logo {
+    width: 32px;
+    height: 32px;
+  }
+  .marca .versao {
+    min-width: 0;
+    font-size: 11px;
+    padding: 2px 6px;
+  }
+  .topo-acoes {
+    gap: 0;
+  }
+  .ao-vivo {
+    margin-right: 8px;
   }
   .abas {
-    order: 3;
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 4px;
     width: 100%;
     margin-left: 0;
-    overflow-x: auto;
+  }
+  .aba {
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 13px;
+  }
+  /* Lista e Teia são curtas: 2 colunas cada; Organograma e Alertas, 4; a 2ª linha tem 3 de 4 */
+  #aba-lista,
+  #aba-teia {
+    grid-column: span 2;
+  }
+  #aba-organograma,
+  #aba-alertas,
+  #aba-diagnostico,
+  #aba-novos,
+  #aba-configuracoes {
+    grid-column: span 4;
   }
   .usuario,
   .ao-vivo span:last-child {
@@ -1200,6 +1248,12 @@ html[data-aba="teia"] .campo {
   left: var(--vao);
   width: 272px;
   padding: 14px 10px 10px;
+}
+
+/* botão de recolher e lista de estilo: só no celular */
+.teia-classes-alternar,
+.teia-estilo-select {
+  display: none;
 }
 
 .teia-classes-todas,
@@ -1892,6 +1946,42 @@ html[data-aba="teia"] .campo {
   .teia-classes-todas .teia-titulo {
     display: none;
   }
+  /* classes recolhidas por padrão: só o botão "Classes N" no canto; a cena fica com a tela */
+  .teia-classes {
+    right: auto;
+    max-width: calc(100% - var(--vao) * 2);
+  }
+  .teia-classes:not(.aberta) {
+    padding: 4px;
+  }
+  .teia-classes.aberta {
+    right: var(--vao);
+  }
+  .teia-classes-alternar {
+    display: inline-flex;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 12px;
+    border-color: transparent;
+    background: transparent;
+  }
+  .teia-classes-qtd {
+    color: var(--texto-suave);
+    font-family: var(--fonte-mono);
+    font-size: 13px;
+  }
+  .teia-classes-alternar svg {
+    transition: transform 0.15s ease;
+  }
+  .teia-classes.aberta .teia-classes-alternar svg {
+    transform: rotate(180deg);
+  }
+  .teia-classes:not(.aberta) .teia-lista-classes {
+    display: none;
+  }
+  .teia-classes.aberta .teia-lista-classes {
+    margin-top: 8px;
+  }
   .teia-lista-classes,
   .teia-equips {
     display: flex;
@@ -1974,13 +2064,25 @@ html[data-aba="teia"] .campo {
     flex: none;
     padding: 0 12px;
   }
-  .teia-ver-tudo span {
+  .teia-estilos {
     display: none;
+  }
+  .teia-estilo-select {
+    display: block;
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    max-width: 220px;
+    border: 0;
+    border-radius: 16px;
+    color: var(--texto);
+    font-size: 14px;
+    font-weight: 600;
   }
   .teia-painel-equip {
     top: auto;
     right: var(--vao);
-    bottom: calc(var(--vao) + 120px); /* acima da barra de estilos, que pode ter 2 linhas */
+    bottom: calc(var(--vao) + 60px); /* acima da barra (estilo + Ver tudo, uma linha) */
     left: var(--vao);
     width: auto;
     max-height: 62%;
@@ -2011,7 +2113,7 @@ html[data-aba="teia"] .campo {
 }
 
 /* tablet em pé (768 px): as sete abas cabem numa linha do trilho com um pouco menos de respiro */
-@media (min-width: 560px) and (max-width: 899px) {
+@media (min-width: 768px) and (max-width: 899px) {
   .aba {
     padding: 0 10px;
   }

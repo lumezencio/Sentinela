@@ -110,7 +110,7 @@ test("manterRotuloNoPalco: rótulo ACIMA da âncora (desloque negativo) fica int
 });
 
 // ---------- vista geral na área livre ----------
-import { enquadrarVistaGeral, separarRotulos } from "../../src/js/teia/enquadramento.js";
+import { enquadrarVistaGeral, rotulosQueCabem, separarRotulos } from "../../src/js/teia/enquadramento.js";
 
 function hubsEmAnel(n, raio = 230) {
   return Array.from({ length: n }, (_, i) => {
@@ -180,4 +180,34 @@ test("separarRotulos: vários empilhados nunca se tocam", () => {
       assert.ok(!sobrepoe, `${i} x ${j}`);
     }
   }
+});
+
+test("rotulosQueCabem: depois de separar, quem ainda bate num já posto some (nível de detalhe)", () => {
+  // palco baixo (celular): três rótulos no mesmo lugar e só cabem dois, um acima do outro
+  const caixas = [
+    { x: 100, topo: 0, l: 80, a: 20 },
+    { x: 100, topo: 0, l: 80, a: 20 },
+    { x: 100, topo: 0, l: 80, a: 20 },
+    { x: 300, topo: 10, l: 80, a: 20 },
+  ];
+  const dy = separarRotulos(caixas, { limite: 48 });
+  const cabe = rotulosQueCabem(caixas, dy, { limite: 48 });
+  assert.equal(cabe[0], true, "o 1º (servidor/maior) fica sempre");
+  assert.equal(cabe[3], true, "longe dos outros: fica");
+  assert.equal(cabe.filter(Boolean).length, 3);
+  // nenhum par mantido se sobrepõe nem sai do palco
+  const postas = caixas.map((c, i) => ({ ...c, topo: c.topo + dy[i] })).filter((_, i) => cabe[i]);
+  for (const [i, a] of postas.entries()) {
+    assert.ok(a.topo >= 0 && a.topo + a.a <= 48);
+    for (const b of postas.slice(i + 1)) {
+      const bate = Math.abs(a.x - b.x) < (a.l + b.l) / 2 && a.topo < b.topo + b.a && b.topo < a.topo + a.a;
+      assert.equal(bate, false);
+    }
+  }
+});
+
+test("rotulosQueCabem: palco folgado mantém todos", () => {
+  const caixas = [{ x: 0, topo: 0, l: 50, a: 20 }, { x: 0, topo: 0, l: 50, a: 20 }];
+  const dy = separarRotulos(caixas, { limite: 500 });
+  assert.deepEqual(rotulosQueCabem(caixas, dy, { limite: 500 }), [true, true]);
 });

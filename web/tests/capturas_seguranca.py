@@ -27,7 +27,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from capturar_telas import ALTURA, LARGURAS, TEMAS, pasta_saida, sync_playwright
+from capturar_telas import ALTURA, LARGURAS, TEMAS, pagina_inteira, pasta_saida, sync_playwright
 from playwright.sync_api import Page, expect
 
 DESTINOS = (
@@ -214,10 +214,10 @@ def _abrir_config(page: Page, cartao: str) -> None:
 def _capturar(page: Page, destino: str, base: Path, senha: str) -> None:
     if destino.startswith("login-totp"):
         _abrir_login_totp(page, destino.endswith("recuperacao"))
-        page.screenshot(path=f"{base}.png", full_page=True)
+        pagina_inteira(page, f"{base}.png")
     elif destino.startswith("seguranca-"):
         _abrir_seguranca(page, senha, destino.endswith("codigos"))
-        page.screenshot(path=f"{base}.png", full_page=True)
+        pagina_inteira(page, f"{base}.png")
     else:
         cartao = "#cfg-seguranca" if destino == "config-seguranca" else "#cfg-backup"
         _abrir_config(page, cartao)
