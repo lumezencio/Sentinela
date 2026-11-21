@@ -1,11 +1,51 @@
-/* Base: reset, tipografia, campo quântico de fundo, logo, botões e campos. */
+/* Base: fontes próprias, reset, tipografia, céu de fundo (aurora + estrelas), logo, botões,
+   campos, vidro e a tela de login. Linguagem "Nebulosa com Aurora" (Task R). */
+
+/* ---------- fontes (servidas pelo próprio Sentinela: CSP default-src 'self', rede local) ---------- */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("../fontes/inter.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fontes/sora-700.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fontes/jetbrains-mono-500.woff2") format("woff2");
+}
+
+/* reserva com as medidas da Inter: a troca de fonte (swap) quase não mexe no layout (CLS) */
+@font-face {
+  font-family: "Inter Reserva";
+  src: local("Arial"), local("Helvetica"), local("Liberation Sans");
+  size-adjust: 107%;
+  ascent-override: 90%;
+  descent-override: 22.5%;
+  line-gap-override: 0%;
+}
+
 *,
 *::before,
 *::after {
   box-sizing: border-box;
 }
 
+/* o fundo fica no <html> (a tela inteira) e o <body> é transparente: assim o céu (.campo, fixo e
+   atrás de tudo) aparece em todas as abas, inclusive nas que reservam a calha da rolagem */
 html {
+  background: var(--fundo);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -13,7 +53,7 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--fundo);
+  background: transparent;
   color: var(--texto);
   font: 15px/1.5 var(--fonte);
   font-feature-settings: "tnum" 1;
@@ -27,15 +67,27 @@ body {
 }
 
 a {
-  color: var(--primaria);
+  color: var(--link);
+}
+
+a:hover {
+  color: var(--texto-forte);
 }
 
 h1,
 h2,
 h3 {
   margin: 0;
-  line-height: 1.2;
+  font-family: var(--fonte-titulo);
+  font-weight: 700;
+  line-height: 1.25;
   letter-spacing: -0.01em;
+}
+
+code,
+kbd {
+  font-family: var(--fonte-mono);
+  font-size: 0.92em;
 }
 
 .so-leitor {
@@ -56,7 +108,9 @@ h3 {
   border-radius: 6px;
 }
 
-/* ---------- campo quântico (decorativo, fixo, só transform/opacity) ---------- */
+/* ---------- céu de fundo (decorativo, fixo, atrás de tudo; só transform/opacity) ----------
+   Três auroras borradas que derivam devagar (20-28 s) e ~50 estrelas que cintilam em três
+   camadas. Com "reduzir movimento" fica tudo parado e mais apagado. */
 .campo {
   position: fixed;
   inset: 0;
@@ -65,90 +119,180 @@ h3 {
   pointer-events: none;
 }
 
-.campo::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: radial-gradient(circle at 1px 1px, var(--borda) 1px, transparent 1.5px);
-  background-size: 28px 28px;
-  opacity: 0.35;
-  mask-image: radial-gradient(ellipse at 50% 30%, #000 0%, transparent 75%);
-  -webkit-mask-image: radial-gradient(ellipse at 50% 30%, #000 0%, transparent 75%);
-}
-
 .nuvem {
   position: absolute;
-  width: 60vmax;
-  height: 60vmax;
   border-radius: 50%;
   will-change: transform;
 }
 
 .nuvem-1 {
-  top: -28vmax;
-  left: -18vmax;
-  background: radial-gradient(circle, var(--halo-1) 0%, transparent 62%);
-  animation: derivar 38s ease-in-out infinite alternate;
+  top: -46vmax;
+  left: -26vmax;
+  width: 90vmax;
+  height: 90vmax;
+  background: radial-gradient(circle, var(--aurora-1) 0%, transparent 65%);
+  animation: derivar 20s ease-in-out infinite;
 }
 
 .nuvem-2 {
-  right: -22vmax;
-  bottom: -30vmax;
-  background: radial-gradient(circle, var(--halo-2) 0%, transparent 62%);
-  animation: derivar 46s ease-in-out -12s infinite alternate-reverse;
+  top: -28vmax;
+  right: -28vmax;
+  width: 82vmax;
+  height: 82vmax;
+  background: radial-gradient(circle, var(--aurora-2) 0%, transparent 65%);
+  animation: derivar 24s ease-in-out -8s infinite;
+}
+
+.nuvem-3 {
+  bottom: -48vmax;
+  left: 28vw;
+  width: 70vmax;
+  height: 70vmax;
+  background: radial-gradient(circle, var(--aurora-3) 0%, transparent 65%);
+  animation: derivar 28s ease-in-out -14s infinite;
 }
 
 @keyframes derivar {
-  from {
+  0%,
+  100% {
     transform: translate3d(0, 0, 0) scale(1);
   }
-  to {
-    transform: translate3d(6vmax, 4vmax, 0) scale(1.12);
+  50% {
+    transform: translate3d(3vmax, -2vmax, 0) scale(1.08);
   }
 }
 
-/* ---------- logo orbital ---------- */
+/* as estrelas são sombras de um ponto de 1 px (posições em vw/vh): três camadas que cintilam
+   em ritmos diferentes, cada uma só mudando de opacidade */
+.estrelas,
+.estrelas::before,
+.estrelas::after {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.estrelas {
+  opacity: var(--estrelas-opacidade);
+}
+
+.estrelas::before,
+.estrelas::after {
+  content: "";
+  will-change: opacity;
+}
+
+.estrelas::before {
+  box-shadow:
+    75.9vw 21.5vh 1px 0 #e2e8f0,
+    3.9vw 91.1vh 1px 0 #5eead4,
+    29.8vw 62.6vh 1px 0 #c4b5fd,
+    55.7vw 34.1vh 1px 0 #7dd3fc,
+    81.7vw 5.7vh 1px 0 #e2e8f0,
+    9.6vw 75.2vh 1px 0 #5eead4,
+    35.5vw 46.7vh 1px 0 #c4b5fd,
+    61.5vw 18.3vh 1px 0 #7dd3fc,
+    87.4vw 87.8vh 1px 0 #e2e8f0,
+    15.3vw 59.3vh 1px 0 #5eead4,
+    41.3vw 30.9vh 1px 0 #c4b5fd,
+    67.2vw 2.4vh 1px 0 #7dd3fc,
+    93.1vw 71.9vh 1px 0 #e2e8f0,
+    21.1vw 43.5vh 1px 0 #5eead4,
+    47vw 15vh 1px 0 #c4b5fd,
+    72.9vw 84.5vh 1px 0 #7dd3fc,
+    26vw 7.8vh 2px 0.5px #c4b5fd,
+    51.9vw 77.4vh 2px 0.5px #7dd3fc,
+    77.8vw 48.9vh 2px 0.5px #e2e8f0,
+    5.8vw 20.4vh 2px 0.5px #5eead4,
+    31.7vw 90vh 2px 0.5px #c4b5fd,
+    57.6vw 61.5vh 2px 0.5px #7dd3fc,
+    83.6vw 33vh 2px 0.5px #e2e8f0,
+    11.5vw 4.6vh 2px 0.5px #5eead4;
+  animation: cintilar 4.6s ease-in-out infinite;
+}
+
+.estrelas::after {
+  box-shadow:
+    37.5vw 74.1vh 2px 0.5px #c4b5fd,
+    63.4vw 45.6vh 2px 0.5px #7dd3fc,
+    89.3vw 17.2vh 2px 0.5px #e2e8f0,
+    17.3vw 86.7vh 2px 0.5px #5eead4,
+    43.2vw 58.2vh 2px 0.5px #c4b5fd,
+    69.1vw 29.8vh 2px 0.5px #7dd3fc,
+    95.1vw 1.3vh 2px 0.5px #e2e8f0,
+    23vw 70.8vh 2px 0.5px #5eead4,
+    48.9vw 42.4vh 2px 0.5px #c4b5fd,
+    2vw 63.7vh 3px 1px #5eead4,
+    27.9vw 35.2vh 3px 1px #c4b5fd,
+    53.8vw 6.8vh 3px 1px #7dd3fc,
+    79.8vw 76.3vh 3px 1px #e2e8f0,
+    7.7vw 47.8vh 3px 1px #5eead4,
+    33.6vw 19.4vh 3px 1px #c4b5fd,
+    59.6vw 88.9vh 3px 1px #7dd3fc,
+    85.5vw 60.4vh 3px 1px #e2e8f0,
+    13.4vw 32vh 3px 1px #5eead4,
+    39.4vw 3.5vh 3px 1px #c4b5fd,
+    65.3vw 73vh 3px 1px #7dd3fc,
+    91.2vw 44.6vh 3px 1px #e2e8f0,
+    19.2vw 16.1vh 3px 1px #5eead4,
+    45.1vw 85.6vh 3px 1px #c4b5fd,
+    71vw 57.2vh 3px 1px #7dd3fc,
+    97vw 28.7vh 3px 1px #e2e8f0,
+    24.9vw 98.2vh 3px 1px #5eead4;
+  animation: cintilar 6.8s ease-in-out -2.2s infinite;
+}
+
+@keyframes cintilar {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------- logo: anel em órbita (teal/violeta) em volta de um núcleo em degradê ---------- */
 .logo {
   display: inline-block;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   flex: none;
+  overflow: visible;
 }
 
-.logo .orbita {
+.logo .anel {
   fill: none;
-  stroke: var(--primaria);
-  stroke-width: 1.4;
-  opacity: 0.75;
+  stroke: var(--borda-forte);
+  stroke-width: 1.5;
 }
 
-.logo .orbita-2 {
-  stroke: var(--acento);
+.logo .arco {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.logo .arco-1 {
+  stroke: #2dd4bf;
+}
+
+.logo .arco-2 {
+  stroke: #a78bfa;
 }
 
 .logo .nucleo {
-  fill: var(--acento);
-}
-
-.logo .eletron {
-  fill: var(--primaria);
+  filter: drop-shadow(0 0 4px rgba(125, 211, 252, 0.65));
 }
 
 .logo .giro {
   transform-box: view-box;
   transform-origin: 50% 50%;
-  animation: girar 9s linear infinite;
-}
-
-.logo .giro-2 {
-  animation-duration: 14s;
-  animation-direction: reverse;
-}
-
-.logo .nucleo {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: respirar 3.2s ease-in-out infinite;
+  animation: girar 6s linear infinite;
 }
 
 @keyframes girar {
@@ -157,33 +301,31 @@ h3 {
   }
 }
 
-@keyframes respirar {
-  50% {
-    transform: scale(0.82);
-    opacity: 0.8;
-  }
-}
-
-/* ---------- botões e campos ---------- */
+/* ---------- botões e campos (toda área de toque >= 44 px) ---------- */
 .botao {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 16px;
-  border: 1px solid var(--borda);
+  border: 1px solid var(--borda-forte);
   border-radius: var(--raio-p);
   background: var(--superficie-2);
   color: var(--texto);
   font: inherit;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
 a.botao {
   text-decoration: none; /* link com cara de botão (ex.: "Ver o Organograma") */
+}
+
+a.botao:hover {
+  color: var(--texto);
 }
 
 .botao:hover:not(:disabled) {
@@ -199,10 +341,16 @@ a.botao {
   opacity: 0.6;
 }
 
-.botao-primario {
+.botao-primario,
+a.botao-primario {
   border-color: transparent;
-  background: linear-gradient(135deg, var(--primaria), var(--acento));
-  color: var(--primaria-texto);
+  background: var(--grad-acao);
+  color: #ffffff;
+  box-shadow: var(--sombra-acao);
+}
+
+.botao-primario:hover:not(:disabled) {
+  box-shadow: 0 12px 26px -10px rgba(139, 92, 246, 0.9);
 }
 
 .botao-fantasma {
@@ -210,8 +358,12 @@ a.botao {
   background: transparent;
 }
 
+.botao-fantasma:hover:not(:disabled) {
+  background: var(--superficie-2);
+}
+
 .botao-icone {
-  width: 40px;
+  width: 44px;
   padding: 0;
 }
 
@@ -229,7 +381,7 @@ a.botao {
 
 .campo-form {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .campo-form label,
@@ -242,9 +394,9 @@ a.botao {
 input,
 select {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 12px;
-  border: 1px solid var(--borda);
+  border: 1px solid var(--borda-forte);
   border-radius: var(--raio-p);
   background: var(--fundo);
   color: var(--texto);
@@ -264,9 +416,9 @@ select:focus-visible {
 
 .alerta {
   margin: 0;
-  padding: 10px 12px;
+  padding: 12px 16px;
   border-left: 3px solid var(--offline);
-  border-radius: 6px;
+  border-radius: var(--raio-p);
   background: var(--superficie-2);
   color: var(--texto);
   font-size: 14px;
@@ -277,10 +429,18 @@ select:focus-visible {
   border-left-color: var(--online);
 }
 
+/* vidro: degradê translúcido com fio interno; sem backdrop-filter o fundo fica opaco (legível) */
 .vidro {
-  background: var(--vidro);
+  background: var(--vidro-grad);
+  box-shadow: var(--linha-vidro), var(--sombra);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   backdrop-filter: blur(14px) saturate(140%);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .vidro {
+    background: var(--vidro-solido);
+  }
 }
 
 /* ---------- login ---------- */
@@ -294,9 +454,8 @@ select:focus-visible {
 .cartao-login {
   width: min(400px, 100%);
   padding: 32px 28px 28px;
-  border: 1px solid var(--borda);
-  border-radius: 20px;
-  box-shadow: var(--sombra);
+  border: 0;
+  border-radius: 22px;
   animation: surgir-cartao 0.5s ease-out both;
 }
 
@@ -307,14 +466,14 @@ select:focus-visible {
 
 .marca-login {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 24px;
   text-align: center;
   justify-items: center;
 }
 
 .marca-login h1 {
-  font-size: 26px;
+  font-size: 28px;
 }
 
 .marca-login p {
@@ -333,8 +492,9 @@ select:focus-visible {
 }
 
 .form-login .botao-primario {
-  min-height: 46px;
+  min-height: 48px;
   margin-top: 4px;
+  font-size: 15px;
 }
 
 /* segunda etapa do login (código do segundo fator) */
@@ -378,6 +538,11 @@ select:focus-visible {
   text-align: center;
 }
 
+.rodape-login.versao {
+  margin-top: 8px;
+  font-family: var(--fonte-mono);
+}
+
 /* só transform: com opacity 0 no início a animação roda no compositor e o Chrome não registra o
    First Contentful Paint da tela de login (Lighthouse: NO_FCP) */
 @keyframes surgir-cartao {
@@ -400,5 +565,19 @@ select:focus-visible {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  /* céu parado e mais apagado; o logo não gira */
+  .campo {
+    opacity: 0.7;
+  }
+  .nuvem,
+  .estrelas::before,
+  .estrelas::after,
+  .logo .giro {
+    animation: none !important;
+  }
+  .estrelas::before,
+  .estrelas::after {
+    opacity: 0.55;
   }
 }

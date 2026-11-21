@@ -8,6 +8,8 @@
   <meta name="description" content="Sentinela: monitor de equipamentos da rede local">
   <title>Sentinela · Lista</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fontes/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fontes/sora-700.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="css/tokens.css">
   <link rel="stylesheet" href="css/base.css">
   <link rel="stylesheet" href="css/componentes.css">
@@ -20,7 +22,7 @@
   <script defer src="vendor/alpine-csp.min.js"></script>
 </head>
 <body x-data="painel" @keydown.escape="aoEsc">
-  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div></div>
+  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div><div class="nuvem nuvem-3"></div><div class="estrelas"></div></div>
 
   <!-- ícones de estado: forma muda junto com a cor (§12.3) -->
   <svg width="0" height="0" class="so-leitor" aria-hidden="true" focusable="false">
@@ -38,9 +40,10 @@
     <div class="topo-interno">
       <div class="marca">
         <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
-          <g class="giro"><ellipse class="orbita" cx="20" cy="20" rx="17" ry="7"/><circle class="eletron" cx="37" cy="20" r="2.2"/></g>
-          <g class="giro giro-2"><ellipse class="orbita orbita-2" cx="20" cy="20" rx="7" ry="17"/><circle class="eletron" cx="20" cy="3" r="1.8"/></g>
-          <circle class="nucleo" cx="20" cy="20" r="4.5"/>
+          <defs><linearGradient id="logo-nucleo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
+          <circle class="anel" cx="20" cy="20" r="18"/>
+          <g class="giro"><path class="arco arco-1" d="M7.27 7.27A18 18 0 0 1 32.73 7.27"/><path class="arco arco-2" d="M32.73 7.27A18 18 0 0 1 32.73 32.73"/></g>
+          <circle class="nucleo" cx="20" cy="20" r="7" fill="url(#logo-nucleo)"/>
         </svg>
         <span>Sentinela</span>
         <small class="versao" data-versao hidden></small>
@@ -80,13 +83,82 @@
   </header>
 
   <!-- aviso de atualização (24 h depois de atualizar ou voltar; 7 dias sem verificar): abaixo do cabeçalho, nunca cobre o conteúdo -->
-  <div class="casca aviso-atz-faixa" id="aviso-atualizacao" x-show="atzAvisoVisivel" x-cloak>
-    <div :class="atzAvisoClasse" role="status">
+  <!-- a região viva (role="status") existe desde o carregamento; só o conteúdo aparece, então o
+       leitor de tela anuncia o aviso quando ele chega -->
+  <div class="casca aviso-atz-faixa" id="aviso-atualizacao" role="status">
+    <div :class="atzAvisoClasse" x-show="atzAvisoVisivel" x-cloak>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10M8 9l4 4 4-4M5 17v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2"/></svg>
       <p class="aviso-atz-texto" x-text="atzAvisoTexto"></p>
       <button class="botao botao-fantasma" type="button" @click="dispensarAvisoAtualizacao">Dispensar<span class="so-leitor"> o aviso de atualização</span></button>
     </div>
   </div>
+
+  <!-- cartões de alerta ao vivo: numa coluna própria à direita (>= 1440 px, o conteúdo encolhe para
+       ela) ou no fluxo, acima do conteúdo (abaixo disso); nunca por cima de filtros e botões -->
+  <section class="ca-pilha" id="cartoes-alerta" aria-label="Alertas ao vivo" x-show="temCartoes" x-cloak>
+    <div class="ca-cartoes">
+      <template x-for="c in cartoes" :key="c.id">
+        <article :class="c.classeCartao" :data-id="c.id" tabindex="-1" @keydown.escape.stop="dispensarCartao(c.id)" @mouseenter="reterCartao(c.id, 'mouse')" @mouseleave="soltarCartao(c.id, 'mouse')" @focusin="reterCartao(c.id, 'foco')" @focusout="soltarCartao(c.id, 'foco')">
+          <header class="ca-cabeca">
+            <p class="ca-titulo" role="alert" aria-live="assertive">
+              <span class="ca-marca"><svg class="icone-status" aria-hidden="true"><use :href="c.icone"/></svg><span x-text="c.rotuloMarca"></span></span>
+              <strong class="ca-nome" x-text="c.titulo"></strong>
+            </p>
+            <button class="botao botao-fantasma botao-icone ca-alternar" type="button" @click="alternarDadosDoCartao(c.id)" :aria-expanded="c.ariaAberto" :aria-label="c.rotuloAlternar" :title="c.aberto ? 'Recolher' : 'Mostrar tudo'">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <button class="botao botao-fantasma botao-icone" type="button" @click="dispensarCartao(c.id)" :aria-label="c.rotuloFechar" title="Fechar (Esc)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </header>
+          <p class="ca-sub" x-show="c.temEquipamento">
+            <span class="classe"><span class="pino" aria-hidden="true" :style="{ '--cor-classe': c.corClasse }"></span><span x-text="c.classeNome"></span></span>
+            <span :class="c.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="c.estadoIcone"/></svg><span x-text="c.estadoRotulo"></span></span>
+          </p>
+          <dl class="ca-dados">
+            <template x-for="l in c.linhas" :key="l.rotulo">
+              <div><dt x-text="l.rotulo"></dt><dd :class="l.classe" x-text="l.valor"></dd></div>
+            </template>
+          </dl>
+          <template x-if="c.aberto">
+            <div class="ca-corpo-aberto">
+              <p class="ca-nota" x-show="c.reconhecimento" x-text="c.reconhecimento"></p>
+              <div class="ca-grupo" x-show="c.afetados">
+                <button class="botao botao-fantasma ca-ver" type="button" @click="alternarAfetadosDoCartao(c.id)" :aria-expanded="c.ariaExpandido" :aria-controls="c.idLista">
+                  <span x-text="c.rotuloAfetados"></span><span class="suave" x-text="c.rotuloVer"></span>
+                </button>
+                <div :id="c.idLista" x-show="c.expandido">
+                  <p class="dica" x-show="c.carregando">Carregando…</p>
+                  <p class="alerta" x-show="c.erro" x-text="c.erro"></p>
+                  <ul :class="c.classeLista" tabindex="0" aria-label="Equipamentos afetados">
+                    <template x-for="x in c.lista" :key="x.id">
+                      <li>
+                        <span :class="x.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="x.estadoIcone"/></svg><span class="so-leitor" x-text="x.estadoRotulo"></span></span>
+                        <span class="ca-afetado-texto"><strong x-text="x.nome"></strong><span class="mono suave" x-show="x.ip" x-text="x.ip"></span></span>
+                      </li>
+                    </template>
+                  </ul>
+                </div>
+              </div>
+              <p class="alerta" x-show="c.erroAcao" x-text="c.erroAcao"></p>
+              <div class="ca-acoes">
+                <button class="botao botao-primario" type="button" x-show="c.verEmNovos" @click="verEmNovosDoCartao(c.id)">Ver em Novos</button>
+                <button class="botao" type="button" x-show="c.temEquipamento" @click="verNaTeiaDoCartao(c.id)">Ver na Teia</button>
+                <button class="botao" type="button" @click="verAlertaDoCartao(c.id)">Ver alerta</button>
+                <template x-if="admin">
+                  <button class="botao" type="button" x-show="c.reconhecivel" @click="reconhecerDoCartao(c.id)" :aria-label="c.rotuloReconhecer">Reconhecer</button>
+                </template>
+                <template x-if="admin">
+                  <button class="botao botao-fantasma" type="button" x-show="c.temEquipamento" @click="silenciarDoCartao(c.id)">Silenciar…</button>
+                </template>
+              </div>
+            </div>
+          </template>
+        </article>
+      </template>
+    </div>
+    <button class="botao ca-mais" type="button" x-show="temMaisCartoes" @click="verTodosOsAlertas" x-text="rotuloMaisCartoes"></button>
+  </section>
 
   <!-- um único <main>: as três abas são painéis dentro dele (a ativa é a única visível) -->
   <main class="conteudo" id="conteudo" tabindex="-1">
@@ -1232,70 +1304,6 @@
   </main>
 
   <!-- cartões de alerta ao vivo (qualquer aba): queda, instabilidade e fonte sem coleta; até 3 à vista -->
-  <section class="ca-pilha" id="cartoes-alerta" aria-label="Alertas ao vivo" x-show="temCartoes" x-cloak>
-    <div class="ca-cartoes">
-      <template x-for="c in cartoes" :key="c.id">
-        <article :class="c.classeCartao" :data-id="c.id" tabindex="-1" @keydown.escape.stop="dispensarCartao(c.id)" @mouseenter="reterCartao(c.id, 'mouse')" @mouseleave="soltarCartao(c.id, 'mouse')" @focusin="reterCartao(c.id, 'foco')" @focusout="soltarCartao(c.id, 'foco')">
-          <header class="ca-cabeca">
-            <p class="ca-titulo" role="alert" aria-live="assertive">
-              <span class="ca-marca"><svg class="icone-status" aria-hidden="true"><use :href="c.icone"/></svg><span x-text="c.rotuloMarca"></span></span>
-              <strong class="ca-nome" x-text="c.titulo"></strong>
-            </p>
-            <button class="botao botao-fantasma botao-icone ca-alternar" type="button" @click="alternarDadosDoCartao(c.id)" :aria-expanded="c.ariaAberto" :aria-label="c.rotuloAlternar" :title="c.aberto ? 'Recolher' : 'Mostrar tudo'">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-            </button>
-            <button class="botao botao-fantasma botao-icone" type="button" @click="dispensarCartao(c.id)" :aria-label="c.rotuloFechar" title="Fechar (Esc)">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-            </button>
-          </header>
-          <p class="ca-sub" x-show="c.temEquipamento">
-            <span class="classe"><span class="pino" aria-hidden="true" :style="{ '--cor-classe': c.corClasse }"></span><span x-text="c.classeNome"></span></span>
-            <span :class="c.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="c.estadoIcone"/></svg><span x-text="c.estadoRotulo"></span></span>
-          </p>
-          <dl class="ca-dados">
-            <template x-for="l in c.linhas" :key="l.rotulo">
-              <div><dt x-text="l.rotulo"></dt><dd :class="l.classe" x-text="l.valor"></dd></div>
-            </template>
-          </dl>
-          <template x-if="c.aberto">
-            <div class="ca-corpo-aberto">
-              <p class="ca-nota" x-show="c.reconhecimento" x-text="c.reconhecimento"></p>
-              <div class="ca-grupo" x-show="c.afetados">
-                <button class="botao botao-fantasma ca-ver" type="button" @click="alternarAfetadosDoCartao(c.id)" :aria-expanded="c.ariaExpandido" :aria-controls="c.idLista">
-                  <span x-text="c.rotuloAfetados"></span><span class="suave" x-text="c.rotuloVer"></span>
-                </button>
-                <div :id="c.idLista" x-show="c.expandido">
-                  <p class="dica" x-show="c.carregando">Carregando…</p>
-                  <p class="alerta" x-show="c.erro" x-text="c.erro"></p>
-                  <ul :class="c.classeLista" tabindex="0" aria-label="Equipamentos afetados">
-                    <template x-for="x in c.lista" :key="x.id">
-                      <li>
-                        <span :class="x.estadoClasse"><svg class="icone-status" aria-hidden="true"><use :href="x.estadoIcone"/></svg><span class="so-leitor" x-text="x.estadoRotulo"></span></span>
-                        <span class="ca-afetado-texto"><strong x-text="x.nome"></strong><span class="mono suave" x-show="x.ip" x-text="x.ip"></span></span>
-                      </li>
-                    </template>
-                  </ul>
-                </div>
-              </div>
-              <p class="alerta" x-show="c.erroAcao" x-text="c.erroAcao"></p>
-              <div class="ca-acoes">
-                <button class="botao botao-primario" type="button" x-show="c.verEmNovos" @click="verEmNovosDoCartao(c.id)">Ver em Novos</button>
-                <button class="botao" type="button" x-show="c.temEquipamento" @click="verNaTeiaDoCartao(c.id)">Ver na Teia</button>
-                <button class="botao" type="button" @click="verAlertaDoCartao(c.id)">Ver alerta</button>
-                <template x-if="admin">
-                  <button class="botao" type="button" x-show="c.reconhecivel" @click="reconhecerDoCartao(c.id)" :aria-label="c.rotuloReconhecer">Reconhecer</button>
-                </template>
-                <template x-if="admin">
-                  <button class="botao botao-fantasma" type="button" x-show="c.temEquipamento" @click="silenciarDoCartao(c.id)">Silenciar…</button>
-                </template>
-              </div>
-            </div>
-          </template>
-        </article>
-      </template>
-    </div>
-    <button class="botao ca-mais" type="button" x-show="temMaisCartoes" @click="verTodosOsAlertas" x-text="rotuloMaisCartoes"></button>
-  </section>
 
   <!-- painel do equipamento no Organograma: mesma ficha, histórico e pausa da Teia (sem o 3D) -->
   <dialog class="dialogo org-dialogo" x-ref="dlgEquipOrg" aria-labelledby="titulo-equip-org" @close="aoFecharDialogoOrg">

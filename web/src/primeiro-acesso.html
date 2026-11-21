@@ -8,6 +8,8 @@
   <meta name="description" content="Sentinela: primeiro acesso, criação do administrador e da rede">
   <title>Sentinela · Primeiro acesso</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fontes/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fontes/sora-700.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="css/tokens.css">
   <link rel="stylesheet" href="css/base.css">
   <link rel="stylesheet" href="css/novos.css">
@@ -17,14 +19,15 @@
   <script type="module" src="js/versao-pagina.js"></script>
 </head>
 <body>
-  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div></div>
+  <div class="campo" aria-hidden="true"><div class="nuvem nuvem-1"></div><div class="nuvem nuvem-2"></div><div class="nuvem nuvem-3"></div><div class="estrelas"></div></div>
   <main class="tela-login tela-seguranca">
     <section class="cartao-login cartao-seguranca vidro" aria-labelledby="titulo-pa">
       <div class="seg-cabeca">
         <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
-          <g class="giro"><ellipse class="orbita" cx="20" cy="20" rx="17" ry="7"/><circle class="eletron" cx="37" cy="20" r="2.2"/></g>
-          <g class="giro giro-2"><ellipse class="orbita orbita-2" cx="20" cy="20" rx="7" ry="17"/><circle class="eletron" cx="20" cy="3" r="1.8"/></g>
-          <circle class="nucleo" cx="20" cy="20" r="4.5"/>
+          <defs><linearGradient id="logo-nucleo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
+          <circle class="anel" cx="20" cy="20" r="18"/>
+          <g class="giro"><path class="arco arco-1" d="M7.27 7.27A18 18 0 0 1 32.73 7.27"/><path class="arco arco-2" d="M32.73 7.27A18 18 0 0 1 32.73 32.73"/></g>
+          <circle class="nucleo" cx="20" cy="20" r="7" fill="url(#logo-nucleo)"/>
         </svg>
         <div>
           <h1 id="titulo-pa">Primeiro acesso</h1>

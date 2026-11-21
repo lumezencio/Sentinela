@@ -1,0 +1,6 @@
+Fontes recortadas por build/subconjunto-fontes.py (Latim básico + Latim-1 + pontuação
+das telas, sem hinting). Licença: SIL Open Font License 1.1 (OFL-*.txt).
+
+inter.woff2: @fontsource-variable/inter@5.3.0, wght=(400, 700), features=['kern'], 20764 bytes, sha256 9cd9209934856a3823d85173c9f4be4e6d32e1161a0ce4db1fa602eca4ae8f36
+sora-700.woff2: @fontsource-variable/sora@5.3.0, wght=700, features=nenhuma, 8512 bytes, sha256 73462eaea03b6a93e0f93be00a5c4e00c7d1628cedb744a293fc72b394831c6b
+jetbrains-mono-500.woff2: @fontsource/jetbrains-mono@5.3.0, wght=None, features=nenhuma, 7768 bytes, sha256 04f1240708caddc85e6abc7e16ca5f2882caaf3783649d3aff64ad4c66017fbf
