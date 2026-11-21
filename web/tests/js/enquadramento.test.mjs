@@ -211,3 +211,33 @@ test("rotulosQueCabem: palco folgado mantém todos", () => {
   const dy = separarRotulos(caixas, { limite: 500 });
   assert.deepEqual(rotulosQueCabem(caixas, dy, { limite: 500 }), [true, true]);
 });
+
+test("rotulosQueCabem: tolera arredondamento de 1 ULP e esconde rótulo empurrado longe do grupo", () => {
+  // 1 ULP: 300.1 + (304.3 - 300.1) em IEEE-754 pode ficar 1e-13 abaixo de 304.3
+  const caixasUlp = [
+    { x: 100, topo: 280.1, l: 80, a: 20.2 },
+    { x: 100, topo: 300.1, l: 80, a: 20.2 },
+  ];
+  const dyUlp = separarRotulos(caixasUlp, { limite: 500, folga: 4 });
+  assert.deepEqual(rotulosQueCabem(caixasUlp, dyUlp, { limite: 500, folga: 4 }), [true, true]);
+
+  // rótulo deslocado longe demais do seu grupo (ex.: empurrado para o meio da cena): some no LOD
+  const caixasLonge = [
+    { x: 100, topo: 0, l: 100, a: 100 },
+    { x: 100, topo: 40, l: 80, a: 20 },
+  ];
+  const dyLonge = separarRotulos(caixasLonge, { limite: 500, folga: 4 });
+  assert.ok(Math.abs(dyLonge[1]) > 48, `deslocamento esperado > 48, deu ${dyLonge[1]}`);
+  assert.deepEqual(
+    rotulosQueCabem(caixasLonge, dyLonge, { limite: 500, folga: 4, maxDeslocamento: 48 }),
+    [true, false],
+  );
+
+  // quando há espaço livre logo acima do grupo, sobe em vez de descer longe para o centro
+  const caixasSobe = [
+    { x: 100, topo: 200, l: 100, a: 80 },
+    { x: 100, topo: 195, l: 80, a: 20 },
+  ];
+  const dySobe = separarRotulos(caixasSobe, { limite: 500, folga: 4 });
+  assert.ok(dySobe[1] < 0 && Math.abs(dySobe[1]) <= 30, `devia subir curto, deu ${dySobe[1]}`);
+});

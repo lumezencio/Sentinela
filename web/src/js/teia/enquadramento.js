@@ -215,46 +215,64 @@ export function enquadrarVistaGeral({
 }
 
 /**
- * Tira as sobreposições entre rótulos movendo cada um na vertical (para baixo; para cima só
- * se não couber). `caixas`: {x (centro), topo, l, a} em px, na ordem de prioridade (o 1º
- * não se move). Devolve o deslocamento vertical de cada caixa (mesma ordem). `limite` = altura
- * do palco: o deslocamento que jogaria a caixa para fora é descartado em favor do outro lado.
+ * Tira as sobreposições entre rótulos movendo cada um o mínimo possível na vertical (para cima
+ * ou para baixo, escolhendo a vaga livre mais próxima do grupo dentro de `[0, limite]`).
+ * `caixas`: {x (centro), topo, l, a} em px, na ordem de prioridade (o 1º não se move).
+ * Devolve o deslocamento vertical de cada caixa (mesma ordem).
  */
 export function separarRotulos(caixas, { folga = 4, limite = Infinity } = {}) {
+  const eps = 1e-6;
   const fixas = [];
   const dy = [];
+  const bateCom = (c, topo) => fixas.some((o) => Math.abs(o.x - c.x) < (o.l + c.l) / 2 + folga - eps
+    && topo < o.topo + o.a + folga - eps && topo + c.a + folga - eps > o.topo);
   for (const c of caixas) {
-    let d = 0;
-    for (let volta = 0; volta < 12; volta++) {
-      const topo = c.topo + d, base = topo + c.a;
-      const bate = fixas.find((o) => Math.abs(o.x - c.x) < (o.l + c.l) / 2 + folga
-        && topo < o.topo + o.a + folga && base + folga > o.topo);
-      if (!bate) break;
-      // sempre para baixo (sem vaivém entre dois vizinhos); para cima só se não couber no palco
-      const paraBaixo = bate.topo + bate.a + folga - c.topo;
-      const paraCima = bate.topo - folga - c.a - c.topo;
-      if (c.topo + paraBaixo + c.a <= limite || c.topo + paraCima < 0) d = Math.max(d, paraBaixo);
-      else d = Math.min(d, paraCima);
+    let melhor = null;
+    if (!bateCom(c, c.topo)) {
+      melhor = c.topo;
+    } else {
+      const vagas = [];
+      for (const o of fixas) {
+        if (Math.abs(o.x - c.x) < (o.l + c.l) / 2 + folga - eps) {
+          vagas.push(o.topo - folga - c.a, o.topo + o.a + folga);
+        }
+      }
+      for (const v of vagas) {
+        if (v < -eps || v + c.a > limite + eps) continue;
+        if (bateCom(c, v)) continue;
+        if (melhor === null || Math.abs(v - c.topo) < Math.abs(melhor - c.topo) - eps) {
+          melhor = v;
+        }
+      }
+      if (melhor === null) {
+        // sem vaga livre dentro do palco: empurra para fora (rotulosQueCabem esconde no LOD)
+        melhor = Math.max(c.topo, ...fixas.map((o) => o.topo + o.a + folga));
+      }
     }
+    const d = melhor - c.topo;
     dy.push(d);
-    fixas.push({ x: c.x, topo: c.topo + d, l: c.l, a: c.a });
+    fixas.push({ x: c.x, topo: melhor, l: c.l, a: c.a });
   }
   return dy;
 }
 
 /**
- * Nível de detalhe dos rótulos: depois de `separarRotulos`, quem ainda bate num rótulo já posto
- * (ou sai do palco, quando o palco é baixo como no celular) não aparece. A ordem é a mesma da
- * separação (servidor e classes maiores primeiro), então os mais importantes ficam.
+ * Nível de detalhe dos rótulos: depois de `separarRotulos`, quem ainda bate num rótulo já posto,
+ * sai do palco (quando o palco é baixo como no celular) ou foi empurrado longe demais do próprio
+ * grupo (`maxDeslocamento`) não aparece. A ordem é a mesma da separação (servidor e classes
+ * maiores primeiro), então os mais importantes ficam.
  */
-export function rotulosQueCabem(caixas, dy, { folga = 4, limite = Infinity } = {}) {
+export function rotulosQueCabem(caixas, dy, { folga = 4, limite = Infinity, maxDeslocamento = Infinity } = {}) {
+  const eps = 1e-6;
   const postas = [];
   return caixas.map((c, i) => {
-    const topo = c.topo + (dy[i] || 0);
-    const cabeNoPalco = topo >= 0 && topo + c.a <= limite;
-    const bate = postas.some((o) => Math.abs(o.x - c.x) < (o.l + c.l) / 2 + folga
-      && topo < o.topo + o.a + folga && topo + c.a + folga > o.topo);
-    const fica = i === 0 || (cabeNoPalco && !bate);
+    const d = dy[i] || 0;
+    const topo = c.topo + d;
+    const cabeNoPalco = topo >= -eps && topo + c.a <= limite + eps;
+    const perto = Math.abs(d) <= maxDeslocamento + eps;
+    const bate = postas.some((o) => Math.abs(o.x - c.x) < (o.l + c.l) / 2 + folga - eps
+      && topo < o.topo + o.a + folga - eps && topo + c.a + folga - eps > o.topo);
+    const fica = i === 0 || (cabeNoPalco && perto && !bate);
     if (fica) postas.push({ x: c.x, topo, l: c.l, a: c.a });
     return fica;
   });

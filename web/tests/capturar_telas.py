@@ -202,7 +202,9 @@ def esvaziar_classes(manter: tuple[str, ...] | None = None) -> Callable[[str], s
 # viram absolutos: o céu cobre a página toda e a coluna fica onde está com a página no topo.
 PREPARAR_PAGINA_INTEIRA = """() => {
     window.scrollTo(0, 0);
+    const larg = document.documentElement.clientWidth;
     const alto = document.documentElement.scrollHeight;
+    document.documentElement.style.width = larg + 'px';
     const topo = document.querySelector('.topo');
     if (topo) topo.style.position = 'static';
     const campo = document.querySelector('.campo');
@@ -216,6 +218,12 @@ PREPARAR_PAGINA_INTEIRA = """() => {
         const r = pilha.getBoundingClientRect();
         pilha.style.position = 'absolute';
         pilha.style.top = r.top + 'px';
+    }
+    for (const el of document.querySelectorAll('.ca')) {
+        el.style.animation = 'none';
+    }
+    for (const a of document.getAnimations()) {
+        if (a.effect && a.effect.getTiming().iterations !== Infinity) a.finish();
     }
 }"""
 

@@ -402,14 +402,6 @@ html[data-aba="configuracoes"] {
   .topo {
     position: static;
   }
-  /* sete abas em no máximo três linhas curtas, mesmo em 360 px */
-  .abas {
-    gap: 2px; /* alinhadas à esquerda: a aba Configurações (só admin) entra no fim sem mover as outras */
-  }
-  .aba {
-    padding: 0 10px;
-    font-size: 14px;
-  }
   .al-linha,
   .al-silencio {
     grid-template-columns: minmax(0, 1fr);
@@ -485,8 +477,11 @@ html[data-aba="configuracoes"] {
   overflow-wrap: anywhere;
 }
 
-.cfg-tel-nome .selo {
-  margin-left: 4px;
+.cfg-tel-nome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
 }
 
 .cfg-tel-http {
@@ -699,7 +694,8 @@ html[data-aba="configuracoes"] {
     top: 140px;
     max-height: calc(100vh - 156px);
   }
-  .ca-resumo {
+  .ca-resumo,
+  .ca-anuncio-resumo {
     display: none;
   }
   .ca-vazio {
@@ -722,17 +718,16 @@ html[data-aba="configuracoes"] {
     grid-template-columns: minmax(0, 1fr);
   }
   /* na coluna o título usa 18 px: um nome de 60 caracteres cabe em 2 a 3 linhas */
-  .ca-nome {
+  .ca .ca-nome {
     font-size: 18px;
     line-height: 24px;
   }
   /* coluna reservada o tempo todo: largura da coluna + 16 px de vão + 16 px da borda */
-  .casca {
+  .casca,
+  .teia {
     width: min(1320px, calc(100% - var(--reserva-cartoes)));
     margin-left: max(0px, calc((100% - var(--reserva-cartoes) - 1320px) / 2));
-  }
-  .teia {
-    margin-right: var(--reserva-cartoes);
+    margin-right: 0;
   }
 }
 
@@ -936,13 +931,10 @@ html[data-aba="configuracoes"] {
 }
 
 .ca-marca {
-  margin-right: 80px; /* lugar dos dois botões do canto */
-}
-
-.ca-marca {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-right: 80px; /* lugar dos dois botões do canto */
   padding: 4px 10px;
   border-radius: 999px;
   background: var(--cor-selo);
@@ -1021,10 +1013,14 @@ html[data-aba="configuracoes"] {
   overflow-wrap: break-word;
 }
 
-/* IP, MAC e checagem nunca se partem */
+/* IP, MAC e checagem nunca se partem; listas (Portas) quebram entre vírgulas */
 .ca-dados dd.mono {
   font-size: 13px;
   white-space: nowrap;
+}
+
+.ca-dados dd.ca-quebra {
+  white-space: normal;
 }
 
 .ca-nota {

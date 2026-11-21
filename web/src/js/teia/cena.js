@@ -542,10 +542,23 @@ export function montarTeia(container, opcoes = {}) {
     // dois rótulos nunca se sobrepõem: o do servidor e os de mais equipamentos ficam onde estão,
     // os outros deslizam na vertical o mínimo necessário
     lista.sort((p, q) => (p.r.no === srv ? -1 : q.r.no === srv ? 1 : (q.r.no.total || 0) - (p.r.no.total || 0)));
-    const caixas = lista.map((e) => ({ x: e.dentro.x, topo: e.dentro.y + e.deslocado, l: e.larg, a: e.alt }));
+    // a caixa do servidor inclui a esfera e os anéis acima do texto ("SENTINELA" fica 30 px abaixo):
+    // nenhum rótulo deslizado pode cair sobre o nó central
+    const caixas = lista.map((e) => {
+      if (e.r.no === srv) {
+        const raio = Math.round(36 * e.pos.escala);
+        return {
+          x: e.dentro.x,
+          topo: e.dentro.y - raio,
+          l: Math.max(e.larg, raio * 2),
+          a: raio + e.deslocado + e.alt,
+        };
+      }
+      return { x: e.dentro.x, topo: e.dentro.y + e.deslocado, l: e.larg, a: e.alt };
+    });
     const dys = separarRotulos(caixas, { limite: altura });
-    // nível de detalhe: o que não couber sem encostar em outro (palco baixo, celular) some
-    const cabe = rotulosQueCabem(caixas, dys, { limite: altura });
+    // nível de detalhe: o que não couber sem encostar em outro (ou fugir demais do grupo) some
+    const cabe = rotulosQueCabem(caixas, dys, { limite: altura, maxDeslocamento: 48 });
     lista.forEach((e, i) => {
       const { r, pos, dentro } = e;
       if (!cabe[i]) {

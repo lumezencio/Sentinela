@@ -197,7 +197,8 @@ export function dadosDoCartao(entrada, store, opcoes) {
   const linhas = [];
   // `principal`: o que o cartão recolhido ainda mostra (IP, causa e quando)
   const linha = (rotulo, valor, mono, principal) => {
-    if (valor) linhas.push({ rotulo, valor, classe: mono ? "mono" : "", principal: Boolean(principal) });
+    const classe = typeof mono === "string" ? mono : mono ? "mono" : "";
+    if (valor) linhas.push({ rotulo, valor, classe, principal: Boolean(principal) });
   };
   if (!reduzido && item) {
     linha("IP", textoDoIp(item.ip), true, true);
@@ -209,7 +210,7 @@ export function dadosDoCartao(entrada, store, opcoes) {
   if (!reduzido && novo) {
     linha("IP", textoDoIp(a.ip), true, true);
     linha("Fabricante", limpar(a.fabricante, 120), false);
-    linha("Portas", portasEmTexto(a.portas), true);
+    linha("Portas", portasEmTexto(a.portas), "mono ca-quebra");
   }
   linha("Depende de", item ? dependeDe : "", false);
   linha("Causa", causa, false, true);

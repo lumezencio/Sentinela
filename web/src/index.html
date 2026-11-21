@@ -98,7 +98,7 @@
        alerta chega e nada cobre filtros e botões. -->
   <section class="ca-pilha" :class="classePilha" id="cartoes-alerta" aria-label="Alertas ao vivo" data-varredura="nao" :data-varredura="faixaVarredura ? 'sim' : 'nao'">
     <!-- anúncio fora do botão (filhos de botão não são anunciados em alguns leitores de tela) -->
-    <p class="so-leitor" aria-live="polite"><span x-text="rotuloResumoCartoes"></span> <span x-text="detalheResumoCartoes"></span></p>
+    <p class="so-leitor ca-anuncio-resumo" aria-live="polite"><span x-text="rotuloResumoCartoes"></span> <span x-text="detalheResumoCartoes"></span></p>
     <button class="ca-resumo" type="button" @click="alternarCartoes" :disabled="!temCartoes" :aria-expanded="ariaCartoesAbertos" aria-controls="ca-painel" disabled aria-expanded="false">
       <span class="ca-resumo-ponto" aria-hidden="true"></span>
       <span class="ca-resumo-texto" x-text="rotuloResumoCartoes">Nenhum alerta ao vivo</span>

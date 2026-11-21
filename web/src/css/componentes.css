@@ -1702,8 +1702,9 @@ html[data-aba="teia"] .campo {
 
 .org-alternar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   width: 100%;
   min-height: 44px;
   padding: 4px 4px;
@@ -1747,7 +1748,7 @@ html[data-aba="teia"] .campo {
 
 .org-classe-nome {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   font-family: var(--fonte-titulo);
   font-size: 16px;
   font-weight: 700;
@@ -2116,5 +2117,13 @@ html[data-aba="teia"] .campo {
 @media (min-width: 768px) and (max-width: 899px) {
   .aba {
     padding: 0 10px;
+  }
+}
+
+/* celular estreito (360–400 px): "Configurações" ganha respiro lateral dentro da pílula ativa */
+@media (max-width: 400px) {
+  .aba {
+    padding: 0 6px;
+    font-size: 12px;
   }
 }

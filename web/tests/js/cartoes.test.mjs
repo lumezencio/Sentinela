@@ -252,6 +252,8 @@ test("cartão ao vivo de aparelho novo: IP, fabricante, portas e Ver em Novos; s
   assert.equal(por.Fabricante, "Fabricante Fictício");
   assert.equal(por.Portas, "80, 443");
   assert.equal(c.linhas.find((l) => l.rotulo === "IP").principal, true);
+  assert.equal(c.linhas.find((l) => l.rotulo === "IP").classe, "mono");
+  assert.equal(c.linhas.find((l) => l.rotulo === "Portas").classe, "mono ca-quebra");
   // aprovado ou ignorado em Novos: o alerta fecha e o cartão simplesmente sai (não vira "voltou")
   const fechado = aplicarNaPilha(p, msg("fechado", novoAparelho(1, { fechado_em: "2026-11-18T17:35:00Z" })), AGORA);
   assert.equal(fechado.cartoes.length, 0);

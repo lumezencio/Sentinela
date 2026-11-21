@@ -128,12 +128,15 @@ html[data-aba="diagnostico"] {
 
 .dg-resumo:has(> .dg-cartao:nth-of-type(3):last-of-type),
 .dg-resumo:has(> .dg-cartao:nth-of-type(5):last-of-type),
-.dg-resumo:has(> .dg-cartao:nth-of-type(6):last-of-type) {
+.dg-resumo:has(> .dg-cartao:nth-of-type(6):last-of-type),
+.dg-resumo:has(> .dg-cartao:nth-of-type(7):last-of-type) {
   --dg-col: 3;
 }
 
 @media (min-width: 1024px) {
-  .dg-resumo:has(> .dg-cartao:nth-of-type(4):last-of-type) {
+  .dg-resumo:has(> .dg-cartao:nth-of-type(4):last-of-type),
+  .dg-resumo:has(> .dg-cartao:nth-of-type(7):last-of-type),
+  .dg-resumo:has(> .dg-cartao:nth-of-type(8):last-of-type) {
     --dg-col: 4;
   }
   .dg-resumo:has(> .dg-cartao:nth-of-type(5):last-of-type) {

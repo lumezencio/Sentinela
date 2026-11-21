@@ -3,6 +3,7 @@
   display: grid;
   gap: 16px;
   width: min(560px, 100%);
+  min-width: 0;
 }
 
 .tela-seguranca {
@@ -56,6 +57,7 @@
 .seg-form {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .seg-acoes {
