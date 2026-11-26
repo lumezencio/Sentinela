@@ -26,7 +26,7 @@ RUN (cd src/vendor && sha256sum -c teia-3d.bundle.js.sha256) \
     && cmp src/parede/parede.bundle.js dist/parede/parede.bundle.js \
     && cmp src/parede/teia-parede.bundle.js dist/parede/teia-parede.bundle.js
 
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine3.24
 USER root
 # correções de segurança do Alpine publicadas depois da imagem base (trivy no CI barra HIGH/CRITICAL);
 # sem o default.conf da imagem: a configuração inteira é a nossa
