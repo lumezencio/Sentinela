@@ -1,8 +1,8 @@
 # Núcleo do Sentinela: FastAPI + monitor. Imagem final sem uv, sem pip, sem testes, usuário 10001.
 
-FROM ghcr.io/astral-sh/uv:0.11.19 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.10 AS uv
 
-FROM python:3.12.16-slim-trixie AS construcao
+FROM python:3.15.1-slim-trixie AS construcao
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -16,7 +16,7 @@ COPY sentinela ./sentinela
 # o projeto entra no venv como pacote (não editável): o código-fonte de /src não vai à imagem final
 RUN uv sync --frozen --no-dev --no-editable
 
-FROM python:3.12.16-slim-trixie
+FROM python:3.15.1-slim-trixie
 # correções de segurança do Debian publicadas depois da imagem base (trivy no CI barra HIGH/CRITICAL);
 # pip/setuptools da imagem base não são usados em execução: fora (menos superfície e CVEs)
 RUN apt-get update \
